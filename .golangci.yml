@@ -1,0 +1,287 @@
+# golangci-lint v2 配置
+# 适配 Go 1.26+，针对 llm-provider 项目调优
+# 文档: https://golangci-lint.run/docs/configuration/file/
+
+version: "2"
+
+# -----------------------------------------------------------
+# 运行参数
+# -----------------------------------------------------------
+run:
+  # CI 环境建议 5m，本地开发 3m 足够
+  timeout: 5m
+  # 也检查测试文件
+  tests: true
+  # go.mod 为只读模式，防止 lint 过程中意外修改依赖
+  modules-download-mode: readonly
+
+# -----------------------------------------------------------
+# 输出格式
+# -----------------------------------------------------------
+output:
+  # 按文件排序，同文件按行号排序
+  sort-order:
+    - file
+
+# -----------------------------------------------------------
+# Linters
+# -----------------------------------------------------------
+linters:
+  # standard = golangci-lint 官方推荐的默认集合
+  # 在此基础上额外启用有价值的检查项
+  default: standard
+
+  enable:
+    # ---------- 正确性 ----------
+    # HTTP response body 必须关闭
+    - bodyclose
+    # context 不应该放在 struct 里
+    - containedctx
+    # 检查 context 是否正确传播（非继承的 context）
+    - contextcheck
+    # 检查 time.Duration 相乘的类型错误
+    - durationcheck
+    # 检查 errors.As 的目标必须是指针
+    - errchkjson
+    # 检查 error 返回值是否被正确处理
+    - errcheck
+    # 检查 map/slice nil 判断
+    - nilerr
+    # 检查 sql.Rows 是否正确关闭
+    - rowserrcheck
+    # 检查 sql.Rows.Err() 是否被检查
+    - sqlclosecheck
+    # 外部包的 error 应该 wrap 后再返回
+    - wrapcheck
+
+    # ---------- 性能 ----------
+    # 检查 []byte/string 不必要的转换
+    - bodyclose
+    # 检查可预分配的 slice
+    - prealloc
+
+    # ---------- 代码风格 & 可维护性 ----------
+    # 函数圈复杂度
+    - cyclop
+    # 认知复杂度
+    - gocognit
+    # 魔法数字检查
+    - mnd
+    # 强制 error 命名以 Err 开头，error type 以 Error 结尾
+    - errname
+    # 检查 exported 类型是否有注释
+    - revive
+    # 禁止 naked return
+    - nakedret
+    # 检查未使用的函数参数
+    - unparam
+    # 检查不必要的类型转换
+    - unconvert
+    # 废弃 API 检查
+    - staticcheck
+
+    # ---------- 安全 ----------
+    # 常见安全问题（硬编码密钥、SQL 注入等）
+    - gosec
+
+    # ---------- Go 现代写法 ----------
+    # 检查可以用 copy/append 替代的手动循环
+    - copyloopvar
+    # 检查应该用 errors.Is/As 的地方
+    - errorlint
+    # 检查可以用标准库替代的代码（如 slices、maps 包）
+    - gocritic
+    # 检查 nolint 指令是否有效且有注释
+    - nolintlint
+    # 镜像源检查（import path 是否为 canonical）
+    - mirror
+    # 检查测试中的 helper 函数是否调用了 t.Helper()
+    - thelper
+    # 检查 test 是否使用了 t.Parallel()
+    - tparallel
+    # 检查测试用例的首字母是否正确
+    - testifylint
+
+  # 这些 linter 对本项目噪音太大或不适用，显式关闭
+  disable:
+    # 强制 import 分组排序 — 交给 formatter 处理
+    - gci
+    # 行长度限制 — 对中文注释不友好
+    - lll
+    # 函数行数限制 — buildRequest 等映射函数天然较长
+    - funlen
+    # 全局变量检查 — Presets map 是合理的包级变量
+    - gochecknoglobals
+    # init 函数检查 — example 代码中会用到
+    - gochecknoinits
+    # 强制 struct tag 风格 — json tag 已有项目约定
+    - tagliatelle
+    # 禁止 panic — example 代码中合理使用
+    - goerr113
+    # 注释中英文间空格 — 中文项目不适用
+    - godox
+
+  # ---------- Linter 配置 ----------
+  settings:
+    cyclop:
+      # 圈复杂度上限，buildRequest 这类映射函数可能偏高
+      max-complexity: 20
+
+    gocognit:
+      # 认知复杂度上限
+      min-complexity: 25
+
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+        - performance
+        - opinionated
+      disabled-checks:
+        # 参数过多 — Tool Use 类型天然需要多字段
+        - hugeParam
+        # range over string — 项目中不涉及
+        - rangeValCopy
+
+    gosec:
+      excludes:
+        # 弱随机数 — 本项目不涉及密码学
+        - G404
+
+    nakedret:
+      # 超过 3 行的函数禁止 naked return
+      max-func-lines: 3
+
+    errcheck:
+      # 允许不检查 fmt.Print* 和 stream.Close 的返回值
+      exclude-functions:
+        - fmt.Print
+        - fmt.Println
+        - fmt.Printf
+        - fmt.Fprint
+        - fmt.Fprintln
+        - fmt.Fprintf
+
+    revive:
+      rules:
+        # 允许以 _ 开头的未使用参数
+        - name: unused-parameter
+          arguments:
+            - allow-regex: "^_"
+        # exported 函数需要注释
+        - name: exported
+          arguments:
+            - "checkPrivateReceivers"
+
+    mnd:
+      # 只在条件判断和赋值中检查魔法数字
+      checks:
+        - condition
+        - return
+      # 这些数字在本项目中是常见的合理值
+      ignored-numbers:
+        - "0"
+        - "1"
+        - "2"
+        - "5"
+        - "10"
+        - "20"
+      ignored-functions:
+        - "make"
+        - "context.WithTimeout"
+
+    staticcheck:
+      checks:
+        - all
+
+    depguard:
+      rules:
+        main:
+          deny:
+            # 禁止使用旧的 math/rand，用 math/rand/v2
+            - pkg: "math/rand$"
+              desc: "Use math/rand/v2 instead"
+            # 禁止使用 pkg/errors，用标准库 errors + fmt.Errorf %w
+            - pkg: "github.com/pkg/errors"
+              desc: "Use stdlib errors and fmt.Errorf with %w"
+            # 禁止使用 log，用 log/slog 或 zerolog
+            - pkg: "log$"
+              desc: "Use log/slog or zerolog instead"
+
+    wrapcheck:
+      ignore-interfaces:
+        # go-openai 的 stream 接口，Recv 的 io.EOF 不需要 wrap
+        - io.Reader
+
+    testifylint:
+      enable-all: true
+
+  # ---------- 排除规则 ----------
+  exclusions:
+    # 启用社区推荐的排除预设
+    presets:
+      # 注释相关的误报
+      - comments
+      # 标准库 error 处理的常见模式
+      - std-error-handling
+      # 社区公认的误报
+      - common-false-positives
+
+    # 自动生成代码的排除策略：宽松模式
+    generated: lax
+
+    rules:
+      # 测试文件放宽限制
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+          - wrapcheck
+          - cyclop
+          - gocognit
+          - unparam
+          - containedctx
+
+      # example 目录放宽限制
+      - path: example/
+        linters:
+          - errcheck
+          - gosec
+          - wrapcheck
+          - unparam
+          - mnd
+
+      # G107: 变量作为 URL — go-openai 内部会用
+      - linters:
+          - gosec
+        text: "G107:"
+
+# -----------------------------------------------------------
+# Formatters（golangci-lint fmt 命令使用）
+# -----------------------------------------------------------
+formatters:
+  enable:
+    # 标准 Go 格式化
+    - gofmt
+    # import 排序和清理
+    - goimports
+
+  settings:
+    gofmt:
+      # 自动应用现代 Go 写法重写
+      rewrite-rules:
+        # interface{} → any (Go 1.18+)
+        - pattern: "interface{}"
+          replacement: "any"
+        # s[a:len(s)] → s[a:]
+        - pattern: "a[b:len(a)]"
+          replacement: "a[b:]"
+
+# -----------------------------------------------------------
+# Issues 控制
+# -----------------------------------------------------------
+issues:
+  # 不限制单个 linter 的最大报告数（默认 50 太少）
+  max-issues-per-linter: 0
+  # 不限制相同问题的最大报告数（默认 3）
+  max-same-issues: 0
