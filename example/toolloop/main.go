@@ -5,42 +5,43 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/gtkit/go-llm-provider/provider"
 )
 
-// ============================================================
-// 示例：使用 RunToolLoop 自动循环执行 Tool Use
-// 比手动管理多轮对话更简洁，适合 Agent 场景
-// ============================================================
-
 func main() {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	p, err := provider.NewProviderFromPreset(
 		provider.ProviderDeepSeek,
 		os.Getenv("DEEPSEEK_API_KEY"),
 		"",
 	)
 	if err != nil {
-		fmt.Printf("创建 provider 失败: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("create provider failed: %w", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	// 定义工具
 	tools := []provider.Tool{
 		{
 			Function: provider.FunctionDef{
 				Name:        "calculate",
-				Description: "执行数学计算，支持加减乘除和常见数学运算",
+				Description: "Evaluate a basic math expression.",
 				Parameters: provider.ParamSchema{
 					Type: "object",
 					Properties: map[string]provider.ParamSchema{
 						"expression": {
 							Type:        "string",
-							Description: "数学表达式，如 '2 + 3 * 4'、'sqrt(16)'",
+							Description: "Math expression, for example '(15 + 27) * 3'.",
 						},
 					},
 					Required: []string{"expression"},
@@ -50,7 +51,7 @@ func main() {
 		{
 			Function: provider.FunctionDef{
 				Name:        "get_current_time",
-				Description: "获取当前时间",
+				Description: "Get the current local time.",
 				Parameters: provider.ParamSchema{
 					Type:       "object",
 					Properties: map[string]provider.ParamSchema{},
@@ -59,39 +60,65 @@ func main() {
 		},
 	}
 
-	// 一行搞定：自动循环执行 tool call，直到模型给出最终回复
 	resp, err := provider.RunToolLoop(ctx, p, &provider.ChatRequest{
 		Messages: []provider.Message{
-			{Role: provider.RoleSystem, Content: "你是一个有用的助手，可以进行数学计算和查询时间。"},
-			{Role: provider.RoleUser, Content: "现在几点了？另外帮我算一下 (15 + 27) * 3 等于多少。"},
+			{Role: provider.RoleSystem, Content: "You are a helpful assistant that can call tools."},
+			{Role: provider.RoleUser, Content: "What time is it, and what is (15 + 27) * 3?"},
 		},
 		Tools: tools,
-	}, 5, func(ctx context.Context, name, arguments string) (string, error) {
-		// 工具分发
+	}, 5, func(_ context.Context, name, arguments string) (string, error) {
 		switch name {
 		case "calculate":
-			var args struct {
-				Expression string `json:"expression"`
-			}
-			json.Unmarshal([]byte(arguments), &args)
-			fmt.Printf("[tool] calculate(%s)\n", args.Expression)
-			// 模拟计算结果
-			return `{"result": 126, "expression": "(15 + 27) * 3"}`, nil
-
+			return runCalculator(arguments)
 		case "get_current_time":
-			fmt.Println("[tool] get_current_time()")
-			now := time.Now().Format("2006-01-02 15:04:05")
-			return fmt.Sprintf(`{"time": "%s", "timezone": "Asia/Shanghai"}`, now), nil
-
+			return runClock()
 		default:
 			return "", fmt.Errorf("unknown tool: %s", name)
 		}
 	})
-
 	if err != nil {
-		fmt.Printf("调用失败: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("run tool loop failed: %w", err)
 	}
 
-	fmt.Printf("\n最终回复:\n%s\n", resp.Content)
+	fmt.Printf("Final reply:\n%s\n", resp.Content)
+	return nil
+}
+
+func runCalculator(arguments string) (string, error) {
+	var args struct {
+		Expression string `json:"expression"`
+	}
+	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
+		return "", fmt.Errorf("decode calculate arguments: %w", err)
+	}
+
+	expression := strings.TrimSpace(args.Expression)
+	result := map[string]any{
+		"expression": expression,
+	}
+
+	switch expression {
+	case "(15 + 27) * 3":
+		result["result"] = 126
+	default:
+		return "", fmt.Errorf("unsupported expression: %s", expression)
+	}
+
+	return marshalResult(result)
+}
+
+func runClock() (string, error) {
+	return marshalResult(map[string]string{
+		"time":     time.Now().Format("2006-01-02 15:04:05"),
+		"timezone": time.Local.String(),
+	})
+}
+
+func marshalResult(v any) (string, error) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return "", fmt.Errorf("marshal tool result: %w", err)
+	}
+
+	return string(data), nil
 }

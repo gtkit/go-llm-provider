@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -9,19 +10,27 @@ import (
 
 // SimpleChat 是最简便的调用方式：一问一答，返回纯文本。
 func SimpleChat(ctx context.Context, p Provider, userMessage string) (string, error) {
+	if providerIsNil(p) {
+		return "", ErrNilProvider
+	}
+
 	resp, err := p.Chat(ctx, &ChatRequest{
 		Messages: []Message{
 			{Role: RoleUser, Content: userMessage},
 		},
 	})
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("simple chat: %w", err)
 	}
 	return resp.Content, nil
 }
 
 // SimpleChatWithSystem 带 system prompt 的一问一答。
 func SimpleChatWithSystem(ctx context.Context, p Provider, system, userMessage string) (string, error) {
+	if providerIsNil(p) {
+		return "", ErrNilProvider
+	}
+
 	msgs := make([]Message, 0, 2)
 	if system != "" {
 		msgs = append(msgs, Message{Role: RoleSystem, Content: system})
@@ -30,7 +39,7 @@ func SimpleChatWithSystem(ctx context.Context, p Provider, system, userMessage s
 
 	resp, err := p.Chat(ctx, &ChatRequest{Messages: msgs})
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("simple chat with system: %w", err)
 	}
 	return resp.Content, nil
 }
@@ -38,9 +47,16 @@ func SimpleChatWithSystem(ctx context.Context, p Provider, system, userMessage s
 // CollectStream 将流式响应收集为完整的文本字符串。
 // onChunk 可选：如果提供，每收到一个 chunk 会回调（用于实时打印等场景）。
 func CollectStream(ctx context.Context, p Provider, req *ChatRequest, onChunk func(delta string)) (string, error) {
+	if providerIsNil(p) {
+		return "", ErrNilProvider
+	}
+	if req == nil {
+		return "", ErrNilChatRequest
+	}
+
 	stream, err := p.ChatStream(ctx, req)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("collect stream: %w", err)
 	}
 	defer stream.Close()
 
@@ -48,10 +64,10 @@ func CollectStream(ctx context.Context, p Provider, req *ChatRequest, onChunk fu
 	for {
 		chunk, err := stream.Recv()
 		if err != nil {
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				break
 			}
-			return sb.String(), fmt.Errorf("stream recv: %w", err)
+			return sb.String(), fmt.Errorf("collect stream recv: %w", err)
 		}
 		sb.WriteString(chunk.Delta)
 		if onChunk != nil {

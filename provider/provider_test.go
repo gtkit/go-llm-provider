@@ -158,7 +158,7 @@ func TestBuildRequest(t *testing.T) {
 		assert.Equal(t, "system", req.Messages[0].Role)
 		assert.Equal(t, "user", req.Messages[1].Role)
 		assert.Equal(t, 1024, req.MaxTokens)
-		assert.Equal(t, float32(0.7), req.Temperature)
+		assert.InDelta(t, 0.7, req.Temperature, 0.0001)
 		assert.Equal(t, []string{"\n"}, req.Stop)
 	})
 }
@@ -224,9 +224,18 @@ func TestBuildRequestWithTools(t *testing.T) {
 			ParallelToolCalls: &parallel,
 		})
 		require.NotNil(t, req.ParallelToolCalls)
-		// 断言 req.ParallelToolCalls 是否是bool类型
-		_, ok := req.ParallelToolCalls.(bool)
-		assert.True(t, ok)
+		got, ok := req.ParallelToolCalls.(*bool)
+		require.True(t, ok)
+		assert.True(t, *got)
+	})
+
+	t.Run("maps enable thinking", func(t *testing.T) {
+		req := p.buildRequest(&ChatRequest{
+			Messages:       []Message{{Role: RoleUser, Content: "hi"}},
+			EnableThinking: true,
+		})
+		require.NotNil(t, req.ChatTemplateKwargs)
+		assert.Equal(t, true, req.ChatTemplateKwargs["enable_thinking"])
 	})
 }
 
@@ -358,7 +367,7 @@ func TestToolResultMessageJSON(t *testing.T) {
 	var parsed map[string]any
 	err = json.Unmarshal([]byte(msg.Content), &parsed)
 	require.NoError(t, err)
-	assert.Equal(t, float64(28), parsed["temperature"])
+	assert.InDelta(t, 28.0, parsed["temperature"], 0.0001)
 }
 
 func TestParamSchema(t *testing.T) {

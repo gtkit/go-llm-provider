@@ -1,6 +1,9 @@
 package provider
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+)
 
 // 预置各平台的 BaseURL 和推荐默认模型。
 // 业务侧只需提供 APIKey 即可快速接入。
@@ -45,7 +48,7 @@ var Presets = map[ProviderName]Preset{
 // NewProviderFromPreset 使用预设配置快速创建 Provider，
 // 只需要提供 APIKey，其余使用平台默认值。
 // model 可选，留空时使用预设的 DefaultModel。
-func NewProviderFromPreset(name ProviderName, apiKey string, model string) (Provider, error) {
+func NewProviderFromPreset(name ProviderName, apiKey, model string) (Provider, error) {
 	preset, ok := Presets[name]
 	if !ok {
 		return nil, fmt.Errorf("no preset for provider %q", name)
@@ -76,7 +79,16 @@ func NewProviderFromPreset(name ProviderName, apiKey string, model string) (Prov
 //	})
 func QuickRegistry(keys map[ProviderName]string) *Registry {
 	reg := NewRegistry()
-	for name, key := range keys {
+	names := make([]ProviderName, 0, len(keys))
+	for name := range keys {
+		names = append(names, name)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		return names[i] < names[j]
+	})
+
+	for _, name := range names {
+		key := keys[name]
 		if key == "" {
 			continue
 		}

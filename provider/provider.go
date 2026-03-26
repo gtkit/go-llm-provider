@@ -14,12 +14,35 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
+	"sort"
 	"sync"
 
 	openai "github.com/sashabaranov/go-openai"
 )
 
-// ProviderName 标识一个模型供应商。
+// Common provider validation and runtime errors.
+var (
+	// ErrNilProvider indicates that the caller passed a nil Provider.
+	ErrNilProvider = errors.New("provider is nil")
+	// ErrNilChatRequest indicates that the caller passed a nil chat request.
+	ErrNilChatRequest = errors.New("chat request is nil")
+	// ErrStreamNotInitialized indicates that the stream reader has no underlying stream.
+	ErrStreamNotInitialized = errors.New("stream is not initialized")
+	// ErrToolHandlerRequired indicates that RunToolLoop requires a tool handler.
+	ErrToolHandlerRequired = errors.New("tool handler is required")
+)
+
+func providerIsNil(p Provider) bool {
+	if p == nil {
+		return true
+	}
+
+	v := reflect.ValueOf(p)
+	return v.Kind() == reflect.Pointer && v.IsNil()
+}
+
+// ProviderName identifies a registered provider.
 type ProviderName string
 
 const (
@@ -200,7 +223,11 @@ func (fc *FunctionCall) ParseArguments(v any) error {
 	if fc.Arguments == "" {
 		return errors.New("empty arguments")
 	}
-	return json.Unmarshal([]byte(fc.Arguments), v)
+	if err := json.Unmarshal([]byte(fc.Arguments), v); err != nil {
+		return fmt.Errorf("parse arguments: %w", err)
+	}
+
+	return nil
 }
 
 // ToolChoiceFunction 用于强制模型调用指定函数。
@@ -287,6 +314,10 @@ type FunctionCallDelta struct {
 
 // Recv 读取下一个 chunk。当流结束时返回 io.EOF。
 func (r *StreamReader) Recv() (*StreamChunk, error) {
+	if r == nil || r.stream == nil {
+		return nil, ErrStreamNotInitialized
+	}
+
 	resp, err := r.stream.Recv()
 	if errors.Is(err, io.EOF) {
 		return nil, io.EOF
@@ -324,7 +355,11 @@ func (r *StreamReader) Recv() (*StreamChunk, error) {
 
 // Close 关闭底层流。
 func (r *StreamReader) Close() {
-	r.stream.Close()
+	if r == nil || r.stream == nil {
+		return
+	}
+
+	_ = r.stream.Close()
 }
 
 // ============================================================
@@ -361,6 +396,13 @@ func (p *openaiProvider) Name() ProviderName {
 }
 
 func (p *openaiProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatResponse, error) {
+	if p == nil {
+		return nil, ErrNilProvider
+	}
+	if req == nil {
+		return nil, ErrNilChatRequest
+	}
+
 	oReq := p.buildRequest(req)
 
 	resp, err := p.client.CreateChatCompletion(ctx, oReq)
@@ -401,6 +443,13 @@ func (p *openaiProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRespo
 }
 
 func (p *openaiProvider) ChatStream(ctx context.Context, req *ChatRequest) (*StreamReader, error) {
+	if p == nil {
+		return nil, ErrNilProvider
+	}
+	if req == nil {
+		return nil, ErrNilChatRequest
+	}
+
 	oReq := p.buildRequest(req)
 	oReq.Stream = true
 
@@ -413,6 +462,10 @@ func (p *openaiProvider) ChatStream(ctx context.Context, req *ChatRequest) (*Str
 }
 
 func (p *openaiProvider) buildRequest(req *ChatRequest) openai.ChatCompletionRequest {
+	if req == nil {
+		return openai.ChatCompletionRequest{Model: p.model}
+	}
+
 	model := req.Model
 	if model == "" {
 		model = p.model
@@ -502,6 +555,12 @@ func (p *openaiProvider) buildRequest(req *ChatRequest) openai.ChatCompletionReq
 		oReq.ParallelToolCalls = req.ParallelToolCalls
 	}
 
+	if req.EnableThinking {
+		oReq.ChatTemplateKwargs = map[string]any{
+			"enable_thinking": true,
+		}
+	}
+
 	return oReq
 }
 
@@ -525,6 +584,10 @@ func NewRegistry() *Registry {
 
 // Register 注册一个 Provider。如果是注册表中的第一个，会自动设为 fallback。
 func (r *Registry) Register(p Provider) {
+	if providerIsNil(p) {
+		return
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -536,8 +599,8 @@ func (r *Registry) Register(p Provider) {
 
 // SetDefault 设置默认 Provider。
 func (r *Registry) SetDefault(name ProviderName) error {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
 	if _, ok := r.providers[name]; !ok {
 		return fmt.Errorf("provider %q not registered", name)
@@ -578,5 +641,8 @@ func (r *Registry) Names() []ProviderName {
 	for name := range r.providers {
 		names = append(names, name)
 	}
+	sort.Slice(names, func(i, j int) bool {
+		return names[i] < names[j]
+	})
 	return names
 }

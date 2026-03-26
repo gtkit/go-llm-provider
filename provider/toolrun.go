@@ -33,8 +33,14 @@ type ToolHandler func(ctx context.Context, name string, arguments string) (strin
 //	    }
 //	})
 func RunToolLoop(ctx context.Context, p Provider, req *ChatRequest, maxRounds int, handler ToolHandler) (*ChatResponse, error) {
+	if providerIsNil(p) {
+		return nil, ErrNilProvider
+	}
+	if req == nil {
+		return nil, ErrNilChatRequest
+	}
 	if handler == nil {
-		return nil, fmt.Errorf("tool handler is required")
+		return nil, ErrToolHandlerRequired
 	}
 
 	// 复制 messages，不修改调用方的原始切片
@@ -53,6 +59,7 @@ func RunToolLoop(ctx context.Context, p Provider, req *ChatRequest, maxRounds in
 			Tools:             req.Tools,
 			ToolChoice:        req.ToolChoice,
 			ParallelToolCalls: req.ParallelToolCalls,
+			EnableThinking:    req.EnableThinking,
 		}
 
 		resp, err := p.Chat(ctx, roundReq)
@@ -74,7 +81,12 @@ func RunToolLoop(ctx context.Context, p Provider, req *ChatRequest, maxRounds in
 			if err != nil {
 				// 工具执行出错时，将错误信息作为结果返回给模型，
 				// 让模型有机会纠正或换一种方式处理。
-				result = fmt.Sprintf(`{"error": "%s"}`, err.Error())
+				msg, marshalErr := ToolResultMessageJSON(tc.ID, map[string]string{"error": err.Error()})
+				if marshalErr != nil {
+					return nil, fmt.Errorf("marshal tool error result: %w", marshalErr)
+				}
+				messages = append(messages, msg)
+				continue
 			}
 			messages = append(messages, ToolResultMessage(tc.ID, result))
 		}
