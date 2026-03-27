@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"slices"
 )
 
 // ToolHandler 是工具执行函数的签名。
@@ -48,21 +49,14 @@ func RunToolLoop(ctx context.Context, p Provider, req *ChatRequest, maxRounds in
 	copy(messages, req.Messages)
 
 	for round := range maxIterations(maxRounds) {
-		// 构建本轮请求
-		roundReq := &ChatRequest{
-			Model:             req.Model,
-			Messages:          messages,
-			MaxTokens:         req.MaxTokens,
-			Temperature:       req.Temperature,
-			TopP:              req.TopP,
-			Stop:              req.Stop,
-			Tools:             req.Tools,
-			ToolChoice:        req.ToolChoice,
-			ParallelToolCalls: req.ParallelToolCalls,
-			EnableThinking:    req.EnableThinking,
-		}
+		// 浅拷贝基础字段，再为可变 slice 建立独立 header，避免未来实现误修改调用方请求。
+		// 注意：这里只隔离了 slice 本身，不会深拷贝 Tool.Function.Parameters 等引用类型字段。
+		roundReq := *req
+		roundReq.Messages = messages
+		roundReq.Stop = slices.Clone(req.Stop)
+		roundReq.Tools = slices.Clone(req.Tools)
 
-		resp, err := p.Chat(ctx, roundReq)
+		resp, err := p.Chat(ctx, &roundReq)
 		if err != nil {
 			return nil, fmt.Errorf("round %d: %w", round+1, err)
 		}

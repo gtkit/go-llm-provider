@@ -43,7 +43,7 @@ func (p *stubProvider) ChatStream(ctx context.Context, req *ChatRequest) (*Strea
 func TestSimpleChatRejectsNilProvider(t *testing.T) {
 	t.Parallel()
 
-	_, err := SimpleChat(context.Background(), nil, "hello")
+	_, err := SimpleChat(t.Context(), nil, "hello")
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "provider is nil")
 }
@@ -53,7 +53,7 @@ func TestSimpleChatWithSystemRejectsTypedNilProvider(t *testing.T) {
 
 	var p *openaiProvider
 
-	_, err := SimpleChatWithSystem(context.Background(), p, "system", "hello")
+	_, err := SimpleChatWithSystem(t.Context(), p, "system", "hello")
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "provider is nil")
 }
@@ -61,7 +61,7 @@ func TestSimpleChatWithSystemRejectsTypedNilProvider(t *testing.T) {
 func TestCollectStreamRejectsNilProvider(t *testing.T) {
 	t.Parallel()
 
-	_, err := CollectStream(context.Background(), nil, &ChatRequest{
+	_, err := CollectStream(t.Context(), nil, &ChatRequest{
 		Messages: []Message{{Role: RoleUser, Content: "hello"}},
 	}, nil)
 	require.Error(t, err)
@@ -71,7 +71,7 @@ func TestCollectStreamRejectsNilProvider(t *testing.T) {
 func TestRunToolLoopRejectsNilRequest(t *testing.T) {
 	t.Parallel()
 
-	resp, err := RunToolLoop(context.Background(), &stubProvider{name: ProviderOpenAI}, nil, 1, func(context.Context, string, string) (string, error) {
+	resp, err := RunToolLoop(t.Context(), &stubProvider{name: ProviderOpenAI}, nil, 1, func(context.Context, string, string) (string, error) {
 		return "", nil
 	})
 	require.Error(t, err)
@@ -84,7 +84,7 @@ func TestRunToolLoopRejectsTypedNilProvider(t *testing.T) {
 
 	var p *openaiProvider
 
-	resp, err := RunToolLoop(context.Background(), p, &ChatRequest{
+	resp, err := RunToolLoop(t.Context(), p, &ChatRequest{
 		Messages: []Message{{Role: RoleUser, Content: "hello"}},
 	}, 1, func(context.Context, string, string) (string, error) {
 		return "", nil
@@ -106,7 +106,7 @@ func TestRunToolLoopPreservesEnableThinking(t *testing.T) {
 		},
 	}
 
-	resp, err := RunToolLoop(context.Background(), p, &ChatRequest{
+	resp, err := RunToolLoop(t.Context(), p, &ChatRequest{
 		Messages:       []Message{{Role: RoleUser, Content: "hello"}},
 		EnableThinking: true,
 	}, 1, func(context.Context, string, string) (string, error) {
@@ -144,7 +144,7 @@ func TestRunToolLoopEncodesHandlerErrorsAsJSON(t *testing.T) {
 
 	handlerErr := errors.New("bad \"quote\"\nline")
 
-	resp, err := RunToolLoop(context.Background(), p, &ChatRequest{
+	resp, err := RunToolLoop(t.Context(), p, &ChatRequest{
 		Messages: []Message{{Role: RoleUser, Content: "hello"}},
 	}, 2, func(context.Context, string, string) (string, error) {
 		return "", handlerErr

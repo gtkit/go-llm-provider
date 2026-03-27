@@ -99,6 +99,17 @@ go run main.go
 
 库提供三个层级的创建方式，由简到灵活。
 
+### 升级说明
+
+如果你从旧版本迁移，使用方式有这几处变化：
+
+- `NewProvider` 现在返回 `(Provider, error)`，并在创建时校验 `Name`、`APIKey`、`Model`。
+- `StreamReader.Close()` 现在返回 `error`，推荐显式处理，或像示例一样在 `defer` 中忽略。
+- `ToolChoice` 不再接受任意 `string/any`，请改用 `provider.ToolChoiceAuto`、`provider.ToolChoiceNone`、`provider.ToolChoiceRequired` 或 `provider.ToolChoiceFunction{...}`。
+- `EnableThinking` 目前只对 `DeepSeek` 生效；对其他 provider 开启会直接返回错误。
+- 新代码优先使用 `provider.AllPresets()` 读取预设；`provider.Presets` 仅为兼容旧代码保留。
+- 如果你不希望 `QuickRegistry` 静默跳过失败项，请改用 `QuickRegistryStrict`。
+
 ### 方式一：QuickRegistry（推荐日常使用）
 
 传一组 `ProviderName -> APIKey` 的映射，自动使用预设的 BaseURL 和默认模型。空 APIKey 会被自动跳过，不会报错。
@@ -114,6 +125,18 @@ reg := provider.QuickRegistry(map[provider.ProviderName]string{
 
 // 第一个注册成功的自动成为默认 provider
 p, err := reg.Default()
+```
+
+如果你希望注册失败时立刻拿到错误，改用 `QuickRegistryStrict`：
+
+```go
+reg, err := provider.QuickRegistryStrict(map[provider.ProviderName]string{
+    provider.ProviderDeepSeek: os.Getenv("DEEPSEEK_API_KEY"),
+    provider.ProviderQwen:     os.Getenv("QWEN_API_KEY"),
+})
+if err != nil {
+    log.Fatal(err)
+}
 ```
 
 ### 方式二：NewProviderFromPreset（指定模型）
@@ -138,12 +161,15 @@ reg.Register(p)
 适合私有部署、自建推理服务、或新平台接入。
 
 ```go
-p := provider.NewProvider(provider.ProviderConfig{
+p, err := provider.NewProvider(provider.ProviderConfig{
     Name:    "my-vllm",                          // 自定义名称
     BaseURL: "http://192.168.1.100:8080/v1",     // 你的服务地址
     APIKey:  "no-key-needed",                     // 没有鉴权可以随便填
     Model:   "Qwen2.5-72B-Instruct",             // 你部署的模型
 })
+if err != nil {
+    log.Fatal(err)
+}
 ```
 
 ## 调用方式
@@ -203,7 +229,7 @@ stream, err := p.ChatStream(ctx, &provider.ChatRequest{
 if err != nil {
     log.Fatal(err)
 }
-defer stream.Close()
+defer func() { _ = stream.Close() }()
 
 for {
     chunk, err := stream.Recv()
@@ -214,6 +240,14 @@ for {
         log.Fatal(err)
     }
     fmt.Print(chunk.Delta)  // 实时打印增量文本
+}
+```
+
+如果你希望保留 `Close` 错误，也可以显式处理：
+
+```go
+if err := stream.Close(); err != nil {
+    log.Printf("close stream: %v", err)
 }
 ```
 
@@ -396,17 +430,19 @@ if resp.HasToolCalls() {
 
 ```go
 // 模型自行决定（默认行为）
-req.ToolChoice = "auto"
+req.ToolChoice = provider.ToolChoiceAuto
 
 // 禁止调用工具，强制文本回复
-req.ToolChoice = "none"
+req.ToolChoice = provider.ToolChoiceNone
 
 // 强制必须调用工具（至少一个）
-req.ToolChoice = "required"
+req.ToolChoice = provider.ToolChoiceRequired
 
 // 强制调用指定的函数
 req.ToolChoice = provider.ToolChoiceFunction{Name: "get_weather"}
 ```
+
+不要再传裸字符串 `\"auto\"` / `\"none\"` / `\"required\"`。
 
 ### ParallelToolCalls
 
@@ -455,7 +491,7 @@ stream, err := p.ChatStream(ctx, &provider.ChatRequest{
     Messages: messages,
     Tools:    tools,
 })
-defer stream.Close()
+defer func() { _ = stream.Close() }()
 
 // 累积器：收集流式 tool call 的片段
 type accumulator struct {
@@ -689,9 +725,9 @@ type ChatRequest struct {
     Stop        []string   // 停止词
 
     // Tool Use
-    Tools             []Tool // 可用工具列表
-    ToolChoice        any    // "auto" / "none" / "required" / ToolChoiceFunction{}
-    ParallelToolCalls *bool  // 是否允许并行 tool calls
+    Tools             []Tool           // 可用工具列表
+    ToolChoice        ToolChoiceOption // ToolChoiceAuto / ToolChoiceNone / ToolChoiceRequired / ToolChoiceFunction{}
+    ParallelToolCalls *bool            // 是否允许并行 tool calls
 }
 ```
 
@@ -829,10 +865,10 @@ provider.RunToolLoop(ctx, p, req, maxRounds, handler)         // Tool Use 自动
 
 ### 添加新平台
 
-在 `presets.go` 的 `Presets` map 中添加一项：
+在 `presets.go` 的 `presetCatalog` 中添加一项：
 
 ```go
-var Presets = map[ProviderName]Preset{
+var presetCatalog = map[ProviderName]Preset{
     // ... 已有平台 ...
     "my-new-platform": {
         BaseURL:      "https://api.new-platform.com/v1",
@@ -840,6 +876,8 @@ var Presets = map[ProviderName]Preset{
     },
 }
 ```
+
+读取预设时，新增代码优先使用 `provider.AllPresets()`；`provider.Presets` 仅为兼容旧代码保留。
 
 ### 实现自定义 Provider
 

@@ -46,7 +46,7 @@ func SimpleChatWithSystem(ctx context.Context, p Provider, system, userMessage s
 
 // CollectStream 将流式响应收集为完整的文本字符串。
 // onChunk 可选：如果提供，每收到一个 chunk 会回调（用于实时打印等场景）。
-func CollectStream(ctx context.Context, p Provider, req *ChatRequest, onChunk func(delta string)) (string, error) {
+func CollectStream(ctx context.Context, p Provider, req *ChatRequest, onChunk func(delta string)) (result string, err error) {
 	if providerIsNil(p) {
 		return "", ErrNilProvider
 	}
@@ -58,10 +58,18 @@ func CollectStream(ctx context.Context, p Provider, req *ChatRequest, onChunk fu
 	if err != nil {
 		return "", fmt.Errorf("collect stream: %w", err)
 	}
-	defer stream.Close()
+	defer func() {
+		err = errors.Join(err, stream.Close())
+	}()
 
 	var sb strings.Builder
 	for {
+		select {
+		case <-ctx.Done():
+			return sb.String(), context.Cause(ctx)
+		default:
+		}
+
 		chunk, err := stream.Recv()
 		if err != nil {
 			if errors.Is(err, io.EOF) {

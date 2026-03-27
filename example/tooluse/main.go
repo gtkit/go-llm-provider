@@ -80,8 +80,9 @@ func run() error {
 	}
 
 	resp, err := p.Chat(ctx, &provider.ChatRequest{
-		Messages: messages,
-		Tools:    tools,
+		Messages:   messages,
+		Tools:      tools,
+		ToolChoice: provider.ToolChoiceAuto,
 	})
 	if err != nil {
 		return fmt.Errorf("first chat request failed: %w", err)

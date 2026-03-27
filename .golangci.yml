@@ -109,7 +109,7 @@ linters:
     - lll
     # 函数行数限制 — buildRequest 等映射函数天然较长
     - funlen
-    # 全局变量检查 — Presets map 是合理的包级变量
+    # 全局变量检查 — 本项目仍有少量合理的包级常量数据
     - gochecknoglobals
     # init 函数检查 — example 代码中会用到
     - gochecknoinits

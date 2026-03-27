@@ -14,8 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"reflect"
-	"sort"
+	"slices"
 	"sync"
 
 	openai "github.com/sashabaranov/go-openai"
@@ -31,15 +30,16 @@ var (
 	ErrStreamNotInitialized = errors.New("stream is not initialized")
 	// ErrToolHandlerRequired indicates that RunToolLoop requires a tool handler.
 	ErrToolHandlerRequired = errors.New("tool handler is required")
+	// ErrInvalidProviderConfig indicates that ProviderConfig is missing required fields.
+	ErrInvalidProviderConfig = errors.New("invalid provider config")
+	// ErrInvalidToolChoice indicates that ChatRequest.ToolChoice contains an unsupported value.
+	ErrInvalidToolChoice = errors.New("invalid tool choice")
+	// ErrUnsupportedThinking indicates that EnableThinking is not supported by the selected provider.
+	ErrUnsupportedThinking = errors.New("enable thinking is only supported for deepseek")
 )
 
 func providerIsNil(p Provider) bool {
-	if p == nil {
-		return true
-	}
-
-	v := reflect.ValueOf(p)
-	return v.Kind() == reflect.Pointer && v.IsNil()
+	return p == nil
 }
 
 // ProviderName identifies a registered provider.
@@ -98,11 +98,11 @@ type ChatRequest struct {
 
 	// ToolChoice 控制模型如何选择工具。
 	// 可选值：
-	//   - nil / "auto"：模型自行决定是否调用工具（默认）
-	//   - "none"：禁止调用工具
-	//   - "required"：强制调用工具
+	//   - nil / ToolChoiceAuto：模型自行决定是否调用工具（默认）
+	//   - ToolChoiceNone：禁止调用工具
+	//   - ToolChoiceRequired：强制调用工具
 	//   - ToolChoiceFunction{Name: "xxx"}：强制调用指定函数
-	ToolChoice any
+	ToolChoice ToolChoiceOption
 
 	// ParallelToolCalls 控制模型是否可以在一次回复中并行调用多个工具。
 	// nil 表示使用平台默认行为（通常为 true）。
@@ -230,9 +230,48 @@ func (fc *FunctionCall) ParseArguments(v any) error {
 	return nil
 }
 
+// ToolChoiceOption 表示一个合法的 tool choice 值。
+type ToolChoiceOption interface {
+	applyToolChoice(*openai.ChatCompletionRequest) error
+}
+
+// ToolChoiceMode 是字符串形式的 tool choice。
+type ToolChoiceMode string
+
+const (
+	ToolChoiceAuto     ToolChoiceMode = "auto"
+	ToolChoiceNone     ToolChoiceMode = "none"
+	ToolChoiceRequired ToolChoiceMode = "required"
+)
+
+func (m ToolChoiceMode) applyToolChoice(req *openai.ChatCompletionRequest) error {
+	switch m {
+	case ToolChoiceAuto, ToolChoiceNone, ToolChoiceRequired:
+		req.ToolChoice = string(m)
+		return nil
+	default:
+		return fmt.Errorf("%w: %q", ErrInvalidToolChoice, m)
+	}
+}
+
 // ToolChoiceFunction 用于强制模型调用指定函数。
 type ToolChoiceFunction struct {
 	Name string
+}
+
+func (f ToolChoiceFunction) applyToolChoice(req *openai.ChatCompletionRequest) error {
+	if f.Name == "" {
+		return fmt.Errorf("%w: function name is required", ErrInvalidToolChoice)
+	}
+
+	req.ToolChoice = openai.ToolChoice{
+		Type: openai.ToolTypeFunction,
+		Function: openai.ToolFunction{
+			Name: f.Name,
+		},
+	}
+
+	return nil
 }
 
 // ToolResultMessage 是构建工具执行结果消息的便捷函数。
@@ -354,12 +393,12 @@ func (r *StreamReader) Recv() (*StreamChunk, error) {
 }
 
 // Close 关闭底层流。
-func (r *StreamReader) Close() {
+func (r *StreamReader) Close() error {
 	if r == nil || r.stream == nil {
-		return
+		return nil
 	}
 
-	_ = r.stream.Close()
+	return r.stream.Close()
 }
 
 // ============================================================
@@ -374,8 +413,33 @@ type openaiProvider struct {
 	client *openai.Client
 }
 
+// Validate reports missing required ProviderConfig fields.
+func (cfg ProviderConfig) Validate() error {
+	var errs []error
+
+	if cfg.Name == "" {
+		errs = append(errs, errors.New("name is required"))
+	}
+	if cfg.APIKey == "" {
+		errs = append(errs, errors.New("api key is required"))
+	}
+	if cfg.Model == "" {
+		errs = append(errs, errors.New("model is required"))
+	}
+
+	if len(errs) == 0 {
+		return nil
+	}
+
+	return fmt.Errorf("%w: %w", ErrInvalidProviderConfig, errors.Join(errs...))
+}
+
 // NewProvider 根据配置创建一个 Provider 实例。
-func NewProvider(cfg ProviderConfig) Provider {
+func NewProvider(cfg ProviderConfig) (Provider, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+
 	ocfg := openai.DefaultConfig(cfg.APIKey)
 	if cfg.BaseURL != "" {
 		ocfg.BaseURL = cfg.BaseURL
@@ -388,10 +452,14 @@ func NewProvider(cfg ProviderConfig) Provider {
 		name:   cfg.Name,
 		model:  cfg.Model,
 		client: openai.NewClientWithConfig(ocfg),
-	}
+	}, nil
 }
 
 func (p *openaiProvider) Name() ProviderName {
+	if p == nil {
+		return ""
+	}
+
 	return p.name
 }
 
@@ -403,7 +471,10 @@ func (p *openaiProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRespo
 		return nil, ErrNilChatRequest
 	}
 
-	oReq := p.buildRequest(req)
+	oReq, err := p.buildRequest(req)
+	if err != nil {
+		return nil, err
+	}
 
 	resp, err := p.client.CreateChatCompletion(ctx, oReq)
 	if err != nil {
@@ -450,7 +521,10 @@ func (p *openaiProvider) ChatStream(ctx context.Context, req *ChatRequest) (*Str
 		return nil, ErrNilChatRequest
 	}
 
-	oReq := p.buildRequest(req)
+	oReq, err := p.buildRequest(req)
+	if err != nil {
+		return nil, err
+	}
 	oReq.Stream = true
 
 	stream, err := p.client.CreateChatCompletionStream(ctx, oReq)
@@ -461,9 +535,9 @@ func (p *openaiProvider) ChatStream(ctx context.Context, req *ChatRequest) (*Str
 	return &StreamReader{stream: stream}, nil
 }
 
-func (p *openaiProvider) buildRequest(req *ChatRequest) openai.ChatCompletionRequest {
+func (p *openaiProvider) buildRequest(req *ChatRequest) (openai.ChatCompletionRequest, error) {
 	if req == nil {
-		return openai.ChatCompletionRequest{Model: p.model}
+		return openai.ChatCompletionRequest{Model: p.model}, nil
 	}
 
 	model := req.Model
@@ -536,18 +610,8 @@ func (p *openaiProvider) buildRequest(req *ChatRequest) openai.ChatCompletionReq
 
 	// 构建 tool_choice
 	if req.ToolChoice != nil {
-		switch v := req.ToolChoice.(type) {
-		case string:
-			// "auto", "none", "required"
-			oReq.ToolChoice = v
-		case ToolChoiceFunction:
-			// 强制调用指定函数
-			oReq.ToolChoice = openai.ToolChoice{
-				Type: openai.ToolTypeFunction,
-				Function: openai.ToolFunction{
-					Name: v.Name,
-				},
-			}
+		if err := req.ToolChoice.applyToolChoice(&oReq); err != nil {
+			return openai.ChatCompletionRequest{}, err
 		}
 	}
 
@@ -556,12 +620,16 @@ func (p *openaiProvider) buildRequest(req *ChatRequest) openai.ChatCompletionReq
 	}
 
 	if req.EnableThinking {
+		if p.name != ProviderDeepSeek {
+			return openai.ChatCompletionRequest{}, fmt.Errorf("%w: provider %q", ErrUnsupportedThinking, p.name)
+		}
+
 		oReq.ChatTemplateKwargs = map[string]any{
 			"enable_thinking": true,
 		}
 	}
 
-	return oReq
+	return oReq, nil
 }
 
 // ============================================================
@@ -583,17 +651,26 @@ func NewRegistry() *Registry {
 }
 
 // Register 注册一个 Provider。如果是注册表中的第一个，会自动设为 fallback。
+//
+// Register 仅保证忽略接口值本身为 nil 的 Provider。对于 typed nil 的接口值，
+// 它会继续调用 p.Name()；自定义 Provider 实现应保证 Name 在 nil receiver 下不会 panic，
+// 或者在传入 Register 前由调用方自行避免 typed nil。
 func (r *Registry) Register(p Provider) {
 	if providerIsNil(p) {
+		return
+	}
+
+	name := p.Name()
+	if name == "" {
 		return
 	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	r.providers[p.Name()] = p
+	r.providers[name] = p
 	if r.fallback == "" {
-		r.fallback = p.Name()
+		r.fallback = name
 	}
 }
 
@@ -641,8 +718,6 @@ func (r *Registry) Names() []ProviderName {
 	for name := range r.providers {
 		names = append(names, name)
 	}
-	sort.Slice(names, func(i, j int) bool {
-		return names[i] < names[j]
-	})
+	slices.Sort(names)
 	return names
 }

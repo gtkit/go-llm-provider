@@ -19,7 +19,7 @@ func main() {
 }
 
 func run() error {
-	reg := provider.QuickRegistry(map[provider.ProviderName]string{
+	reg, err := provider.QuickRegistryStrict(map[provider.ProviderName]string{
 		provider.ProviderDeepSeek:    os.Getenv("DEEPSEEK_API_KEY"),
 		provider.ProviderQwen:        os.Getenv("QWEN_API_KEY"),
 		provider.ProviderZhipu:       os.Getenv("ZHIPU_API_KEY"),
@@ -27,6 +27,9 @@ func run() error {
 		provider.ProviderMoonshot:    os.Getenv("MOONSHOT_API_KEY"),
 		provider.ProviderQianfan:     os.Getenv("QIANFAN_API_KEY"),
 	})
+	if err != nil {
+		return fmt.Errorf("build registry failed: %w", err)
+	}
 
 	p, err := reg.Default()
 	if err != nil {
@@ -59,7 +62,11 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("streaming chat failed: %w", err)
 	}
-	defer stream.Close()
+	defer func() {
+		if closeErr := stream.Close(); closeErr != nil {
+			fmt.Fprintf(os.Stderr, "close stream: %v\n", closeErr)
+		}
+	}()
 
 	fmt.Println("Streaming reply:")
 	for {

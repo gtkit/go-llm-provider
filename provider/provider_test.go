@@ -13,13 +13,17 @@ import (
 // ============================================================
 
 func TestNewProviderFromPreset(t *testing.T) {
+	t.Parallel()
+
 	t.Run("known preset", func(t *testing.T) {
+		t.Parallel()
 		p, err := NewProviderFromPreset(ProviderDeepSeek, "test-key", "")
 		require.NoError(t, err)
 		assert.Equal(t, ProviderDeepSeek, p.Name())
 	})
 
 	t.Run("custom model override", func(t *testing.T) {
+		t.Parallel()
 		p, err := NewProviderFromPreset(ProviderQwen, "test-key", "qwen-turbo")
 		require.NoError(t, err)
 
@@ -28,6 +32,7 @@ func TestNewProviderFromPreset(t *testing.T) {
 	})
 
 	t.Run("unknown preset returns error", func(t *testing.T) {
+		t.Parallel()
 		_, err := NewProviderFromPreset("unknown-provider", "key", "")
 		assert.Error(t, err)
 	})
@@ -38,14 +43,18 @@ func TestNewProviderFromPreset(t *testing.T) {
 // ============================================================
 
 func TestRegistry(t *testing.T) {
+	t.Parallel()
+
 	t.Run("register and get", func(t *testing.T) {
+		t.Parallel()
 		reg := NewRegistry()
-		p := NewProvider(ProviderConfig{
+		p, err := NewProvider(ProviderConfig{
 			Name:    ProviderDeepSeek,
 			BaseURL: "https://api.deepseek.com/v1",
 			APIKey:  "test",
 			Model:   "deepseek-chat",
 		})
+		require.NoError(t, err)
 		reg.Register(p)
 
 		got, err := reg.Get(ProviderDeepSeek)
@@ -54,9 +63,12 @@ func TestRegistry(t *testing.T) {
 	})
 
 	t.Run("first registered becomes default", func(t *testing.T) {
+		t.Parallel()
 		reg := NewRegistry()
-		p1 := NewProvider(ProviderConfig{Name: ProviderDeepSeek, APIKey: "k1", Model: "m1"})
-		p2 := NewProvider(ProviderConfig{Name: ProviderQwen, APIKey: "k2", Model: "m2"})
+		p1, err := NewProvider(ProviderConfig{Name: ProviderDeepSeek, APIKey: "k1", Model: "m1"})
+		require.NoError(t, err)
+		p2, err := NewProvider(ProviderConfig{Name: ProviderQwen, APIKey: "k2", Model: "m2"})
+		require.NoError(t, err)
 
 		reg.Register(p1)
 		reg.Register(p2)
@@ -67,11 +79,16 @@ func TestRegistry(t *testing.T) {
 	})
 
 	t.Run("set default", func(t *testing.T) {
+		t.Parallel()
 		reg := NewRegistry()
-		reg.Register(NewProvider(ProviderConfig{Name: ProviderDeepSeek, APIKey: "k1", Model: "m1"}))
-		reg.Register(NewProvider(ProviderConfig{Name: ProviderQwen, APIKey: "k2", Model: "m2"}))
+		p1, err := NewProvider(ProviderConfig{Name: ProviderDeepSeek, APIKey: "k1", Model: "m1"})
+		require.NoError(t, err)
+		p2, err := NewProvider(ProviderConfig{Name: ProviderQwen, APIKey: "k2", Model: "m2"})
+		require.NoError(t, err)
+		reg.Register(p1)
+		reg.Register(p2)
 
-		err := reg.SetDefault(ProviderQwen)
+		err = reg.SetDefault(ProviderQwen)
 		require.NoError(t, err)
 
 		def, err := reg.Default()
@@ -80,21 +97,28 @@ func TestRegistry(t *testing.T) {
 	})
 
 	t.Run("get unregistered returns error", func(t *testing.T) {
+		t.Parallel()
 		reg := NewRegistry()
 		_, err := reg.Get(ProviderZhipu)
 		assert.Error(t, err)
 	})
 
 	t.Run("default on empty registry returns error", func(t *testing.T) {
+		t.Parallel()
 		reg := NewRegistry()
 		_, err := reg.Default()
 		assert.Error(t, err)
 	})
 
 	t.Run("names returns all registered", func(t *testing.T) {
+		t.Parallel()
 		reg := NewRegistry()
-		reg.Register(NewProvider(ProviderConfig{Name: ProviderDeepSeek, APIKey: "k1", Model: "m1"}))
-		reg.Register(NewProvider(ProviderConfig{Name: ProviderZhipu, APIKey: "k2", Model: "m2"}))
+		p1, err := NewProvider(ProviderConfig{Name: ProviderDeepSeek, APIKey: "k1", Model: "m1"})
+		require.NoError(t, err)
+		p2, err := NewProvider(ProviderConfig{Name: ProviderZhipu, APIKey: "k2", Model: "m2"})
+		require.NoError(t, err)
+		reg.Register(p1)
+		reg.Register(p2)
 
 		names := reg.Names()
 		assert.Len(t, names, 2)
@@ -104,6 +128,8 @@ func TestRegistry(t *testing.T) {
 }
 
 func TestQuickRegistry(t *testing.T) {
+	t.Parallel()
+
 	reg := QuickRegistry(map[ProviderName]string{
 		ProviderDeepSeek: "dk-test",
 		ProviderQwen:     "qw-test",
@@ -117,34 +143,71 @@ func TestQuickRegistry(t *testing.T) {
 	assert.NotContains(t, names, ProviderZhipu)
 }
 
+func TestQuickRegistryStrict(t *testing.T) {
+	t.Parallel()
+
+	t.Run("returns joined errors for invalid providers", func(t *testing.T) {
+		t.Parallel()
+
+		reg, err := QuickRegistryStrict(map[ProviderName]string{
+			ProviderDeepSeek: "dk-test",
+			"deepsek":        "bad-key",
+		})
+		require.Error(t, err)
+		require.NotNil(t, reg)
+		assert.ErrorContains(t, err, `register provider "deepsek"`)
+
+		names := reg.Names()
+		assert.Equal(t, []ProviderName{ProviderDeepSeek}, names)
+	})
+
+	t.Run("returns nil error when all providers are valid", func(t *testing.T) {
+		t.Parallel()
+
+		reg, err := QuickRegistryStrict(map[ProviderName]string{
+			ProviderDeepSeek: "dk-test",
+			ProviderQwen:     "qw-test",
+		})
+		require.NoError(t, err)
+		assert.Equal(t, []ProviderName{ProviderDeepSeek, ProviderQwen}, reg.Names())
+	})
+}
+
 // ============================================================
 // buildRequest 测试
 // ============================================================
 
 func TestBuildRequest(t *testing.T) {
+	t.Parallel()
+
 	p := &openaiProvider{
 		name:  ProviderDeepSeek,
 		model: "deepseek-chat",
 	}
 
 	t.Run("uses default model when empty", func(t *testing.T) {
-		req := p.buildRequest(&ChatRequest{
+		t.Parallel()
+		req, err := p.buildRequest(&ChatRequest{
 			Messages: []Message{{Role: RoleUser, Content: "hi"}},
 		})
+		require.NoError(t, err)
 		assert.Equal(t, "deepseek-chat", req.Model)
 	})
 
 	t.Run("uses custom model when specified", func(t *testing.T) {
-		req := p.buildRequest(&ChatRequest{
+		t.Parallel()
+		req, err := p.buildRequest(&ChatRequest{
 			Model:    "deepseek-reasoner",
 			Messages: []Message{{Role: RoleUser, Content: "hi"}},
 		})
+		require.NoError(t, err)
 		assert.Equal(t, "deepseek-reasoner", req.Model)
 	})
 
 	t.Run("maps messages correctly", func(t *testing.T) {
+		t.Parallel()
 		temp := float32(0.7)
-		req := p.buildRequest(&ChatRequest{
+		req, err := p.buildRequest(&ChatRequest{
 			Messages: []Message{
 				{Role: RoleSystem, Content: "you are helpful"},
 				{Role: RoleUser, Content: "hello"},
@@ -153,6 +216,7 @@ func TestBuildRequest(t *testing.T) {
 			Temperature: &temp,
 			Stop:        []string{"\n"},
 		})
+		require.NoError(t, err)
 
 		assert.Len(t, req.Messages, 2)
 		assert.Equal(t, "system", req.Messages[0].Role)
@@ -168,13 +232,16 @@ func TestBuildRequest(t *testing.T) {
 // ============================================================
 
 func TestBuildRequestWithTools(t *testing.T) {
+	t.Parallel()
+
 	p := &openaiProvider{
 		name:  ProviderDeepSeek,
 		model: "deepseek-chat",
 	}
 
 	t.Run("maps tools correctly", func(t *testing.T) {
-		req := p.buildRequest(&ChatRequest{
+		t.Parallel()
+		req, err := p.buildRequest(&ChatRequest{
 			Messages: []Message{{Role: RoleUser, Content: "天气"}},
 			Tools: []Tool{
 				{
@@ -192,6 +259,7 @@ func TestBuildRequestWithTools(t *testing.T) {
 				},
 			},
 		})
+		require.NoError(t, err)
 
 		require.Len(t, req.Tools, 1)
 		assert.Equal(t, "get_weather", req.Tools[0].Function.Name)
@@ -199,30 +267,36 @@ func TestBuildRequestWithTools(t *testing.T) {
 	})
 
 	t.Run("maps tool_choice string", func(t *testing.T) {
-		req := p.buildRequest(&ChatRequest{
+		t.Parallel()
+		req, err := p.buildRequest(&ChatRequest{
 			Messages:   []Message{{Role: RoleUser, Content: "hi"}},
 			Tools:      []Tool{{Function: FunctionDef{Name: "f1"}}},
-			ToolChoice: "required",
+			ToolChoice: ToolChoiceRequired,
 		})
+		require.NoError(t, err)
 		assert.Equal(t, "required", req.ToolChoice)
 	})
 
 	t.Run("maps tool_choice function", func(t *testing.T) {
-		req := p.buildRequest(&ChatRequest{
+		t.Parallel()
+		req, err := p.buildRequest(&ChatRequest{
 			Messages:   []Message{{Role: RoleUser, Content: "hi"}},
 			Tools:      []Tool{{Function: FunctionDef{Name: "get_weather"}}},
 			ToolChoice: ToolChoiceFunction{Name: "get_weather"},
 		})
+		require.NoError(t, err)
 		// ToolChoice 应该是 openai.ToolChoice 结构体
 		assert.NotNil(t, req.ToolChoice)
 	})
 
 	t.Run("maps parallel tool calls", func(t *testing.T) {
+		t.Parallel()
 		parallel := true
-		req := p.buildRequest(&ChatRequest{
+		req, err := p.buildRequest(&ChatRequest{
 			Messages:          []Message{{Role: RoleUser, Content: "hi"}},
 			ParallelToolCalls: &parallel,
 		})
+		require.NoError(t, err)
 		require.NotNil(t, req.ParallelToolCalls)
 		got, ok := req.ParallelToolCalls.(*bool)
 		require.True(t, ok)
@@ -230,23 +304,63 @@ func TestBuildRequestWithTools(t *testing.T) {
 	})
 
 	t.Run("maps enable thinking", func(t *testing.T) {
-		req := p.buildRequest(&ChatRequest{
+		t.Parallel()
+		req, err := p.buildRequest(&ChatRequest{
 			Messages:       []Message{{Role: RoleUser, Content: "hi"}},
 			EnableThinking: true,
 		})
+		require.NoError(t, err)
 		require.NotNil(t, req.ChatTemplateKwargs)
 		assert.Equal(t, true, req.ChatTemplateKwargs["enable_thinking"])
+	})
+
+	t.Run("rejects invalid tool choice", func(t *testing.T) {
+		t.Parallel()
+		_, err := p.buildRequest(&ChatRequest{
+			Messages:   []Message{{Role: RoleUser, Content: "hi"}},
+			ToolChoice: ToolChoiceMode("sometimes"),
+		})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrInvalidToolChoice)
+	})
+
+	t.Run("rejects empty function tool choice", func(t *testing.T) {
+		t.Parallel()
+		_, err := p.buildRequest(&ChatRequest{
+			Messages:   []Message{{Role: RoleUser, Content: "hi"}},
+			ToolChoice: ToolChoiceFunction{},
+		})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrInvalidToolChoice)
+	})
+
+	t.Run("rejects thinking on unsupported provider", func(t *testing.T) {
+		t.Parallel()
+		other := &openaiProvider{
+			name:  ProviderQwen,
+			model: "qwen-plus",
+		}
+
+		_, err := other.buildRequest(&ChatRequest{
+			Messages:       []Message{{Role: RoleUser, Content: "hi"}},
+			EnableThinking: true,
+		})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrUnsupportedThinking)
 	})
 }
 
 func TestBuildRequestWithToolMessages(t *testing.T) {
+	t.Parallel()
+
 	p := &openaiProvider{
 		name:  ProviderDeepSeek,
 		model: "deepseek-chat",
 	}
 
 	t.Run("maps assistant message with tool calls", func(t *testing.T) {
-		req := p.buildRequest(&ChatRequest{
+		t.Parallel()
+		req, err := p.buildRequest(&ChatRequest{
 			Messages: []Message{
 				{Role: RoleUser, Content: "天气怎么样"},
 				{
@@ -268,6 +382,7 @@ func TestBuildRequestWithToolMessages(t *testing.T) {
 				},
 			},
 		})
+		require.NoError(t, err)
 
 		require.Len(t, req.Messages, 3)
 
@@ -288,7 +403,10 @@ func TestBuildRequestWithToolMessages(t *testing.T) {
 // ============================================================
 
 func TestFunctionCallParseArguments(t *testing.T) {
+	t.Parallel()
+
 	t.Run("parse valid JSON", func(t *testing.T) {
+		t.Parallel()
 		fc := FunctionCall{
 			Name:      "get_weather",
 			Arguments: `{"city":"北京","unit":"celsius"}`,
@@ -305,6 +423,7 @@ func TestFunctionCallParseArguments(t *testing.T) {
 	})
 
 	t.Run("empty arguments returns error", func(t *testing.T) {
+		t.Parallel()
 		fc := FunctionCall{Name: "f1", Arguments: ""}
 		var args map[string]any
 		err := fc.ParseArguments(&args)
@@ -312,6 +431,7 @@ func TestFunctionCallParseArguments(t *testing.T) {
 	})
 
 	t.Run("invalid JSON returns error", func(t *testing.T) {
+		t.Parallel()
 		fc := FunctionCall{Name: "f1", Arguments: "{invalid"}
 		var args map[string]any
 		err := fc.ParseArguments(&args)
@@ -320,7 +440,10 @@ func TestFunctionCallParseArguments(t *testing.T) {
 }
 
 func TestChatResponseHelpers(t *testing.T) {
+	t.Parallel()
+
 	t.Run("HasToolCalls true", func(t *testing.T) {
+		t.Parallel()
 		resp := &ChatResponse{
 			ToolCalls: []ToolCall{{ID: "1", Function: FunctionCall{Name: "f1"}}},
 		}
@@ -328,11 +451,13 @@ func TestChatResponseHelpers(t *testing.T) {
 	})
 
 	t.Run("HasToolCalls false", func(t *testing.T) {
+		t.Parallel()
 		resp := &ChatResponse{Content: "hello"}
 		assert.False(t, resp.HasToolCalls())
 	})
 
 	t.Run("AssistantMessage preserves tool calls", func(t *testing.T) {
+		t.Parallel()
 		tcs := []ToolCall{
 			{ID: "call_1", Function: FunctionCall{Name: "f1", Arguments: `{"a":1}`}},
 			{ID: "call_2", Function: FunctionCall{Name: "f2", Arguments: `{"b":2}`}},
@@ -350,6 +475,8 @@ func TestChatResponseHelpers(t *testing.T) {
 }
 
 func TestToolResultMessage(t *testing.T) {
+	t.Parallel()
+
 	msg := ToolResultMessage("call_abc", `{"result": 42}`)
 	assert.Equal(t, RoleTool, msg.Role)
 	assert.Equal(t, "call_abc", msg.ToolCallID)
@@ -357,6 +484,8 @@ func TestToolResultMessage(t *testing.T) {
 }
 
 func TestToolResultMessageJSON(t *testing.T) {
+	t.Parallel()
+
 	result := map[string]any{"temperature": 28, "city": "北京"}
 	msg, err := ToolResultMessageJSON("call_xyz", result)
 	require.NoError(t, err)
@@ -371,6 +500,8 @@ func TestToolResultMessageJSON(t *testing.T) {
 }
 
 func TestParamSchema(t *testing.T) {
+	t.Parallel()
+
 	schema := ParamSchema{
 		Type: "object",
 		Properties: map[string]ParamSchema{
@@ -407,8 +538,34 @@ func TestParamSchema(t *testing.T) {
 // ============================================================
 
 func TestMaxIterations(t *testing.T) {
+	t.Parallel()
+
 	assert.Equal(t, 20, maxIterations(0))
 	assert.Equal(t, 20, maxIterations(-1))
 	assert.Equal(t, 5, maxIterations(5))
 	assert.Equal(t, 1, maxIterations(1))
+}
+
+func TestProviderConfigValidate(t *testing.T) {
+	t.Parallel()
+
+	t.Run("accepts complete config", func(t *testing.T) {
+		t.Parallel()
+		err := (ProviderConfig{
+			Name:   ProviderDeepSeek,
+			APIKey: "k",
+			Model:  "m",
+		}).Validate()
+		require.NoError(t, err)
+	})
+
+	t.Run("rejects missing required fields", func(t *testing.T) {
+		t.Parallel()
+		_, err := NewProvider(ProviderConfig{})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrInvalidProviderConfig)
+		assert.ErrorContains(t, err, "name is required")
+		assert.ErrorContains(t, err, "api key is required")
+		assert.ErrorContains(t, err, "model is required")
+	})
 }
