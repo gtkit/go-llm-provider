@@ -1,13 +1,44 @@
+# IDE / 系统产物
 .idea/
+.vscode/
+.DS_Store
 .Ds_Store
-
 
 # Harness: 本地工具与 Agent 运行产物
 .harness/
-.DS_Store
-CLAUDE.md
-AGENTS.md
 .claude/
 .learnings/
+CLAUDE.md
+AGENTS.md
 docs/
 openspec/
+
+# Go 构建产物 & 测试产物
+bin/
+dist/
+build/
+coverage/
+coverage.out
+coverage.html
+*.test
+*.out
+*.prof
+
+# go build ./example/xxx/ 产生的二进制（与子目录同名）
+/embedding
+/tooluse
+/toolloop
+
+# 日志
+*.log
+
+# 敏感信息（零容忍入库）
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+id_rsa
+id_rsa.pub
+secrets.*
+credentials.*

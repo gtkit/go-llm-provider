@@ -21,16 +21,22 @@ Go 语言统一多模型 LLM 调用库。一套代码接入 OpenAI 以及 DeepSe
 llm-provider/
 ├── go.mod
 ├── README.md
+├── CHANGELOG.md
 ├── provider/
-│   ├── provider.go        # 核心：Provider 接口、Registry、请求/响应、Tool Use 类型
-│   ├── presets.go          # 各平台预设配置（BaseURL + 默认模型）
-│   ├── helpers.go          # 便捷函数：SimpleChat、CollectStream
-│   ├── toolrun.go          # RunToolLoop：Tool Use 自动循环执行器
-│   └── provider_test.go    # 单元测试
+│   ├── provider.go            # 核心：Provider 接口、Registry、请求/响应、Tool Use 类型
+│   ├── presets.go             # 各平台预设配置（BaseURL + Chat/Embedding 默认模型）
+│   ├── helpers.go             # Chat 便捷函数：SimpleChat、CollectStream
+│   ├── toolrun.go             # RunToolLoop：Tool Use 自动循环执行器
+│   ├── embedder.go            # Embedder 接口、请求/响应、openaiEmbedder 实现
+│   ├── embedder_helpers.go    # Embedding 便捷函数：SimpleEmbed、EmbedBatch
+│   ├── provider_test.go       # Chat / Tool Use 单测
+│   ├── embedder_test.go       # Embedding 单测
+│   └── runtime_test.go        # 运行时集成测试
 └── example/
-    ├── main.go             # 基础使用示例
-    ├── tooluse/main.go     # Tool Use 手动多轮示例
-    └── toolloop/main.go    # RunToolLoop 自动循环示例
+    ├── main.go                # 基础使用示例（Chat）
+    ├── tooluse/main.go        # Tool Use 手动多轮示例
+    ├── toolloop/main.go       # RunToolLoop 自动循环示例
+    └── embedding/main.go      # Embedding + RAG 最小闭环示例
 ```
 
 ## 安装
@@ -43,17 +49,18 @@ go get github.com/gtkit/go-llm-provider
 
 ## 支持的平台
 
-| 平台 | ProviderName | 预设 BaseURL | 默认模型 | API Key 获取 |
-|------|-------------|-------------|---------|-------------|
-| DeepSeek | `deepseek` | `https://api.deepseek.com/v1` | `deepseek-chat` | [platform.deepseek.com](https://platform.deepseek.com/) |
-| 通义千问（百炼） | `qwen` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus` | [百炼控制台](https://bailian.console.aliyun.com/) |
-| 智谱 AI | `zhipu` | `https://open.bigmodel.cn/api/paas/v4/` | `glm-4-plus` | [open.bigmodel.cn](https://open.bigmodel.cn/) |
-| 百度千帆 | `qianfan` | `https://qianfan.baidubce.com/v2` | `ernie-4.0-8k` | [千帆控制台](https://console.bce.baidu.com/qianfan/) |
-| 硅基流动 | `siliconflow` | `https://api.siliconflow.cn/v1` | `deepseek-ai/DeepSeek-V3` | [siliconflow.cn](https://siliconflow.cn/) |
-| Moonshot / Kimi | `moonshot` | `https://api.moonshot.cn/v1` | `moonshot-v1-8k` | [platform.moonshot.cn](https://platform.moonshot.cn/) |
-| OpenAI | `openai` | `https://api.openai.com/v1` | `gpt-4.1-mini` | [platform.openai.com](https://platform.openai.com/) |
+| 平台 | ProviderName | 预设 BaseURL | 默认 Chat 模型 | 默认 Embedding 模型 | API Key 获取 |
+|------|-------------|-------------|---------|---------|-------------|
+| DeepSeek | `deepseek` | `https://api.deepseek.com/v1` | `deepseek-chat` | — | [platform.deepseek.com](https://platform.deepseek.com/) |
+| 通义千问（百炼） | `qwen` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus` | `text-embedding-v3` | [百炼控制台](https://bailian.console.aliyun.com/) |
+| 智谱 AI | `zhipu` | `https://open.bigmodel.cn/api/paas/v4/` | `glm-4-plus` | `embedding-3` | [open.bigmodel.cn](https://open.bigmodel.cn/) |
+| 百度千帆 | `qianfan` | `https://qianfan.baidubce.com/v2` | `ernie-4.0-8k` | `embedding-v1` | [千帆控制台](https://console.bce.baidu.com/qianfan/) |
+| 硅基流动 | `siliconflow` | `https://api.siliconflow.cn/v1` | `deepseek-ai/DeepSeek-V3` | `BAAI/bge-m3` | [siliconflow.cn](https://siliconflow.cn/) |
+| Moonshot / Kimi | `moonshot` | `https://api.moonshot.cn/v1` | `moonshot-v1-8k` | — | [platform.moonshot.cn](https://platform.moonshot.cn/) |
+| OpenAI | `openai` | `https://api.openai.com/v1` | `gpt-4.1-mini` | `text-embedding-3-small` | [platform.openai.com](https://platform.openai.com/) |
 
 > 预设地址和默认模型可能随平台更新而变化，建议定期对照各平台官方文档确认。
+> Embedding 列显示"—"的平台表示官方暂无 embedding 接口，`NewEmbedderFromPreset` 会返回错误。
 
 ### 关于 Claude / Google Gemini
 
@@ -555,6 +562,109 @@ for _, a := range accum {
 
 > 流式 Tool Use 比较复杂，大多数场景推荐直接用非流式的 `RunToolLoop`。
 
+## Embedding（文本向量化）
+
+除了 Chat，本库同时提供统一的 `Embedder` 接口，用于把文本转成向量，支撑 RAG、语义搜索、聚类、去重、推荐等场景。
+
+**关键设计**：与 Chat 共用同一套 `Registry` / `Preset` / `QuickRegistry`。`QuickRegistry` 会在注册 chat provider 时，自动为有 embedding 预设的平台（OpenAI / Qwen / 智谱 / 千帆 / 硅基流动）同时注册对应 embedder；DeepSeek 和 Moonshot 官方无 embedding 接口，静默跳过不报错。
+
+### 基础用法
+
+```go
+reg := provider.QuickRegistry(map[provider.ProviderName]string{
+    provider.ProviderQwen:  os.Getenv("QWEN_API_KEY"),
+    provider.ProviderZhipu: os.Getenv("ZHIPU_API_KEY"),
+})
+
+// 同一个 Registry 同时管 chat 和 embedding
+chat, _ := reg.Default()
+emb,  _ := reg.DefaultEmbedder()
+
+// 单条文本 → 向量
+vec, err := provider.SimpleEmbed(ctx, emb, "什么是 goroutine")
+
+// 批量文本 → 向量数组（顺序与输入一致，底层乱序会自动重排）
+vecs, err := provider.EmbedBatch(ctx, emb, []string{
+    "退款政策",
+    "发货时效",
+    "会员等级",
+})
+```
+
+### 完整调用（自定义维度 / User / 模型覆盖）
+
+```go
+dims := 512 // OpenAI v3 和 Qwen v3 支持按维度截断
+resp, err := emb.Embed(ctx, &provider.EmbeddingRequest{
+    Model:      "text-embedding-3-large", // 可选，覆盖默认模型
+    Input:      []string{"hello", "world"},
+    Dimensions: &dims,
+    User:       "user-123",
+})
+
+for _, e := range resp.Data {
+    fmt.Printf("Index=%d, len=%d\n", e.Index, len(e.Vector))
+}
+fmt.Printf("Usage: %d tokens\n", resp.Usage.TotalTokens)
+```
+
+### 典型 RAG 最小闭环
+
+```go
+// 1. 离线索引：一次性把知识库文档转向量
+docs := []string{
+    "退款政策：七天无理由退款，需保持商品完好",
+    "发货时效：现货 48 小时内发货",
+    "会员等级：消费满 1000 元升级银卡",
+}
+docVecs, _ := provider.EmbedBatch(ctx, emb, docs)
+
+// 2. 在线查询：用户问题也转向量
+query := "怎么申请返还款项"
+queryVec, _ := provider.SimpleEmbed(ctx, emb, query)
+
+// 3. 相似度检索：业务层自己实现余弦相似度
+bestIdx := argmaxCosine(queryVec, docVecs) // 调用方实现
+
+// 4. 把匹配文档拼进 prompt 让 LLM 回答
+reply, _ := provider.SimpleChatWithSystem(ctx, chat,
+    "基于以下资料回答: "+docs[bestIdx],
+    query,
+)
+```
+
+完整可运行示例（含余弦相似度实现）见 [`example/embedding/main.go`](example/embedding/main.go)。
+
+### 直接构造 Embedder（不走 Registry）
+
+```go
+// 预设配置，只需 APIKey
+emb, err := provider.NewEmbedderFromPreset(
+    provider.ProviderOpenAI,
+    os.Getenv("OPENAI_API_KEY"),
+    "", // 留空使用预设的 text-embedding-3-small
+)
+
+// 完全自定义（自部署或未预设的服务）
+emb, err = provider.NewEmbedder(provider.EmbedderConfig{
+    Name:    "my-embedding-service",
+    BaseURL: "http://localhost:8080/v1",
+    APIKey:  "any",
+    Model:   "bge-large-zh-v1.5",
+})
+```
+
+### 边界：本库不做什么
+
+- ❌ 向量存储（业务侧选向量数据库：pgvector / Milvus / Qdrant / Chroma 等）
+- ❌ 相似度计算（10 行代码可写完，内置反而限制）
+- ❌ 文档切片 / chunking 策略
+- ❌ 完整 RAG 框架（LangChain / LlamaIndex 的定位）
+
+这和"不管理对话历史"是同一个设计哲学 —— 库只负责与 LLM 平台的交互，存储与业务逻辑交给调用方。
+
+---
+
 ## Registry 操作
 
 ### 按名称切换 Provider
@@ -580,6 +690,18 @@ p, _ := reg.Default()  // 现在返回千问的 provider
 for _, name := range reg.Names() {
     fmt.Println("已注册:", name)
 }
+```
+
+### Embedder 注册管理
+
+Embedder 在 Registry 内独立管理（与 Provider 互不影响），操作方法对称：
+
+```go
+reg.RegisterEmbedder(emb)                      // 注册
+reg.GetEmbedder(provider.ProviderQwen)         // 按名称获取
+reg.DefaultEmbedder()                          // 获取默认
+reg.SetDefaultEmbedder(provider.ProviderZhipu) // 切换默认
+reg.EmbedderNames()                            // 列出所有已注册 embedder
 ```
 
 ## 多轮对话
@@ -752,6 +874,52 @@ curl -X POST http://localhost:8080/chat \
 
 > 模型列表会随平台更新而变化，建议使用前查阅各平台最新文档。
 
+## 常用 Embedding 模型速查
+
+> 以下维度数为官方文档给出的**最大值**，部分模型（如 OpenAI `text-embedding-3-*`、Qwen `text-embedding-v3`、智谱 `embedding-3`）支持通过 `Dimensions` 参数按需截断。具体可选维度值、计费方式、向量归一化行为以各平台最新文档为准。
+
+**OpenAI**
+
+| 模型名 | 维度 | 说明 |
+|--------|------|------|
+| `text-embedding-3-small` | 1536 | 默认推荐，性价比首选 |
+| `text-embedding-3-large` | 3072 | 高质量，支持 `dimensions` 截断 |
+| `text-embedding-ada-002` | 1536 | 上一代，兼容场景保留 |
+
+**通义千问（百炼 DashScope）**
+
+| 模型名 | 维度 | 说明 |
+|--------|------|------|
+| `text-embedding-v3` | 1024 | 默认推荐，支持 `dimensions` 截断（64/128/256/512/768/1024） |
+| `text-embedding-v4` | 最高 2048 | 2026 最新版，支持多语言增强 |
+| `text-embedding-v2` | 1536 | 上一代 |
+
+**智谱 AI**
+
+| 模型名 | 维度 | 说明 |
+|--------|------|------|
+| `embedding-3` | 最高 2048 | 默认推荐，支持 `dimensions` 截断 |
+| `embedding-2` | 1024 | 上一代 |
+
+**百度千帆**
+
+| 模型名 | 维度 | 说明 |
+|--------|------|------|
+| `embedding-v1` | 384 | 默认通用版 |
+| `bge-large-zh` | 1024 | 中文效果强 |
+| `tao-8k` | 1024 | 长文本（8K 上下文） |
+
+**硅基流动**
+
+| 模型名 | 维度 | 说明 |
+|--------|------|------|
+| `BAAI/bge-m3` | 1024 | 默认推荐，多语言 + 稀疏/稠密混合 |
+| `BAAI/bge-large-zh-v1.5` | 1024 | 中文专用 |
+| `Pro/BAAI/bge-m3` | 1024 | 付费稳定通道 |
+| `netease-youdao/bce-embedding-base_v1` | 768 | 网易有道中英双语 |
+
+> DeepSeek / Moonshot 官方暂无 embedding 模型，需要请转硅基流动或自部署。
+
 ## 核心类型参考
 
 ### Provider 接口
@@ -888,10 +1056,51 @@ reg.Names()                               // 列出所有已注册名称
 ### 便捷函数
 
 ```go
+// Chat
 provider.SimpleChat(ctx, p, "你好")                           // 一问一答
 provider.SimpleChatWithSystem(ctx, p, "你是助手", "你好")       // 带 system prompt
 provider.CollectStream(ctx, p, req, onChunkFn)                // 流式收集+回调
 provider.RunToolLoop(ctx, p, req, maxRounds, handler)         // Tool Use 自动循环
+
+// Embedding
+provider.SimpleEmbed(ctx, emb, "你好")                        // 单条文本 → 向量
+provider.EmbedBatch(ctx, emb, []string{"a", "b"})             // 批量 → 向量数组
+provider.NewEmbedderFromPreset(name, apiKey, model)           // 从预设构造
+provider.NewEmbedder(EmbedderConfig{...})                     // 完全自定义
+```
+
+### Embedder 核心类型
+
+```go
+type Embedder interface {
+    Name() ProviderName
+    Embed(ctx context.Context, req *EmbeddingRequest) (*EmbeddingResponse, error)
+}
+
+type EmbeddingRequest struct {
+    Model      string    // 可选，留空时使用 EmbedderConfig.Model
+    Input      []string  // 必填，至少一条
+    Dimensions *int      // 可选，部分模型支持按维度截断
+    User       string    // 可选，OpenAI 兼容字段
+}
+
+type EmbeddingResponse struct {
+    Data  []Embedding  // 与 Input 一一对应（按 Index 自动排序）
+    Model string
+    Usage Usage        // 复用 Chat 场景的 Usage 类型
+}
+
+type Embedding struct {
+    Index  int
+    Vector []float32
+}
+
+type EmbedderConfig struct {
+    Name    ProviderName
+    BaseURL string
+    APIKey  string
+    Model   string // embedding 专用默认模型
+}
 ```
 
 ## 设计决策

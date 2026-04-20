@@ -36,6 +36,14 @@ var (
 	ErrInvalidToolChoice = errors.New("invalid tool choice")
 	// ErrUnsupportedThinking indicates that EnableThinking is not supported by the selected provider.
 	ErrUnsupportedThinking = errors.New("enable thinking is only supported for deepseek")
+	// ErrNilEmbedder indicates that the caller passed a nil Embedder.
+	ErrNilEmbedder = errors.New("embedder is nil")
+	// ErrNilEmbeddingRequest indicates that the caller passed a nil embedding request.
+	ErrNilEmbeddingRequest = errors.New("embedding request is nil")
+	// ErrEmptyEmbeddingInput indicates that EmbeddingRequest.Input is empty.
+	ErrEmptyEmbeddingInput = errors.New("embedding input is empty")
+	// ErrInvalidEmbedderConfig indicates that EmbedderConfig is missing required fields.
+	ErrInvalidEmbedderConfig = errors.New("invalid embedder config")
 )
 
 func providerIsNil(p Provider) bool {
@@ -649,17 +657,22 @@ func (p *openaiProvider) buildRequest(req *ChatRequest) (openai.ChatCompletionRe
 // Registry：多 Provider 注册与切换
 // ============================================================
 
-// Registry 管理多个 Provider 实例，支持按名称获取。
+// Registry 管理多个 Provider 与 Embedder 实例，支持按名称获取。
+// Provider 与 Embedder 在内部使用两张独立的 map，互不影响。
 type Registry struct {
 	mu        sync.RWMutex
 	providers map[ProviderName]Provider
 	fallback  ProviderName // 默认 provider
+
+	embedders        map[ProviderName]Embedder
+	fallbackEmbedder ProviderName // 默认 embedder
 }
 
 // NewRegistry 创建一个空的注册表。
 func NewRegistry() *Registry {
 	return &Registry{
 		providers: make(map[ProviderName]Provider),
+		embedders: make(map[ProviderName]Embedder),
 	}
 }
 
@@ -729,6 +742,82 @@ func (r *Registry) Names() []ProviderName {
 
 	names := make([]ProviderName, 0, len(r.providers))
 	for name := range r.providers {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
+}
+
+// ============================================================
+// Embedder 注册与切换
+// ============================================================
+
+// RegisterEmbedder 注册一个 Embedder。如果是注册表中的第一个 embedder，
+// 会自动设为默认 embedder。
+//
+// 与 Register 对齐：typed nil 的 Embedder 实现需保证 Name() 不 panic，
+// 或调用方自行避免 typed nil。
+func (r *Registry) RegisterEmbedder(e Embedder) {
+	if embedderIsNil(e) {
+		return
+	}
+
+	name := e.Name()
+	if name == "" {
+		return
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.embedders[name] = e
+	if r.fallbackEmbedder == "" {
+		r.fallbackEmbedder = name
+	}
+}
+
+// GetEmbedder 按名称获取 Embedder。
+func (r *Registry) GetEmbedder(name ProviderName) (Embedder, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	e, ok := r.embedders[name]
+	if !ok {
+		return nil, fmt.Errorf("embedder %q not registered", name)
+	}
+	return e, nil
+}
+
+// DefaultEmbedder 返回默认的 Embedder。
+func (r *Registry) DefaultEmbedder() (Embedder, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	if r.fallbackEmbedder == "" {
+		return nil, errors.New("no embedder registered")
+	}
+	return r.embedders[r.fallbackEmbedder], nil
+}
+
+// SetDefaultEmbedder 设置默认 Embedder。
+func (r *Registry) SetDefaultEmbedder(name ProviderName) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if _, ok := r.embedders[name]; !ok {
+		return fmt.Errorf("embedder %q not registered", name)
+	}
+	r.fallbackEmbedder = name
+	return nil
+}
+
+// EmbedderNames 返回所有已注册的 Embedder 名称。
+func (r *Registry) EmbedderNames() []ProviderName {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	names := make([]ProviderName, 0, len(r.embedders))
+	for name := range r.embedders {
 		names = append(names, name)
 	}
 	slices.Sort(names)
