@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -247,4 +248,55 @@ func TestStreamReaderZeroValueIsSafe(t *testing.T) {
 	_, err := reader.Recv()
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "stream is not initialized")
+}
+
+// TestNewStreamReaderUsesInjectedCallbacks 验证自定义回调能够驱动统一的流读取器。
+func TestNewStreamReaderUsesInjectedCallbacks(t *testing.T) {
+	t.Parallel()
+
+	chunks := []*StreamChunk{
+		{Delta: "he"},
+		{Delta: "llo"},
+	}
+	index := 0
+	closed := false
+
+	reader := NewStreamReader(func() (*StreamChunk, error) {
+		if index >= len(chunks) {
+			return nil, io.EOF
+		}
+
+		chunk := chunks[index]
+		index++
+		return chunk, nil
+	}, func() error {
+		closed = true
+		return nil
+	})
+
+	first, err := reader.Recv()
+	require.NoError(t, err)
+	assert.Equal(t, "he", first.Delta)
+
+	second, err := reader.Recv()
+	require.NoError(t, err)
+	assert.Equal(t, "llo", second.Delta)
+
+	_, err = reader.Recv()
+	require.ErrorIs(t, err, io.EOF)
+	require.NoError(t, reader.Close())
+	assert.True(t, closed)
+}
+
+// TestNewStreamReaderAllowsNilClose 验证未提供关闭回调时 Close 仍然安全可用。
+func TestNewStreamReaderAllowsNilClose(t *testing.T) {
+	t.Parallel()
+
+	reader := NewStreamReader(func() (*StreamChunk, error) {
+		return nil, io.EOF
+	}, nil)
+
+	_, err := reader.Recv()
+	require.ErrorIs(t, err, io.EOF)
+	require.NoError(t, reader.Close())
 }

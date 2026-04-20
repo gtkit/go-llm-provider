@@ -15,6 +15,14 @@ import (
 func TestNewProviderFromPreset(t *testing.T) {
 	t.Parallel()
 
+	t.Run("openai preset", func(t *testing.T) {
+		t.Parallel()
+
+		p, err := NewProviderFromPreset(ProviderOpenAI, "test-key", "")
+		require.NoError(t, err)
+		assert.Equal(t, ProviderOpenAI, p.Name())
+	})
+
 	t.Run("known preset", func(t *testing.T) {
 		t.Parallel()
 		p, err := NewProviderFromPreset(ProviderDeepSeek, "test-key", "")
@@ -141,6 +149,16 @@ func TestQuickRegistry(t *testing.T) {
 	assert.Contains(t, names, ProviderDeepSeek)
 	assert.Contains(t, names, ProviderQwen)
 	assert.NotContains(t, names, ProviderZhipu)
+}
+
+func TestQuickRegistryRegistersOpenAI(t *testing.T) {
+	t.Parallel()
+
+	reg := QuickRegistry(map[ProviderName]string{
+		ProviderOpenAI: "openai-key",
+	})
+
+	assert.Equal(t, []ProviderName{ProviderOpenAI}, reg.Names())
 }
 
 func TestQuickRegistryStrict(t *testing.T) {

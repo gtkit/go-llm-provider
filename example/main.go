@@ -20,6 +20,7 @@ func main() {
 
 func run() error {
 	reg, err := provider.QuickRegistryStrict(map[provider.ProviderName]string{
+		provider.ProviderOpenAI:      os.Getenv("OPENAI_API_KEY"),
 		provider.ProviderDeepSeek:    os.Getenv("DEEPSEEK_API_KEY"),
 		provider.ProviderQwen:        os.Getenv("QWEN_API_KEY"),
 		provider.ProviderZhipu:       os.Getenv("ZHIPU_API_KEY"),

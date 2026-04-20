@@ -324,7 +324,8 @@ type ParamSchema struct {
 
 // StreamReader 包装流式响应，逐 chunk 读取。
 type StreamReader struct {
-	stream *openai.ChatCompletionStream
+	recv  func() (*StreamChunk, error)
+	close func() error
 }
 
 // StreamChunk 是流式响应的一个片段。
@@ -351,54 +352,31 @@ type FunctionCallDelta struct {
 	Arguments string // 每个 chunk 追加的 arguments 片段
 }
 
+// NewStreamReader 基于回调构造一个与底层传输无关的流读取器。
+// 可选扩展包可以通过它返回自定义流式结果，同时复用统一的 StreamChunk 抽象。
+func NewStreamReader(recv func() (*StreamChunk, error), close func() error) *StreamReader {
+	return &StreamReader{
+		recv:  recv,
+		close: close,
+	}
+}
+
 // Recv 读取下一个 chunk。当流结束时返回 io.EOF。
 func (r *StreamReader) Recv() (*StreamChunk, error) {
-	if r == nil || r.stream == nil {
+	if r == nil || r.recv == nil {
 		return nil, ErrStreamNotInitialized
 	}
 
-	resp, err := r.stream.Recv()
-	if errors.Is(err, io.EOF) {
-		return nil, io.EOF
-	}
-	if err != nil {
-		return nil, fmt.Errorf("stream recv: %w", err)
-	}
-
-	chunk := &StreamChunk{}
-	if len(resp.Choices) > 0 {
-		delta := resp.Choices[0].Delta
-		chunk.Delta = delta.Content
-		chunk.FinishReason = string(resp.Choices[0].FinishReason)
-
-		// 映射流式 tool call delta
-		if len(delta.ToolCalls) > 0 {
-			chunk.ToolCalls = make([]ToolCallDelta, 0, len(delta.ToolCalls))
-			for _, tc := range delta.ToolCalls {
-				d := ToolCallDelta{
-					ID: tc.ID,
-					Function: FunctionCallDelta{
-						Name:      tc.Function.Name,
-						Arguments: tc.Function.Arguments,
-					},
-				}
-				if tc.Index != nil {
-					d.Index = *tc.Index
-				}
-				chunk.ToolCalls = append(chunk.ToolCalls, d)
-			}
-		}
-	}
-	return chunk, nil
+	return r.recv()
 }
 
 // Close 关闭底层流。
 func (r *StreamReader) Close() error {
-	if r == nil || r.stream == nil {
+	if r == nil || r.close == nil {
 		return nil
 	}
 
-	return r.stream.Close()
+	return r.close()
 }
 
 // ============================================================
@@ -532,7 +510,42 @@ func (p *openaiProvider) ChatStream(ctx context.Context, req *ChatRequest) (*Str
 		return nil, fmt.Errorf("[%s] chat stream: %w", p.name, err)
 	}
 
-	return &StreamReader{stream: stream}, nil
+	return NewStreamReader(func() (*StreamChunk, error) {
+		resp, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			return nil, io.EOF
+		}
+		if err != nil {
+			return nil, fmt.Errorf("stream recv: %w", err)
+		}
+
+		chunk := &StreamChunk{}
+		if len(resp.Choices) > 0 {
+			delta := resp.Choices[0].Delta
+			chunk.Delta = delta.Content
+			chunk.FinishReason = string(resp.Choices[0].FinishReason)
+
+			// 映射流式 tool call delta
+			if len(delta.ToolCalls) > 0 {
+				chunk.ToolCalls = make([]ToolCallDelta, 0, len(delta.ToolCalls))
+				for _, tc := range delta.ToolCalls {
+					d := ToolCallDelta{
+						ID: tc.ID,
+						Function: FunctionCallDelta{
+							Name:      tc.Function.Name,
+							Arguments: tc.Function.Arguments,
+						},
+					}
+					if tc.Index != nil {
+						d.Index = *tc.Index
+					}
+					chunk.ToolCalls = append(chunk.ToolCalls, d)
+				}
+			}
+		}
+
+		return chunk, nil
+	}, stream.Close), nil
 }
 
 func (p *openaiProvider) buildRequest(req *ChatRequest) (openai.ChatCompletionRequest, error) {

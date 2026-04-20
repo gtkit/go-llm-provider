@@ -43,6 +43,10 @@ var presetCatalog = map[ProviderName]Preset{
 		BaseURL:      "https://api.moonshot.cn/v1",
 		DefaultModel: "moonshot-v1-8k",
 	},
+	ProviderOpenAI: {
+		BaseURL:      "https://api.openai.com/v1",
+		DefaultModel: "gpt-4.1-mini",
+	},
 }
 
 // Presets 保留旧版导出变量以兼容既有调用方。

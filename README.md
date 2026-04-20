@@ -1,6 +1,6 @@
 # llm-provider
 
-Go 语言统一多模型 LLM 调用库。一套代码接入 DeepSeek、通义千问、智谱、百度千帆、硅基流动、Moonshot 等国内主流大模型平台。
+Go 语言统一多模型 LLM 调用库。一套代码接入 OpenAI 以及 DeepSeek、通义千问、智谱、百度千帆、硅基流动、Moonshot 等 OpenAI 兼容平台。
 
 ## 为什么做这个
 
@@ -13,7 +13,7 @@ Go 语言统一多模型 LLM 调用库。一套代码接入 DeepSeek、通义千
 - `Registry` 注册表管理多个 Provider，运行时按名称切换
 - 支持非流式和流式两种调用模式
 - 完整的 Tool Use / Function Calling 支持，包含自动循环执行的 `RunToolLoop`
-- 零额外依赖，底层只用 `sashabaranov/go-openai`
+- 主包保持轻量，零额外厂商 SDK 依赖，底层只用 `sashabaranov/go-openai`
 
 ## 项目结构
 
@@ -51,8 +51,21 @@ go get github.com/gtkit/go-llm-provider
 | 百度千帆 | `qianfan` | `https://qianfan.baidubce.com/v2` | `ernie-4.0-8k` | [千帆控制台](https://console.bce.baidu.com/qianfan/) |
 | 硅基流动 | `siliconflow` | `https://api.siliconflow.cn/v1` | `deepseek-ai/DeepSeek-V3` | [siliconflow.cn](https://siliconflow.cn/) |
 | Moonshot / Kimi | `moonshot` | `https://api.moonshot.cn/v1` | `moonshot-v1-8k` | [platform.moonshot.cn](https://platform.moonshot.cn/) |
+| OpenAI | `openai` | `https://api.openai.com/v1` | `gpt-4.1-mini` | [platform.openai.com](https://platform.openai.com/) |
 
 > 预设地址和默认模型可能随平台更新而变化，建议定期对照各平台官方文档确认。
+
+### 关于 Claude / Google Gemini
+
+主包不直接内置 Claude 和 Google Gemini 的官方实现。
+
+原因是这两家接口不是 OpenAI 兼容协议，如果把官方 SDK 直接塞进主包，会让当前这个库失去“轻量统一接入层”的定位。当前状态是：
+
+- 主包继续内置 OpenAI 及 OpenAI 兼容平台
+- 已经为 Claude / Gemini 这类非兼容协议预留了可选扩展包接入点
+- 扩展包可以复用主包的 `Provider`、`ChatRequest`、`ChatResponse`、`Registry`、`RunToolLoop`
+- 主包新增了可供外部 provider 复用的 `provider.NewStreamReader(...)`
+- 当前仓库里还没有现成可直接 `import` 的 Claude / Gemini 扩展包实现
 
 ## 快速开始
 
@@ -73,6 +86,7 @@ import (
 func main() {
     // 一行创建注册表，传入各平台 API Key（空值自动跳过）
     reg := provider.QuickRegistry(map[provider.ProviderName]string{
+        provider.ProviderOpenAI:  os.Getenv("OPENAI_API_KEY"),
         provider.ProviderDeepSeek: os.Getenv("DEEPSEEK_API_KEY"),
         provider.ProviderQwen:    os.Getenv("QWEN_API_KEY"),
         provider.ProviderZhipu:   os.Getenv("ZHIPU_API_KEY"),
@@ -91,7 +105,7 @@ func main() {
 设置环境变量后运行：
 
 ```bash
-export DEEPSEEK_API_KEY="sk-xxxxxxxx"
+export OPENAI_API_KEY="sk-xxxxxxxx"
 go run main.go
 ```
 
@@ -116,6 +130,7 @@ go run main.go
 
 ```go
 reg := provider.QuickRegistry(map[provider.ProviderName]string{
+    provider.ProviderOpenAI:      os.Getenv("OPENAI_API_KEY"),
     provider.ProviderDeepSeek:    os.Getenv("DEEPSEEK_API_KEY"),
     provider.ProviderQwen:        os.Getenv("QWEN_API_KEY"),
     provider.ProviderZhipu:       os.Getenv("ZHIPU_API_KEY"),
@@ -131,6 +146,7 @@ p, err := reg.Default()
 
 ```go
 reg, err := provider.QuickRegistryStrict(map[provider.ProviderName]string{
+    provider.ProviderOpenAI:   os.Getenv("OPENAI_API_KEY"),
     provider.ProviderDeepSeek: os.Getenv("DEEPSEEK_API_KEY"),
     provider.ProviderQwen:     os.Getenv("QWEN_API_KEY"),
 })
@@ -650,54 +666,89 @@ curl -X POST http://localhost:8080/chat \
 
 ## 各平台常用模型速查
 
+> 以下为截至 **2026-04** 各厂商在线可调用的主流模型。模型名随平台更新变化较快，建议调用前对照官方文档。
+
 **DeepSeek**
 
 | 模型名 | 说明 |
 |--------|------|
-| `deepseek-chat` | DeepSeek-V3，通用对话（默认） |
-| `deepseek-reasoner` | DeepSeek-R1，推理增强 |
+| `deepseek-chat` | DeepSeek-V3.2 非思考模式，128K 上下文 |
+| `deepseek-reasoner` | DeepSeek-V3.2 思考模式，原生链式思考（CoT） |
 
 **通义千问（百炼 DashScope）**
 
 | 模型名 | 说明 |
 |--------|------|
-| `qwen-plus` | 性价比之选（默认） |
-| `qwen-max` | 旗舰模型 |
-| `qwen-turbo` | 速度优先 |
-| `qwen-long` | 长文档处理 |
+| `qwen3-max` | 旗舰，复杂任务能力最强 |
+| `qwen3.6-plus` | 2026 新一代 Plus，性能/成本平衡 |
+| `qwen-plus-latest` | Plus 自动跟随最新快照 |
+| `qwen-flash` | 速度优先，分档计费 |
+| `qwen-long` | 长文档处理，最高 10M tokens |
+| `qwen3-coder-plus` | 代码 Agent 专精 |
+| `qwen3-vl-plus` | 视觉多模态 |
+| `qwq-plus` | 深度推理模型 |
 
 **智谱 AI**
 
 | 模型名 | 说明 |
 |--------|------|
-| `glm-4-plus` | 旗舰模型（默认） |
-| `glm-4-air` | 轻量快速 |
-| `glm-4-flash` | 极速推理 |
+| `glm-5.1` | 最新旗舰，Coding 能力对标 Claude Opus 4.6 |
+| `glm-5` | 高智能基座，擅长长程规划 |
+| `glm-4.7` | 通用对话推理升级 |
+| `glm-4.7-flash` | 免费普惠版 |
+| `glm-4.6` | 200K 上下文 |
+| `glm-4.5-air` | 高性价比 |
+| `glm-4.6v` | 视觉推理，原生工具调用 |
 
 **百度千帆**
 
 | 模型名 | 说明 |
 |--------|------|
-| `ernie-4.0-8k` | 文心一言 4.0（默认） |
-| `ernie-3.5-8k` | 文心一言 3.5 |
-| `deepseek-v3` | 千帆托管的 DeepSeek-V3 |
-| `deepseek-r1` | 千帆托管的 DeepSeek-R1 |
+| `ernie-4.5-turbo-128k` | 文心 4.5 Turbo 长上下文 |
+| `ernie-4.5-turbo-32k` | 文心 4.5 Turbo 通用 |
+| `ernie-x1-turbo-32k` | X1 Turbo 推理模型（思维链 + 工具调用） |
+| `ernie-4.5-turbo-vl-32k` | 文心 4.5 VL 多模态 |
+| `ernie-speed-128k` | 经济高速 |
+| `ernie-lite-8k` | 超经济轻量 |
 
 **硅基流动**
 
 | 模型名 | 说明 |
 |--------|------|
-| `deepseek-ai/DeepSeek-V3` | DeepSeek-V3（默认） |
-| `Qwen/Qwen2.5-72B-Instruct` | 千问 72B |
-| `THUDM/glm-4-9b-chat` | 智谱 GLM-4 9B |
+| `deepseek-ai/DeepSeek-V3.2` | DeepSeek V3.2，含思考模式 |
+| `deepseek-ai/DeepSeek-V3.1-Terminus` | V3.1 终结版 |
+| `Qwen/Qwen3.5-397B-A17B` | 千问 3.5 MoE 旗舰 |
+| `Qwen/Qwen3.5-122B-A10B` | 千问 3.5 MoE 中等 |
+| `Qwen/Qwen3.5-35B-A3B` | 千问 3.5 MoE 轻量 |
+| `moonshotai/Kimi-K2.5` | Kimi K2.5（256K 上下文） |
+| `Pro/zai-org/GLM-5.1` | 智谱 GLM-5.1（Pro 付费通道） |
+| `Pro/zai-org/GLM-4.7` | 智谱 GLM-4.7（Pro 付费通道） |
+
+> `Pro/` 前缀为付费稳定通道，不带前缀为社区免费通道，能力相同但限流更严。
 
 **Moonshot / Kimi**
 
 | 模型名 | 说明 |
 |--------|------|
-| `moonshot-v1-8k` | 8K 上下文（默认） |
-| `moonshot-v1-32k` | 32K 上下文 |
-| `moonshot-v1-128k` | 128K 长上下文 |
+| `kimi-k2-turbo-preview` | Kimi K2 Turbo 高速版，256K 上下文 |
+| `kimi-k2-0905-preview` | Kimi K2.5 最新快照，1T 总参 / 32B 激活 MoE |
+| `kimi-k2-thinking` | K2 思考模式，深度推理 |
+| `kimi-latest` | 自动选择最新模型 |
+| `moonshot-v1-128k` | 经典 V1 系列 128K |
+
+**OpenAI**
+
+| 模型名 | 说明 |
+|--------|------|
+| `gpt-5.4` | 旗舰，推理/编码综合最强，1M 上下文（2026-03） |
+| `gpt-5.4-pro` | Pro 版，能力更强 |
+| `gpt-5.4-mini` | 经济款，400K 上下文（2026-03） |
+| `gpt-5.4-nano` | 极低成本 |
+| `gpt-5.3-codex` | 代码专用（legacy） |
+| `o3` | 推理系列旗舰 |
+| `o3-pro` | 推理增强 |
+| `o3-mini` | 轻量推理 |
+| `o4-mini` | 新一代推理 |
 
 > 模型列表会随平台更新而变化，建议使用前查阅各平台最新文档。
 
@@ -845,9 +896,9 @@ provider.RunToolLoop(ctx, p, req, maxRounds, handler)         // Tool Use 自动
 
 ## 设计决策
 
-**为什么只有一个 `openaiProvider` 实现？**
+**为什么主包里只有一个内建的 `openaiProvider` 实现？**
 
-因为国内这几家平台全都走 OpenAI 兼容协议，接口格式一模一样。给每个平台写一个 struct 是过度设计。如果将来某个平台出了不兼容的 API，给它单独实现 `Provider` 接口就行。
+因为 OpenAI、本仓库内置的国内平台，本质上都走 OpenAI 兼容协议。给每个平台写一个 struct 是过度设计。对于 Claude、Google Gemini 这类非兼容协议，架构上已经预留了放到可选扩展包里实现 `Provider` 接口的能力，但当前仓库还没有提供现成扩展包，以避免先引入空壳目录或额外维护成本。
 
 **为什么不管理对话历史？**
 
@@ -893,11 +944,147 @@ func (p *myCustomProvider) Chat(ctx context.Context, req *provider.ChatRequest) 
 }
 
 func (p *myCustomProvider) ChatStream(ctx context.Context, req *provider.ChatRequest) (*provider.StreamReader, error) {
-    // 流式实现 ...
+    return provider.NewStreamReader(
+        func() (*provider.StreamChunk, error) {
+            // 自定义流式协议到 StreamChunk 的映射 ...
+        },
+        func() error {
+            // 关闭底层流 ...
+            return nil
+        },
+    ), nil
 }
 
 reg.Register(&myCustomProvider{})
 ```
+
+> 说明：Claude / Google Gemini 当前也属于这一类。主包已经预留扩展点，但本仓库暂未提供可直接使用的官方扩展包实现。
+
+### 可选扩展包怎么接
+
+如果你要自己实现 `Claude` 或 `Google Gemini` 扩展包，推荐按下面的方式组织：
+
+```text
+your-llm-extension/
+├── go.mod
+└── anthropicprovider/
+    └── provider.go
+```
+
+最小骨架示例：
+
+```go
+package anthropicprovider
+
+import (
+    "context"
+    "io"
+    "net/http"
+
+    "github.com/gtkit/go-llm-provider/provider"
+)
+
+type Provider struct {
+    apiKey string
+    model  string
+    client *http.Client
+}
+
+func New(apiKey, model string) (*Provider, error) {
+    if model == "" {
+        model = "claude-sonnet-4-0"
+    }
+
+    return &Provider{
+        apiKey: apiKey,
+        model:  model,
+        client: &http.Client{},
+    }, nil
+}
+
+func (p *Provider) Name() provider.ProviderName {
+    return "claude"
+}
+
+func (p *Provider) Chat(ctx context.Context, req *provider.ChatRequest) (*provider.ChatResponse, error) {
+    // 1. 把 provider.ChatRequest 转成厂商请求
+    // 2. 发起 HTTP 调用
+    // 3. 把厂商响应映射回 provider.ChatResponse
+    return &provider.ChatResponse{
+        Content: "hello",
+    }, nil
+}
+
+func (p *Provider) ChatStream(ctx context.Context, req *provider.ChatRequest) (*provider.StreamReader, error) {
+    // 先建立底层 HTTP/SSE 流
+
+    return provider.NewStreamReader(
+        func() (*provider.StreamChunk, error) {
+            // 读取一个底层事件并映射为统一的 StreamChunk
+            // 文本增量写到 Delta
+            // 结束原因写到 FinishReason
+            // 如果厂商支持流式 tool call，就填 ToolCalls
+            return nil, io.EOF
+        },
+        func() error {
+            // 关闭底层流
+            return nil
+        },
+    ), nil
+}
+```
+
+主程序里的使用方式：
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+    "time"
+
+    "github.com/gtkit/go-llm-provider/provider"
+    "github.com/your-org/your-llm-extension/anthropicprovider"
+)
+
+func main() {
+    claude, err := anthropicprovider.New(
+        os.Getenv("ANTHROPIC_API_KEY"),
+        "claude-sonnet-4-0",
+    )
+    if err != nil {
+        panic(err)
+    }
+
+    reg := provider.NewRegistry()
+    reg.Register(claude)
+
+    p, err := reg.Get("claude")
+    if err != nil {
+        panic(err)
+    }
+
+    ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+    defer cancel()
+
+    reply, err := provider.SimpleChat(ctx, p, "用一句话介绍 Go")
+    if err != nil {
+        panic(err)
+    }
+
+    fmt.Println(reply)
+}
+```
+
+实现时只要遵守这几个映射规则，主包里的辅助能力就能继续复用：
+
+- 非流式响应把文本映射到 `provider.ChatResponse.Content`
+- 如果厂商支持 tool use，把工具调用映射到 `provider.ChatResponse.ToolCalls`
+- 流式响应把文本增量映射到 `provider.StreamChunk.Delta`
+- 流结束时把厂商结束原因映射到 `provider.StreamChunk.FinishReason`
+- 只要 `Chat` / `ChatStream` 的输出符合统一类型，`provider.CollectStream` 和 `provider.RunToolLoop` 就能直接继续使用
 
 ## 运行测试
 
