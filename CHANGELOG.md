@@ -20,7 +20,7 @@
 - `ParamSchema` JSON Schema 构建器
 - `NewStreamReader` 开放式流读取器，供扩展包复用
 
-## [1.1.0] - 2026-04-20
+## [1.1.1] - 2026-04-20
 
 ### Added
 
