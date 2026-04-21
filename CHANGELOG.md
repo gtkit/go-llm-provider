@@ -2,6 +2,30 @@
 
 本项目变更记录遵循 [Keep a Changelog 1.1.0](https://keepachangelog.com/zh-CN/1.1.0/) 规范，并严格使用 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### Added
+
+### Changed
+
+## [1.2.0] - 2026-04-21
+
+### Added
+
+- 新增 `Middleware` / `StreamMiddleware` / `EmbedMiddleware` 类型与 `WithMiddlewares` / `WithEmbedderMiddlewares` 装饰器，为 Chat / Stream / Embed 提供统一横切扩展点
+- 新增 `ProviderError` 结构化错误：含 `ErrorCode` 分类、HTTP 状态码、`Retryable` 标记；支持 `errors.Is`（与 `ErrRateLimit` / `ErrAuth` 等 sentinel 互认）与 `errors.As`
+- 新增 8 个错误 sentinel：`ErrAuth` / `ErrRateLimit` / `ErrTimeout` / `ErrContextLength` / `ErrContentFilter` / `ErrInvalidRequest` / `ErrServerError` / `ErrNetwork`
+- 新增 9 个 `ErrorCode` 常量
+- 新增 `RunToolLoopWithOptions` / `RunToolLoopOptions` / `ToolErrorEncoder`，允许调用方自定义工具错误回传格式，并显式开启并行 tool calls
+- 新增 `TryWithMiddlewares` / `TryWithEmbedderMiddlewares`，为 middleware 装饰提供非 panic 构造入口
+- 新增 `example/middleware/main.go`，演示 Logging / TokenStats / Retry 三类中间件的参考实现
+
+### Changed
+
+- 内部实现：仓库所有 `encoding/json` 引用迁移到 `github.com/gtkit/json`，对外行为不变
+- `RunToolLoop` 默认改为向模型回传脱敏后的工具错误 JSON，不再默认暴露原始内部错误字符串
+- `ProviderError` 新增原始诊断字段，保留 provider-native `code` / `type` / `param` 信息
+- README 明确 `QuickRegistry` 默认 provider 采用 `ProviderName` 排序后的首个成功注册项
 
 ## [1.0.1] - 2026-04-17
 

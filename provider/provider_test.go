@@ -1,9 +1,12 @@
 package provider
 
 import (
-	"encoding/json"
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/gtkit/json"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -173,7 +176,7 @@ func TestQuickRegistryStrict(t *testing.T) {
 		})
 		require.Error(t, err)
 		require.NotNil(t, reg)
-		assert.ErrorContains(t, err, `register provider "deepsek"`)
+		require.ErrorContains(t, err, `register provider "deepsek"`)
 
 		names := reg.Names()
 		assert.Equal(t, []ProviderName{ProviderDeepSeek}, names)
@@ -581,9 +584,65 @@ func TestProviderConfigValidate(t *testing.T) {
 		t.Parallel()
 		_, err := NewProvider(ProviderConfig{})
 		require.Error(t, err)
-		assert.ErrorIs(t, err, ErrInvalidProviderConfig)
-		assert.ErrorContains(t, err, "name is required")
-		assert.ErrorContains(t, err, "api key is required")
-		assert.ErrorContains(t, err, "model is required")
+		require.ErrorIs(t, err, ErrInvalidProviderConfig)
+		require.ErrorContains(t, err, "name is required")
+		require.ErrorContains(t, err, "api key is required")
+		require.ErrorContains(t, err, "model is required")
 	})
+}
+
+// ============================================================
+// openaiProvider.Chat 错误包装（WrapProviderError 集成）
+// ============================================================
+
+func TestOpenAIProviderChat_WrapsProviderError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		status    int
+		wantCode  ErrorCode
+		wantIs    error
+		wantRetry bool
+	}{
+		{"rate limit", http.StatusTooManyRequests, ErrorCodeRateLimit, ErrRateLimit, true},
+		{"unauthorized", http.StatusUnauthorized, ErrorCodeAuth, ErrAuth, false},
+		{"bad request", http.StatusBadRequest, ErrorCodeInvalidRequest, ErrInvalidRequest, false},
+		{"server error", http.StatusInternalServerError, ErrorCodeServerError, ErrServerError, true},
+		{"gateway timeout", http.StatusGatewayTimeout, ErrorCodeTimeout, ErrTimeout, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(`{"error":{"message":"mock error","type":"test"}}`))
+			}))
+			t.Cleanup(srv.Close)
+
+			p, err := NewProvider(ProviderConfig{
+				Name:    ProviderOpenAI,
+				BaseURL: srv.URL,
+				APIKey:  "sk-test",
+				Model:   "gpt-4",
+			})
+			require.NoError(t, err)
+
+			_, err = p.Chat(context.Background(), &ChatRequest{
+				Messages: []Message{{Role: RoleUser, Content: "hi"}},
+			})
+			require.Error(t, err)
+
+			var providerErr *ProviderError
+			require.ErrorAs(t, err, &providerErr, "expected *ProviderError from openaiProvider.Chat")
+			assert.Equal(t, ProviderName("openai"), providerErr.Provider)
+			assert.Equal(t, tt.status, providerErr.StatusCode)
+			assert.Equal(t, tt.wantCode, providerErr.Code)
+			assert.Equal(t, tt.wantRetry, providerErr.Retryable)
+			assert.ErrorIs(t, err, tt.wantIs)
+		})
+	}
 }

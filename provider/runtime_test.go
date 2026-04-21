@@ -2,10 +2,14 @@ package provider
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/gtkit/json"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -117,7 +121,7 @@ func TestRunToolLoopPreservesEnableThinking(t *testing.T) {
 	assert.Equal(t, "done", resp.Content)
 }
 
-func TestRunToolLoopEncodesHandlerErrorsAsJSON(t *testing.T) {
+func TestRunToolLoopSanitizesHandlerErrorsByDefault(t *testing.T) {
 	t.Parallel()
 
 	requests := make([]*ChatRequest, 0, 2)
@@ -163,7 +167,202 @@ func TestRunToolLoopEncodesHandlerErrorsAsJSON(t *testing.T) {
 	}
 
 	require.NoError(t, json.Unmarshal([]byte(lastMessage.Content), &payload))
+	assert.Equal(t, "tool execution failed", payload.Error)
+	assert.NotContains(t, lastMessage.Content, handlerErr.Error())
+}
+
+func TestRunToolLoopUsesCustomToolErrorEncoder(t *testing.T) {
+	t.Parallel()
+
+	requests := make([]*ChatRequest, 0, 2)
+	p := &stubProvider{
+		name: ProviderOpenAI,
+		chat: func(_ context.Context, req *ChatRequest) (*ChatResponse, error) {
+			requests = append(requests, req)
+			if len(requests) == 1 {
+				return &ChatResponse{
+					ToolCalls: []ToolCall{
+						{
+							ID: "call_custom",
+							Function: FunctionCall{
+								Name:      "explode",
+								Arguments: `{"value":1}`,
+							},
+						},
+					},
+				}, nil
+			}
+
+			return &ChatResponse{Content: "done"}, nil
+		},
+	}
+
+	handlerErr := errors.New("custom handler detail")
+
+	resp, err := RunToolLoopWithOptions(
+		t.Context(),
+		p,
+		&ChatRequest{Messages: []Message{{Role: RoleUser, Content: "hello"}}},
+		func(context.Context, string, string) (string, error) {
+			return "", handlerErr
+		},
+		RunToolLoopOptions{
+			MaxRounds: 2,
+			ToolErrorEncoder: func(_ context.Context, tc ToolCall, err error) (Message, error) {
+				return ToolResultMessageJSON(tc.ID, map[string]string{
+					"error": err.Error(),
+					"mode":  "custom",
+				})
+			},
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, "done", resp.Content)
+	require.Len(t, requests, 2)
+
+	lastMessage := requests[1].Messages[len(requests[1].Messages)-1]
+	var payload struct {
+		Error string `json:"error"`
+		Mode  string `json:"mode"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(lastMessage.Content), &payload))
 	assert.Equal(t, handlerErr.Error(), payload.Error)
+	assert.Equal(t, "custom", payload.Mode)
+}
+
+func TestRunToolLoopDefaultExecutionRemainsSerial(t *testing.T) {
+	t.Parallel()
+
+	requests := make([]*ChatRequest, 0, 2)
+	p := &stubProvider{
+		name: ProviderOpenAI,
+		chat: func(_ context.Context, req *ChatRequest) (*ChatResponse, error) {
+			requests = append(requests, req)
+			if len(requests) == 1 {
+				return &ChatResponse{
+					ToolCalls: []ToolCall{
+						{ID: "call_1", Function: FunctionCall{Name: "one", Arguments: `{}`}},
+						{ID: "call_2", Function: FunctionCall{Name: "two", Arguments: `{}`}},
+					},
+				}, nil
+			}
+
+			return &ChatResponse{Content: "done"}, nil
+		},
+	}
+
+	var active atomic.Int32
+	var maxActive atomic.Int32
+
+	resp, err := RunToolLoop(
+		t.Context(),
+		p,
+		&ChatRequest{Messages: []Message{{Role: RoleUser, Content: "hello"}}},
+		2,
+		func(_ context.Context, _ string, _ string) (string, error) {
+			current := active.Add(1)
+			for {
+				seen := maxActive.Load()
+				if current <= seen || maxActive.CompareAndSwap(seen, current) {
+					break
+				}
+			}
+			defer active.Add(-1)
+			time.Sleep(10 * time.Millisecond)
+			return "ok", nil
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, "done", resp.Content)
+	assert.Equal(t, int32(1), maxActive.Load())
+}
+
+func TestRunToolLoopParallelToolCallsPreserveMessageOrder(t *testing.T) {
+	t.Parallel()
+
+	requests := make([]*ChatRequest, 0, 2)
+	p := &stubProvider{
+		name: ProviderOpenAI,
+		chat: func(_ context.Context, req *ChatRequest) (*ChatResponse, error) {
+			requests = append(requests, req)
+			if len(requests) == 1 {
+				return &ChatResponse{
+					ToolCalls: []ToolCall{
+						{ID: "call_1", Function: FunctionCall{Name: "slow", Arguments: `{"idx":1}`}},
+						{ID: "call_2", Function: FunctionCall{Name: "fast", Arguments: `{"idx":2}`}},
+					},
+				}, nil
+			}
+
+			return &ChatResponse{Content: "done"}, nil
+		},
+	}
+
+	var active atomic.Int32
+	var maxActive atomic.Int32
+
+	resp, err := RunToolLoopWithOptions(
+		t.Context(),
+		p,
+		&ChatRequest{Messages: []Message{{Role: RoleUser, Content: "hello"}}},
+		func(_ context.Context, name, _ string) (string, error) {
+			current := active.Add(1)
+			for {
+				seen := maxActive.Load()
+				if current <= seen || maxActive.CompareAndSwap(seen, current) {
+					break
+				}
+			}
+			defer active.Add(-1)
+
+			if name == "slow" {
+				time.Sleep(40 * time.Millisecond)
+				return "slow-result", nil
+			}
+
+			time.Sleep(5 * time.Millisecond)
+			return "fast-result", nil
+		},
+		RunToolLoopOptions{
+			MaxRounds:         2,
+			ParallelToolCalls: true,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, "done", resp.Content)
+	require.Len(t, requests, 2)
+	require.Greater(t, maxActive.Load(), int32(1))
+
+	lastTwo := requests[1].Messages[len(requests[1].Messages)-2:]
+	assert.Equal(t, []string{"call_1", "call_2"}, []string{lastTwo[0].ToolCallID, lastTwo[1].ToolCallID})
+	assert.Equal(t, []string{"slow-result", "fast-result"}, []string{lastTwo[0].Content, lastTwo[1].Content})
+}
+
+func TestRunToolLoopStopsOnContextErrorFromHandler(t *testing.T) {
+	t.Parallel()
+
+	p := &stubProvider{
+		name: ProviderOpenAI,
+		chat: func(_ context.Context, _ *ChatRequest) (*ChatResponse, error) {
+			return &ChatResponse{
+				ToolCalls: []ToolCall{
+					{ID: "call_ctx", Function: FunctionCall{Name: "cancel", Arguments: `{}`}},
+				},
+			}, nil
+		},
+	}
+
+	resp, err := RunToolLoop(
+		t.Context(),
+		p,
+		&ChatRequest{Messages: []Message{{Role: RoleUser, Content: "hello"}}},
+		2,
+		func(context.Context, string, string) (string, error) {
+			return "", fmt.Errorf("wrapped: %w", context.Canceled)
+		},
+	)
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Nil(t, resp)
 }
 
 func TestQuickRegistrySelectsDeterministicDefault(t *testing.T) {

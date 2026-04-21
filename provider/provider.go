@@ -10,12 +10,13 @@ package provider
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"slices"
 	"sync"
+
+	"github.com/gtkit/json"
 
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -44,6 +45,38 @@ var (
 	ErrEmptyEmbeddingInput = errors.New("embedding input is empty")
 	// ErrInvalidEmbedderConfig indicates that EmbedderConfig is missing required fields.
 	ErrInvalidEmbedderConfig = errors.New("invalid embedder config")
+
+	// ErrAuth 表示鉴权失败。
+	// 与 *ProviderError 互认：errors.Is(err, ErrAuth) 在 Code == ErrorCodeAuth 时返回 true。
+	ErrAuth = errors.New("authentication failed")
+
+	// ErrRateLimit 表示请求被平台限流。
+	// 与 *ProviderError 互认：errors.Is(err, ErrRateLimit) 在 Code == ErrorCodeRateLimit 时返回 true。
+	ErrRateLimit = errors.New("rate limit exceeded")
+
+	// ErrTimeout 表示请求超时。
+	// 与 *ProviderError 互认：errors.Is(err, ErrTimeout) 在 Code == ErrorCodeTimeout 时返回 true。
+	ErrTimeout = errors.New("provider request timeout")
+
+	// ErrContextLength 表示输入超过模型上下文长度限制。
+	// 与 *ProviderError 互认：errors.Is(err, ErrContextLength) 在 Code == ErrorCodeContextLength 时返回 true。
+	ErrContextLength = errors.New("context length exceeded")
+
+	// ErrContentFilter 表示请求被平台内容安全策略拦截。
+	// 与 *ProviderError 互认：errors.Is(err, ErrContentFilter) 在 Code == ErrorCodeContentFilter 时返回 true。
+	ErrContentFilter = errors.New("content filtered")
+
+	// ErrInvalidRequest 表示请求参数无效或不被平台接受。
+	// 与 *ProviderError 互认：errors.Is(err, ErrInvalidRequest) 在 Code == ErrorCodeInvalidRequest 时返回 true。
+	ErrInvalidRequest = errors.New("invalid provider request")
+
+	// ErrServerError 表示平台服务端异常。
+	// 与 *ProviderError 互认：errors.Is(err, ErrServerError) 在 Code == ErrorCodeServerError 时返回 true。
+	ErrServerError = errors.New("provider server error")
+
+	// ErrNetwork 表示发起请求时遇到网络层错误。
+	// 与 *ProviderError 互认：errors.Is(err, ErrNetwork) 在 Code == ErrorCodeNetwork 时返回 true。
+	ErrNetwork = errors.New("provider network error")
 )
 
 func providerIsNil(p Provider) bool {
@@ -362,10 +395,10 @@ type FunctionCallDelta struct {
 
 // NewStreamReader 基于回调构造一个与底层传输无关的流读取器。
 // 可选扩展包可以通过它返回自定义流式结果，同时复用统一的 StreamChunk 抽象。
-func NewStreamReader(recv func() (*StreamChunk, error), close func() error) *StreamReader {
+func NewStreamReader(recv func() (*StreamChunk, error), closeFn func() error) *StreamReader {
 	return &StreamReader{
 		recv:  recv,
-		close: close,
+		close: closeFn,
 	}
 }
 
@@ -464,7 +497,7 @@ func (p *openaiProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRespo
 
 	resp, err := p.client.CreateChatCompletion(ctx, oReq)
 	if err != nil {
-		return nil, fmt.Errorf("[%s] chat completion: %w", p.name, err)
+		return nil, WrapProviderError(p.name, err)
 	}
 
 	if len(resp.Choices) == 0 {
@@ -515,7 +548,7 @@ func (p *openaiProvider) ChatStream(ctx context.Context, req *ChatRequest) (*Str
 
 	stream, err := p.client.CreateChatCompletionStream(ctx, oReq)
 	if err != nil {
-		return nil, fmt.Errorf("[%s] chat stream: %w", p.name, err)
+		return nil, WrapProviderError(p.name, err)
 	}
 
 	return NewStreamReader(func() (*StreamChunk, error) {
@@ -524,7 +557,7 @@ func (p *openaiProvider) ChatStream(ctx context.Context, req *ChatRequest) (*Str
 			return nil, io.EOF
 		}
 		if err != nil {
-			return nil, fmt.Errorf("stream recv: %w", err)
+			return nil, WrapProviderError(p.name, err)
 		}
 
 		chunk := &StreamChunk{}
@@ -568,32 +601,7 @@ func (p *openaiProvider) buildRequest(req *ChatRequest) (openai.ChatCompletionRe
 
 	msgs := make([]openai.ChatCompletionMessage, 0, len(req.Messages))
 	for _, m := range req.Messages {
-		om := openai.ChatCompletionMessage{
-			Role:    string(m.Role),
-			Content: m.Content,
-		}
-
-		// 传递 assistant 消息中的 tool calls（多轮 tool use 场景需要）
-		if m.Role == RoleAssistant && len(m.ToolCalls) > 0 {
-			om.ToolCalls = make([]openai.ToolCall, 0, len(m.ToolCalls))
-			for _, tc := range m.ToolCalls {
-				om.ToolCalls = append(om.ToolCalls, openai.ToolCall{
-					ID:   tc.ID,
-					Type: openai.ToolTypeFunction,
-					Function: openai.FunctionCall{
-						Name:      tc.Function.Name,
-						Arguments: tc.Function.Arguments,
-					},
-				})
-			}
-		}
-
-		// 传递 tool 角色消息的 ToolCallID
-		if m.Role == RoleTool && m.ToolCallID != "" {
-			om.ToolCallID = m.ToolCallID
-		}
-
-		msgs = append(msgs, om)
+		msgs = append(msgs, buildOpenAIMessage(m))
 	}
 
 	oReq := openai.ChatCompletionRequest{
@@ -651,6 +659,33 @@ func (p *openaiProvider) buildRequest(req *ChatRequest) (openai.ChatCompletionRe
 	}
 
 	return oReq, nil
+}
+
+func buildOpenAIMessage(m Message) openai.ChatCompletionMessage {
+	om := openai.ChatCompletionMessage{
+		Role:    string(m.Role),
+		Content: m.Content,
+	}
+
+	if m.Role == RoleAssistant && len(m.ToolCalls) > 0 {
+		om.ToolCalls = make([]openai.ToolCall, 0, len(m.ToolCalls))
+		for _, tc := range m.ToolCalls {
+			om.ToolCalls = append(om.ToolCalls, openai.ToolCall{
+				ID:   tc.ID,
+				Type: openai.ToolTypeFunction,
+				Function: openai.FunctionCall{
+					Name:      tc.Function.Name,
+					Arguments: tc.Function.Arguments,
+				},
+			})
+		}
+	}
+
+	if m.Role == RoleTool && m.ToolCallID != "" {
+		om.ToolCallID = m.ToolCallID
+	}
+
+	return om
 }
 
 // ============================================================

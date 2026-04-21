@@ -29,13 +29,18 @@ llm-provider/
 │   ├── toolrun.go             # RunToolLoop：Tool Use 自动循环执行器
 │   ├── embedder.go            # Embedder 接口、请求/响应、openaiEmbedder 实现
 │   ├── embedder_helpers.go    # Embedding 便捷函数：SimpleEmbed、EmbedBatch
+│   ├── errors.go              # ProviderError / ErrorCode / WrapProviderError
+│   ├── middleware.go          # Middleware / Handler 类型 + WithMiddlewares 装饰器
 │   ├── provider_test.go       # Chat / Tool Use 单测
 │   ├── embedder_test.go       # Embedding 单测
+│   ├── errors_test.go         # ProviderError / ErrorCode / WrapProviderError 单测
+│   ├── middleware_test.go     # Middleware 装饰器 + 洋葱顺序测试
 │   └── runtime_test.go        # 运行时集成测试
 └── example/
     ├── main.go                # 基础使用示例（Chat）
     ├── tooluse/main.go        # Tool Use 手动多轮示例
     ├── toolloop/main.go       # RunToolLoop 自动循环示例
+    ├── middleware/main.go     # Middleware：Logging / TokenStats / Retry 参考实现
     └── embedding/main.go      # Embedding + RAG 最小闭环示例
 ```
 
@@ -145,7 +150,7 @@ reg := provider.QuickRegistry(map[provider.ProviderName]string{
     provider.ProviderMoonshot:    os.Getenv("MOONSHOT_API_KEY"),
 })
 
-// 第一个注册成功的自动成为默认 provider
+// 默认 provider 按成功注册的 ProviderName 排序后取第一个
 p, err := reg.Default()
 ```
 
@@ -393,7 +398,34 @@ fmt.Println(resp.Content) // "北京现在 28°C，天气晴朗。"
 
 - `maxRounds`：最大循环次数（推荐 5-10），防止模型无限调用工具
 - `handler`：工具执行函数，接收函数名和 JSON 参数，返回结果字符串
-- 如果 handler 返回 error，RunToolLoop 会将错误信息包装为 JSON 回传给模型，让模型有机会纠正
+- 如果 handler 返回 error，`RunToolLoop` 默认会把**脱敏后的** JSON 错误结果回传给模型，让模型有机会纠正，但不会默认暴露原始内部错误细节
+
+如果你需要自定义错误回传格式或显式开启并行工具执行，使用 `RunToolLoopWithOptions`：
+
+```go
+resp, err := provider.RunToolLoopWithOptions(
+    ctx,
+    p,
+    req,
+    handler,
+    provider.RunToolLoopOptions{
+        MaxRounds:          5,
+        ParallelToolCalls: true,
+        ToolErrorEncoder: func(_ context.Context, tc provider.ToolCall, err error) (provider.Message, error) {
+            return provider.ToolResultMessageJSON(tc.ID, map[string]string{
+                "error": err.Error(),
+                "mode":  "custom",
+            })
+        },
+    },
+)
+```
+
+默认值：
+
+- `RunToolLoop` 等价于使用兼容默认 options 调用 `RunToolLoopWithOptions`
+- `ParallelToolCalls` 默认关闭
+- `ToolErrorEncoder` 默认使用安全脱敏编码器
 
 ### 方式二：手动管理多轮对话
 
@@ -702,6 +734,208 @@ reg.GetEmbedder(provider.ProviderQwen)         // 按名称获取
 reg.DefaultEmbedder()                          // 获取默认
 reg.SetDefaultEmbedder(provider.ProviderZhipu) // 切换默认
 reg.EmbedderNames()                            // 列出所有已注册 embedder
+```
+
+## Middleware（中间件扩展）
+
+当你需要日志、重试、限流、断路器、token 统计、审计、缓存这类横切关注点时，本库**不内置任何具体策略**，只提供扩展口子——装饰器 + Handler 类型。调用方用 30 行以内就能自行实现任一能力，策略完全由你控制。
+
+### 为什么不内置？
+
+- 限流的阈值、断路器的窗口、日志的格式、审计的存储、脱敏的字段 —— **每家项目口径不同**
+- 一旦内置某种实现，就会产生滑坡："为什么不内置 Prometheus？为什么不内置 OTel？"
+- Middleware 抽象只有几个函数类型，学习成本极低，却能让调用方完全自主
+
+### 核心类型
+
+```go
+// 三种处理器对应 Chat / ChatStream / Embed 三条路径
+type Handler       func(ctx context.Context, req *ChatRequest) (*ChatResponse, error)
+type StreamHandler func(ctx context.Context, req *ChatRequest) (*StreamReader, error)
+type EmbedHandler  func(ctx context.Context, req *EmbeddingRequest) (*EmbeddingResponse, error)
+
+// 中间件 = next → 装饰后的 next
+type Middleware       func(next Handler) Handler
+type StreamMiddleware func(next StreamHandler) StreamHandler
+type EmbedMiddleware  func(next EmbedHandler) EmbedHandler
+
+// 装饰 Provider / Embedder，洋葱模型组合
+func WithMiddlewares(p Provider, opts MiddlewareOptions) Provider
+func TryWithMiddlewares(p Provider, opts MiddlewareOptions) (Provider, error)
+func WithEmbedderMiddlewares(e Embedder, mws ...EmbedMiddleware) Embedder
+func TryWithEmbedderMiddlewares(e Embedder, mws ...EmbedMiddleware) (Embedder, error)
+```
+
+### 最简示例：日志中间件
+
+```go
+func loggingMiddleware(name provider.ProviderName) provider.Middleware {
+    return func(next provider.Handler) provider.Handler {
+        return func(ctx context.Context, req *provider.ChatRequest) (*provider.ChatResponse, error) {
+            start := time.Now()
+            resp, err := next(ctx, req)
+            if err != nil {
+                log.Printf("[chat] provider=%s model=%s elapsed=%s err=%v", name, req.Model, time.Since(start), err)
+            } else {
+                log.Printf("[chat] provider=%s model=%s elapsed=%s tokens=%d", name, req.Model, time.Since(start), resp.Usage.TotalTokens)
+            }
+            return resp, err
+        }
+    }
+}
+
+p := provider.WithMiddlewares(base, provider.MiddlewareOptions{
+    Chat: []provider.Middleware{loggingMiddleware(base.Name())},
+})
+```
+
+### 重试中间件（基于 `ProviderError.Retryable`）
+
+```go
+func retryMiddleware(maxAttempts int) provider.Middleware {
+    return func(next provider.Handler) provider.Handler {
+        return func(ctx context.Context, req *provider.ChatRequest) (*provider.ChatResponse, error) {
+            var last error
+            for attempt := 1; attempt <= maxAttempts; attempt++ {
+                resp, err := next(ctx, req)
+                if err == nil {
+                    return resp, nil
+                }
+                last = err
+
+                var pErr *provider.ProviderError
+                if !errors.As(err, &pErr) || !pErr.Retryable || attempt == maxAttempts {
+                    return nil, last
+                }
+
+                // 这里为演示保持最简；生产环境建议加退避、jitter、上限。
+                select {
+                case <-ctx.Done():
+                    return nil, ctx.Err()
+                case <-time.After(500 * time.Millisecond):
+                }
+            }
+            return nil, last
+        }
+    }
+}
+```
+
+完整示例见 [`example/middleware/main.go`](example/middleware/main.go)。
+示例还演示了 `tokenStatsMiddleware(stats *int64)`，用 `atomic.AddInt64` 累计总 token 消耗。
+
+### 洋葱模型执行顺序
+
+```go
+p := provider.WithMiddlewares(base, provider.MiddlewareOptions{
+    Chat: []provider.Middleware{
+        loggingMiddleware(),         // [0] 最外层：第一个进、最后一个出
+        tokenStatsMiddleware(&cnt),  // [1]
+        retryMiddleware(3, 500*time.Millisecond), // [len-1] 最内层：最贴近真实 Chat
+    },
+})
+
+// 请求执行路径：
+//   logging.enter → tokenStats.enter → retry.enter
+//                                          → 真实 Chat
+//   logging.exit  ← tokenStats.exit  ← retry.exit
+```
+
+`opts.Chat` 装饰 `Chat`，`opts.Stream` 装饰 `ChatStream`，互不影响。切片中的 `nil` 条目会被跳过。
+
+### Embedder 侧对称能力
+
+```go
+emb := provider.WithEmbedderMiddlewares(baseEmb, loggingEmbedMiddleware())
+```
+
+签名与 Chat 侧完全对称，用 `EmbedHandler` / `EmbedMiddleware` 类型。
+
+### 组合与叠加
+
+`WithMiddlewares` 的返回值本身是 `Provider`，可以**再次传入** `WithMiddlewares` 外再包一层——适合"基础能力按全局注册、特定请求链路再加一层"。
+
+如果你不希望装饰阶段因空值直接 panic，改用 `TryWithMiddlewares` / `TryWithEmbedderMiddlewares`，由调用方显式处理 `ErrNilProvider` / `ErrNilEmbedder`。
+
+### 错误处理：`ProviderError` + 8 个 Sentinel
+
+底层 provider 错误统一包装为 `*ProviderError`。调用方既可以用 `errors.Is` 走高频分支，也可以用 `errors.As` 拿到结构化字段：
+
+```go
+type ProviderError struct {
+    Provider   ProviderName
+    Code       ErrorCode
+    StatusCode int
+    Status     string
+    RawCode    string
+    RawType    string
+    RawParam   string
+    Retryable  bool
+    Message    string
+    Cause      error
+}
+```
+
+字段语义：
+
+- `Provider`：错误来自哪个 provider。
+- `Code`：稳定的错误分类，适合业务分支判断。
+- `StatusCode` / `Status`：底层 HTTP 信息；网络错误时可能为零值。
+- `RawCode` / `RawType` / `RawParam`：厂商原始诊断字段，适合日志和告警。
+- `Retryable`：是否值得调用方自行重试。
+- `Message` / `Cause`：平台返回消息与原始错误链。
+
+8 个 sentinel 如下：
+
+- `ErrAuth`
+- `ErrRateLimit`
+- `ErrTimeout`
+- `ErrContextLength`
+- `ErrContentFilter`
+- `ErrInvalidRequest`
+- `ErrServerError`
+- `ErrNetwork`
+
+对应的 `ErrorCode` 常量包括：
+
+- `ErrorCodeUnknown`
+- `ErrorCodeAuth`
+- `ErrorCodeRateLimit`
+- `ErrorCodeTimeout`
+- `ErrorCodeContextLength`
+- `ErrorCodeContentFilter`
+- `ErrorCodeInvalidRequest`
+- `ErrorCodeServerError`
+- `ErrorCodeNetwork`
+
+消费方式：
+
+```go
+resp, err := p.Chat(ctx, req)
+
+// 方式 1：高频分支用 errors.Is
+if errors.Is(err, provider.ErrRateLimit) {
+    // 被限流，自行退避
+}
+if errors.Is(err, provider.ErrAuth) {
+    // 鉴权失败，应该告警
+}
+
+// 方式 2：拿结构化字段做更细判断
+var pErr *provider.ProviderError
+if errors.As(err, &pErr) {
+    switch pErr.Code {
+    case provider.ErrorCodeTimeout, provider.ErrorCodeServerError, provider.ErrorCodeNetwork:
+        // 可恢复错误
+    case provider.ErrorCodeContextLength:
+        // 提示调用方裁剪输入
+    }
+}
+
+// context 取消 / 超时仍然透传
+if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+    // 调用方主动取消或超时
+}
 ```
 
 ## 多轮对话

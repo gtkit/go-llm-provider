@@ -2,11 +2,11 @@ package provider
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/gtkit/json"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -378,7 +378,7 @@ func TestOpenaiEmbedderEmbed(t *testing.T) {
 		require.ErrorIs(t, err, ErrEmptyEmbeddingInput)
 	})
 
-	t.Run("propagates http error with provider tag", func(t *testing.T) {
+	t.Run("propagates provider error with provider tag", func(t *testing.T) {
 		t.Parallel()
 
 		srv := newEmbeddingMockServer(t, func(w http.ResponseWriter, _ *http.Request) {
@@ -397,7 +397,14 @@ func TestOpenaiEmbedderEmbed(t *testing.T) {
 		_, err = e.Embed(context.Background(), &EmbeddingRequest{Input: []string{"hi"}})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "[openai]")
-		assert.Contains(t, err.Error(), "create embeddings")
+
+		var providerErr *ProviderError
+		require.ErrorAs(t, err, &providerErr, "expected *ProviderError from WrapProviderError")
+		assert.Equal(t, ProviderName("openai"), providerErr.Provider)
+		assert.Equal(t, ErrorCodeAuth, providerErr.Code)
+		assert.Equal(t, 401, providerErr.StatusCode)
+		assert.False(t, providerErr.Retryable)
+		assert.ErrorIs(t, err, ErrAuth, "401 should satisfy errors.Is(err, ErrAuth)")
 	})
 
 	t.Run("respects context cancellation", func(t *testing.T) {

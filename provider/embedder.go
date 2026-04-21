@@ -151,7 +151,7 @@ func (e *openaiEmbedder) Embed(ctx context.Context, req *EmbeddingRequest) (*Emb
 
 	resp, err := e.client.CreateEmbeddings(ctx, oReq)
 	if err != nil {
-		return nil, fmt.Errorf("[%s] create embeddings: %w", e.name, err)
+		return nil, WrapProviderError(e.name, err)
 	}
 
 	out := &EmbeddingResponse{

@@ -2,10 +2,11 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"time"
+
+	"github.com/gtkit/json"
 
 	"github.com/gtkit/go-llm-provider/provider"
 )
