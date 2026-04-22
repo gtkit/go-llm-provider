@@ -147,6 +147,17 @@ go run main.go
 - 新代码优先使用 `provider.AllPresets()` 读取预设；`provider.Presets` 仅为兼容旧代码保留。
 - 如果你不希望 `QuickRegistry` 静默跳过失败项，请改用 `QuickRegistryStrict`。
 
+| 项目 | v1 | v2 |
+|------|----|----|
+| Module Path | `github.com/gtkit/go-llm-provider` | `github.com/gtkit/go-llm-provider/v2` |
+| `Message.Content` | `string` | `[]ContentPart` |
+| 文本消息构造 | `Message{Role: ..., Content: "..."}` | `UserText(...)` / `SystemText(...)` / `AssistantText(...)` |
+| 多模态输入 | 不支持 | 支持 `TextPart` / `ImageURLPart` / `ImageDataPart` |
+| Thinking 请求字段 | `EnableThinking bool` | `Thinking *Thinking` |
+| Structured Output | 不支持 | `ResponseFormat *ResponseFormat` |
+| 推理输出 | 只暴露最终 `Content` | 新增 `ChatResponse.Reasoning`、`StreamChunk.ReasoningDelta`、`Usage.ReasoningTokens` |
+| 典型升级动作 | 原样继续用即可 | 需要改 import 路径、消息构造方式、thinking 配置方式 |
+
 ### 方式一：QuickRegistry（推荐日常使用）
 
 传一组 `ProviderName -> APIKey` 的映射，自动使用预设的 BaseURL 和默认模型。空 APIKey 会被自动跳过，不会报错。
