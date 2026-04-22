@@ -8,7 +8,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/gtkit/go-llm-provider/provider"
+	"github.com/gtkit/go-llm-provider/v2/provider"
 )
 
 func main() {
@@ -55,8 +55,8 @@ func run() error {
 
 	stream, err := p.ChatStream(ctx, &provider.ChatRequest{
 		Messages: []provider.Message{
-			{Role: provider.RoleSystem, Content: "You are a concise Go assistant."},
-			{Role: provider.RoleUser, Content: "Give me two tips for writing stable Go services."},
+			provider.SystemText("You are a concise Go assistant."),
+			provider.UserText("Give me two tips for writing stable Go services."),
 		},
 		MaxTokens: 256,
 	})

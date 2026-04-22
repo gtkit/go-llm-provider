@@ -1,4 +1,4 @@
-module github.com/gtkit/go-llm-provider
+module github.com/gtkit/go-llm-provider/v2
 
 go 1.26
 

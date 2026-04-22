@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/gtkit/json"
+	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -209,7 +210,7 @@ func TestBuildRequest(t *testing.T) {
 	t.Run("uses default model when empty", func(t *testing.T) {
 		t.Parallel()
 		req, err := p.buildRequest(&ChatRequest{
-			Messages: []Message{{Role: RoleUser, Content: "hi"}},
+			Messages: []Message{UserText("hi")},
 		})
 		require.NoError(t, err)
 		assert.Equal(t, "deepseek-chat", req.Model)
@@ -219,7 +220,7 @@ func TestBuildRequest(t *testing.T) {
 		t.Parallel()
 		req, err := p.buildRequest(&ChatRequest{
 			Model:    "deepseek-reasoner",
-			Messages: []Message{{Role: RoleUser, Content: "hi"}},
+			Messages: []Message{UserText("hi")},
 		})
 		require.NoError(t, err)
 		assert.Equal(t, "deepseek-reasoner", req.Model)
@@ -230,8 +231,8 @@ func TestBuildRequest(t *testing.T) {
 		temp := float32(0.7)
 		req, err := p.buildRequest(&ChatRequest{
 			Messages: []Message{
-				{Role: RoleSystem, Content: "you are helpful"},
-				{Role: RoleUser, Content: "hello"},
+				SystemText("you are helpful"),
+				UserText("hello"),
 			},
 			MaxTokens:   1024,
 			Temperature: &temp,
@@ -246,6 +247,117 @@ func TestBuildRequest(t *testing.T) {
 		assert.InDelta(t, 0.7, req.Temperature, 0.0001)
 		assert.Equal(t, []string{"\n"}, req.Stop)
 	})
+
+	t.Run("uses string content for single text part", func(t *testing.T) {
+		t.Parallel()
+
+		req, err := p.buildRequest(&ChatRequest{
+			Messages: []Message{UserText("hello")},
+		})
+		require.NoError(t, err)
+		require.Len(t, req.Messages, 1)
+		assert.Equal(t, "hello", req.Messages[0].Content)
+		assert.Empty(t, req.Messages[0].MultiContent)
+	})
+
+	t.Run("uses multi content for multiple text parts", func(t *testing.T) {
+		t.Parallel()
+
+		req, err := p.buildRequest(&ChatRequest{
+			Messages: []Message{
+				UserMessage(TextPart("hello"), TextPart("world")),
+			},
+		})
+		require.NoError(t, err)
+		require.Len(t, req.Messages, 1)
+		assert.Empty(t, req.Messages[0].Content)
+		require.Len(t, req.Messages[0].MultiContent, 2)
+		assert.Equal(t, openai.ChatMessagePartTypeText, req.Messages[0].MultiContent[0].Type)
+		assert.Equal(t, "hello", req.Messages[0].MultiContent[0].Text)
+		assert.Equal(t, "world", req.Messages[0].MultiContent[1].Text)
+	})
+
+	t.Run("uses multi content for text and image url", func(t *testing.T) {
+		t.Parallel()
+
+		req, err := p.buildRequest(&ChatRequest{
+			Messages: []Message{
+				UserMessage(
+					TextPart("describe"),
+					ImageURLPartWithDetail("https://example.com/cat.png", ImageDetailHigh),
+				),
+			},
+		})
+		require.NoError(t, err)
+		require.Len(t, req.Messages, 1)
+		assert.Empty(t, req.Messages[0].Content)
+		require.Len(t, req.Messages[0].MultiContent, 2)
+		require.NotNil(t, req.Messages[0].MultiContent[1].ImageURL)
+		assert.Equal(t, "https://example.com/cat.png", req.Messages[0].MultiContent[1].ImageURL.URL)
+		assert.Equal(t, openai.ImageURLDetailHigh, req.Messages[0].MultiContent[1].ImageURL.Detail)
+	})
+
+	t.Run("uses data url for inline image bytes", func(t *testing.T) {
+		t.Parallel()
+
+		req, err := p.buildRequest(&ChatRequest{
+			Messages: []Message{
+				UserMessage(ImageDataPart([]byte("raw-image"), "image/png")),
+			},
+		})
+		require.NoError(t, err)
+		require.Len(t, req.Messages, 1)
+		require.Len(t, req.Messages[0].MultiContent, 1)
+		require.NotNil(t, req.Messages[0].MultiContent[0].ImageURL)
+		assert.Equal(t, "data:image/png;base64,cmF3LWltYWdl", req.Messages[0].MultiContent[0].ImageURL.URL)
+		assert.Equal(t, openai.ImageURLDetailAuto, req.Messages[0].MultiContent[0].ImageURL.Detail)
+	})
+
+	t.Run("uses empty string content for zero parts", func(t *testing.T) {
+		t.Parallel()
+
+		req, err := p.buildRequest(&ChatRequest{
+			Messages: []Message{UserMessage()},
+		})
+		require.NoError(t, err)
+		require.Len(t, req.Messages, 1)
+		assert.Empty(t, req.Messages[0].Content)
+		assert.Empty(t, req.Messages[0].MultiContent)
+	})
+}
+
+func TestChatSingleTextMessageKeepsLegacyPayloadShape(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&captured))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_1","object":"chat.completion","created":1,"model":"gpt-4.1-mini","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	p, err := NewProvider(ProviderConfig{
+		Name:    ProviderOpenAI,
+		BaseURL: srv.URL,
+		APIKey:  "sk-test",
+		Model:   "gpt-4.1-mini",
+	})
+	require.NoError(t, err)
+
+	_, err = p.Chat(t.Context(), &ChatRequest{
+		Messages: []Message{UserText("hello")},
+	})
+	require.NoError(t, err)
+
+	messages, ok := captured["messages"].([]any)
+	require.True(t, ok)
+	require.Len(t, messages, 1)
+
+	first, ok := messages[0].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "user", first["role"])
+	assert.Equal(t, "hello", first["content"])
 }
 
 // ============================================================
@@ -263,7 +375,7 @@ func TestBuildRequestWithTools(t *testing.T) {
 	t.Run("maps tools correctly", func(t *testing.T) {
 		t.Parallel()
 		req, err := p.buildRequest(&ChatRequest{
-			Messages: []Message{{Role: RoleUser, Content: "天气"}},
+			Messages: []Message{UserText("天气")},
 			Tools: []Tool{
 				{
 					Function: FunctionDef{
@@ -290,7 +402,7 @@ func TestBuildRequestWithTools(t *testing.T) {
 	t.Run("maps tool_choice string", func(t *testing.T) {
 		t.Parallel()
 		req, err := p.buildRequest(&ChatRequest{
-			Messages:   []Message{{Role: RoleUser, Content: "hi"}},
+			Messages:   []Message{UserText("hi")},
 			Tools:      []Tool{{Function: FunctionDef{Name: "f1"}}},
 			ToolChoice: ToolChoiceRequired,
 		})
@@ -301,7 +413,7 @@ func TestBuildRequestWithTools(t *testing.T) {
 	t.Run("maps tool_choice function", func(t *testing.T) {
 		t.Parallel()
 		req, err := p.buildRequest(&ChatRequest{
-			Messages:   []Message{{Role: RoleUser, Content: "hi"}},
+			Messages:   []Message{UserText("hi")},
 			Tools:      []Tool{{Function: FunctionDef{Name: "get_weather"}}},
 			ToolChoice: ToolChoiceFunction{Name: "get_weather"},
 		})
@@ -314,7 +426,7 @@ func TestBuildRequestWithTools(t *testing.T) {
 		t.Parallel()
 		parallel := true
 		req, err := p.buildRequest(&ChatRequest{
-			Messages:          []Message{{Role: RoleUser, Content: "hi"}},
+			Messages:          []Message{UserText("hi")},
 			ParallelToolCalls: &parallel,
 		})
 		require.NoError(t, err)
@@ -327,7 +439,7 @@ func TestBuildRequestWithTools(t *testing.T) {
 	t.Run("maps enable thinking", func(t *testing.T) {
 		t.Parallel()
 		req, err := p.buildRequest(&ChatRequest{
-			Messages:       []Message{{Role: RoleUser, Content: "hi"}},
+			Messages:       []Message{UserText("hi")},
 			EnableThinking: true,
 		})
 		require.NoError(t, err)
@@ -338,7 +450,7 @@ func TestBuildRequestWithTools(t *testing.T) {
 	t.Run("rejects invalid tool choice", func(t *testing.T) {
 		t.Parallel()
 		_, err := p.buildRequest(&ChatRequest{
-			Messages:   []Message{{Role: RoleUser, Content: "hi"}},
+			Messages:   []Message{UserText("hi")},
 			ToolChoice: ToolChoiceMode("sometimes"),
 		})
 		require.Error(t, err)
@@ -348,7 +460,7 @@ func TestBuildRequestWithTools(t *testing.T) {
 	t.Run("rejects empty function tool choice", func(t *testing.T) {
 		t.Parallel()
 		_, err := p.buildRequest(&ChatRequest{
-			Messages:   []Message{{Role: RoleUser, Content: "hi"}},
+			Messages:   []Message{UserText("hi")},
 			ToolChoice: ToolChoiceFunction{},
 		})
 		require.Error(t, err)
@@ -363,7 +475,7 @@ func TestBuildRequestWithTools(t *testing.T) {
 		}
 
 		_, err := other.buildRequest(&ChatRequest{
-			Messages:       []Message{{Role: RoleUser, Content: "hi"}},
+			Messages:       []Message{UserText("hi")},
 			EnableThinking: true,
 		})
 		require.Error(t, err)
@@ -383,7 +495,7 @@ func TestBuildRequestWithToolMessages(t *testing.T) {
 		t.Parallel()
 		req, err := p.buildRequest(&ChatRequest{
 			Messages: []Message{
-				{Role: RoleUser, Content: "天气怎么样"},
+				UserText("天气怎么样"),
 				{
 					Role: RoleAssistant,
 					ToolCalls: []ToolCall{
@@ -396,11 +508,7 @@ func TestBuildRequestWithToolMessages(t *testing.T) {
 						},
 					},
 				},
-				{
-					Role:       RoleTool,
-					Content:    `{"temperature":28}`,
-					ToolCallID: "call_abc123",
-				},
+				ToolResultMessage("call_abc123", `{"temperature":28}`),
 			},
 		})
 		require.NoError(t, err)
@@ -501,7 +609,8 @@ func TestToolResultMessage(t *testing.T) {
 	msg := ToolResultMessage("call_abc", `{"result": 42}`)
 	assert.Equal(t, RoleTool, msg.Role)
 	assert.Equal(t, "call_abc", msg.ToolCallID)
-	assert.Equal(t, `{"result": 42}`, msg.Content)
+	require.Len(t, msg.Content, 1)
+	assert.Equal(t, `{"result": 42}`, msg.Content[0].Text)
 }
 
 func TestToolResultMessageJSON(t *testing.T) {
@@ -512,10 +621,11 @@ func TestToolResultMessageJSON(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, RoleTool, msg.Role)
 	assert.Equal(t, "call_xyz", msg.ToolCallID)
+	require.Len(t, msg.Content, 1)
 
 	// 验证 Content 是合法 JSON
 	var parsed map[string]any
-	err = json.Unmarshal([]byte(msg.Content), &parsed)
+	err = json.Unmarshal([]byte(msg.Content[0].Text), &parsed)
 	require.NoError(t, err)
 	assert.InDelta(t, 28.0, parsed["temperature"], 0.0001)
 }
@@ -632,7 +742,7 @@ func TestOpenAIProviderChat_WrapsProviderError(t *testing.T) {
 			require.NoError(t, err)
 
 			_, err = p.Chat(context.Background(), &ChatRequest{
-				Messages: []Message{{Role: RoleUser, Content: "hi"}},
+				Messages: []Message{UserText("hi")},
 			})
 			require.Error(t, err)
 

@@ -16,7 +16,7 @@ func SimpleChat(ctx context.Context, p Provider, userMessage string) (string, er
 
 	resp, err := p.Chat(ctx, &ChatRequest{
 		Messages: []Message{
-			{Role: RoleUser, Content: userMessage},
+			UserText(userMessage),
 		},
 	})
 	if err != nil {
@@ -33,9 +33,9 @@ func SimpleChatWithSystem(ctx context.Context, p Provider, system, userMessage s
 
 	msgs := make([]Message, 0, 2)
 	if system != "" {
-		msgs = append(msgs, Message{Role: RoleSystem, Content: system})
+		msgs = append(msgs, SystemText(system))
 	}
-	msgs = append(msgs, Message{Role: RoleUser, Content: userMessage})
+	msgs = append(msgs, UserText(userMessage))
 
 	resp, err := p.Chat(ctx, &ChatRequest{Messages: msgs})
 	if err != nil {

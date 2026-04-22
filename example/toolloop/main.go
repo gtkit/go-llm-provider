@@ -9,7 +9,7 @@ import (
 
 	"github.com/gtkit/json"
 
-	"github.com/gtkit/go-llm-provider/provider"
+	"github.com/gtkit/go-llm-provider/v2/provider"
 )
 
 func main() {
@@ -63,8 +63,8 @@ func run() error {
 
 	resp, err := provider.RunToolLoop(ctx, p, &provider.ChatRequest{
 		Messages: []provider.Message{
-			{Role: provider.RoleSystem, Content: "You are a helpful assistant that can call tools."},
-			{Role: provider.RoleUser, Content: "What time is it, and what is (15 + 27) * 3?"},
+			provider.SystemText("You are a helpful assistant that can call tools."),
+			provider.UserText("What time is it, and what is (15 + 27) * 3?"),
 		},
 		Tools: tools,
 	}, 5, func(_ context.Context, name, arguments string) (string, error) {

@@ -67,7 +67,7 @@ func TestCollectStreamRejectsNilProvider(t *testing.T) {
 	t.Parallel()
 
 	_, err := CollectStream(t.Context(), nil, &ChatRequest{
-		Messages: []Message{{Role: RoleUser, Content: "hello"}},
+		Messages: []Message{UserText("hello")},
 	}, nil)
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "provider is nil")
@@ -90,7 +90,7 @@ func TestRunToolLoopRejectsTypedNilProvider(t *testing.T) {
 	var p *openaiProvider
 
 	resp, err := RunToolLoop(t.Context(), p, &ChatRequest{
-		Messages: []Message{{Role: RoleUser, Content: "hello"}},
+		Messages: []Message{UserText("hello")},
 	}, 1, func(context.Context, string, string) (string, error) {
 		return "", nil
 	})
@@ -112,7 +112,7 @@ func TestRunToolLoopPreservesEnableThinking(t *testing.T) {
 	}
 
 	resp, err := RunToolLoop(t.Context(), p, &ChatRequest{
-		Messages:       []Message{{Role: RoleUser, Content: "hello"}},
+		Messages:       []Message{UserText("hello")},
 		EnableThinking: true,
 	}, 1, func(context.Context, string, string) (string, error) {
 		return "", nil
@@ -150,7 +150,7 @@ func TestRunToolLoopSanitizesHandlerErrorsByDefault(t *testing.T) {
 	handlerErr := errors.New("bad \"quote\"\nline")
 
 	resp, err := RunToolLoop(t.Context(), p, &ChatRequest{
-		Messages: []Message{{Role: RoleUser, Content: "hello"}},
+		Messages: []Message{UserText("hello")},
 	}, 2, func(context.Context, string, string) (string, error) {
 		return "", handlerErr
 	})
@@ -161,14 +161,15 @@ func TestRunToolLoopSanitizesHandlerErrorsByDefault(t *testing.T) {
 
 	lastMessage := requests[1].Messages[len(requests[1].Messages)-1]
 	assert.Equal(t, RoleTool, lastMessage.Role)
+	require.Len(t, lastMessage.Content, 1)
 
 	var payload struct {
 		Error string `json:"error"`
 	}
 
-	require.NoError(t, json.Unmarshal([]byte(lastMessage.Content), &payload))
+	require.NoError(t, json.Unmarshal([]byte(lastMessage.Content[0].Text), &payload))
 	assert.Equal(t, "tool execution failed", payload.Error)
-	assert.NotContains(t, lastMessage.Content, handlerErr.Error())
+	assert.NotContains(t, lastMessage.Content[0].Text, handlerErr.Error())
 }
 
 func TestRunToolLoopUsesCustomToolErrorEncoder(t *testing.T) {
@@ -202,7 +203,7 @@ func TestRunToolLoopUsesCustomToolErrorEncoder(t *testing.T) {
 	resp, err := RunToolLoopWithOptions(
 		t.Context(),
 		p,
-		&ChatRequest{Messages: []Message{{Role: RoleUser, Content: "hello"}}},
+		&ChatRequest{Messages: []Message{UserText("hello")}},
 		func(context.Context, string, string) (string, error) {
 			return "", handlerErr
 		},
@@ -221,11 +222,12 @@ func TestRunToolLoopUsesCustomToolErrorEncoder(t *testing.T) {
 	require.Len(t, requests, 2)
 
 	lastMessage := requests[1].Messages[len(requests[1].Messages)-1]
+	require.Len(t, lastMessage.Content, 1)
 	var payload struct {
 		Error string `json:"error"`
 		Mode  string `json:"mode"`
 	}
-	require.NoError(t, json.Unmarshal([]byte(lastMessage.Content), &payload))
+	require.NoError(t, json.Unmarshal([]byte(lastMessage.Content[0].Text), &payload))
 	assert.Equal(t, handlerErr.Error(), payload.Error)
 	assert.Equal(t, "custom", payload.Mode)
 }
@@ -257,7 +259,7 @@ func TestRunToolLoopDefaultExecutionRemainsSerial(t *testing.T) {
 	resp, err := RunToolLoop(
 		t.Context(),
 		p,
-		&ChatRequest{Messages: []Message{{Role: RoleUser, Content: "hello"}}},
+		&ChatRequest{Messages: []Message{UserText("hello")}},
 		2,
 		func(_ context.Context, _ string, _ string) (string, error) {
 			current := active.Add(1)
@@ -300,11 +302,13 @@ func TestRunToolLoopParallelToolCallsPreserveMessageOrder(t *testing.T) {
 
 	var active atomic.Int32
 	var maxActive atomic.Int32
+	slowStarted := make(chan struct{})
+	fastStarted := make(chan struct{})
 
 	resp, err := RunToolLoopWithOptions(
 		t.Context(),
 		p,
-		&ChatRequest{Messages: []Message{{Role: RoleUser, Content: "hello"}}},
+		&ChatRequest{Messages: []Message{UserText("hello")}},
 		func(_ context.Context, name, _ string) (string, error) {
 			current := active.Add(1)
 			for {
@@ -316,10 +320,22 @@ func TestRunToolLoopParallelToolCallsPreserveMessageOrder(t *testing.T) {
 			defer active.Add(-1)
 
 			if name == "slow" {
+				close(slowStarted)
+				select {
+				case <-fastStarted:
+				case <-time.After(time.Second):
+					return "", errors.New("fast tool did not start in parallel")
+				}
 				time.Sleep(40 * time.Millisecond)
 				return "slow-result", nil
 			}
 
+			close(fastStarted)
+			select {
+			case <-slowStarted:
+			case <-time.After(time.Second):
+				return "", errors.New("slow tool did not start in parallel")
+			}
 			time.Sleep(5 * time.Millisecond)
 			return "fast-result", nil
 		},
@@ -334,8 +350,10 @@ func TestRunToolLoopParallelToolCallsPreserveMessageOrder(t *testing.T) {
 	require.Greater(t, maxActive.Load(), int32(1))
 
 	lastTwo := requests[1].Messages[len(requests[1].Messages)-2:]
+	require.Len(t, lastTwo[0].Content, 1)
+	require.Len(t, lastTwo[1].Content, 1)
 	assert.Equal(t, []string{"call_1", "call_2"}, []string{lastTwo[0].ToolCallID, lastTwo[1].ToolCallID})
-	assert.Equal(t, []string{"slow-result", "fast-result"}, []string{lastTwo[0].Content, lastTwo[1].Content})
+	assert.Equal(t, []string{"slow-result", "fast-result"}, []string{lastTwo[0].Content[0].Text, lastTwo[1].Content[0].Text})
 }
 
 func TestRunToolLoopStopsOnContextErrorFromHandler(t *testing.T) {
@@ -355,7 +373,7 @@ func TestRunToolLoopStopsOnContextErrorFromHandler(t *testing.T) {
 	resp, err := RunToolLoop(
 		t.Context(),
 		p,
-		&ChatRequest{Messages: []Message{{Role: RoleUser, Content: "hello"}}},
+		&ChatRequest{Messages: []Message{UserText("hello")}},
 		2,
 		func(context.Context, string, string) (string, error) {
 			return "", fmt.Errorf("wrapped: %w", context.Canceled)

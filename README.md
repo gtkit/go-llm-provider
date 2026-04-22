@@ -24,6 +24,7 @@ llm-provider/
 ├── CHANGELOG.md
 ├── provider/
 │   ├── provider.go            # 核心：Provider 接口、Registry、请求/响应、Tool Use 类型
+│   ├── content.go             # Message 多模态 ContentPart 与便捷构造器
 │   ├── presets.go             # 各平台预设配置（BaseURL + Chat/Embedding 默认模型）
 │   ├── helpers.go             # Chat 便捷函数：SimpleChat、CollectStream
 │   ├── toolrun.go             # RunToolLoop：Tool Use 自动循环执行器
@@ -33,11 +34,13 @@ llm-provider/
 │   ├── middleware.go          # Middleware / Handler 类型 + WithMiddlewares 装饰器
 │   ├── provider_test.go       # Chat / Tool Use 单测
 │   ├── embedder_test.go       # Embedding 单测
+│   ├── content_test.go        # ContentPart 构造器与映射测试
 │   ├── errors_test.go         # ProviderError / ErrorCode / WrapProviderError 单测
 │   ├── middleware_test.go     # Middleware 装饰器 + 洋葱顺序测试
 │   └── runtime_test.go        # 运行时集成测试
 └── example/
     ├── main.go                # 基础使用示例（Chat）
+    ├── vision/main.go         # Vision 多模态输入示例（text + image）
     ├── tooluse/main.go        # Tool Use 手动多轮示例
     ├── toolloop/main.go       # RunToolLoop 自动循环示例
     ├── middleware/main.go     # Middleware：Logging / TokenStats / Retry 参考实现
@@ -47,10 +50,10 @@ llm-provider/
 ## 安装
 
 ```bash
-go get github.com/gtkit/go-llm-provider
+go get github.com/gtkit/go-llm-provider/v2
 ```
 
-> 将 `github.com/gtkit/go-llm-provider` 替换为你实际的模块路径。
+> 将 `github.com/gtkit/go-llm-provider/v2` 替换为你实际的模块路径。
 
 ## 支持的平台
 
@@ -92,7 +95,7 @@ import (
     "os"
     "time"
 
-    "github.com/gtkit/go-llm-provider/provider"
+    "github.com/gtkit/go-llm-provider/v2/provider"
 )
 
 func main() {
@@ -132,6 +135,7 @@ go run main.go
 - `NewProvider` 现在返回 `(Provider, error)`，并在创建时校验 `Name`、`APIKey`、`Model`。
 - `StreamReader.Close()` 现在返回 `error`，推荐显式处理，或像示例一样在 `defer` 中忽略。
 - `ToolChoice` 不再接受任意 `string/any`，请改用 `provider.ToolChoiceAuto`、`provider.ToolChoiceNone`、`provider.ToolChoiceRequired` 或 `provider.ToolChoiceFunction{...}`。
+- `Message.Content` 已从 `string` 升级为 `[]ContentPart`。旧写法 `Message{Role: ..., Content: "..."}` 不再编译，请改用 `provider.UserText(...)`、`provider.SystemText(...)`、`provider.TextPart(...)` 等构造器。
 - `EnableThinking` 目前只对 `DeepSeek` 生效；对其他 provider 开启会直接返回错误。
 - 新代码优先使用 `provider.AllPresets()` 读取预设；`provider.Presets` 仅为兼容旧代码保留。
 - 如果你不希望 `QuickRegistry` 静默跳过失败项，请改用 `QuickRegistryStrict`。
@@ -230,8 +234,8 @@ temp := float32(0.7)
 resp, err := p.Chat(ctx, &provider.ChatRequest{
     Model: "deepseek-reasoner",  // 可选，覆盖默认模型
     Messages: []provider.Message{
-        {Role: provider.RoleSystem, Content: "你是一个翻译助手"},
-        {Role: provider.RoleUser, Content: "把下面的话翻译成英文：今天天气真好"},
+        provider.SystemText("你是一个翻译助手"),
+        provider.UserText("把下面的话翻译成英文：今天天气真好"),
     },
     MaxTokens:   1024,
     Temperature: &temp,
@@ -251,7 +255,7 @@ fmt.Printf("Token: prompt=%d, completion=%d, total=%d\n",
 ```go
 stream, err := p.ChatStream(ctx, &provider.ChatRequest{
     Messages: []provider.Message{
-        {Role: provider.RoleUser, Content: "写一首关于 Go 的诗"},
+        provider.UserText("写一首关于 Go 的诗"),
     },
 })
 if err != nil {
@@ -367,6 +371,41 @@ provider.ParamSchema{
 }
 ```
 
+### 多模态输入（图像）
+
+当模型支持视觉输入时，可以把文本和图片组合成同一条消息。纯文本场景仍然推荐用 `UserText` / `SystemText` 保持最简心智。
+
+```go
+resp, err := p.Chat(ctx, &provider.ChatRequest{
+    Messages: []provider.Message{
+        provider.UserMessage(
+            provider.TextPart("请描述这张图片里的主要内容"),
+            provider.ImageURLPart("https://example.com/cat.png"),
+        ),
+    },
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println(resp.Content)
+```
+
+如果图片来自本地字节流，用 `ImageDataPart`：
+
+```go
+imgBytes, _ := os.ReadFile("cat.png")
+
+resp, err := p.Chat(ctx, &provider.ChatRequest{
+    Messages: []provider.Message{
+        provider.UserMessage(
+            provider.TextPart("识别这张图里的文字"),
+            provider.ImageDataPart(imgBytes, "image/png"),
+        ),
+    },
+})
+```
+
 ### 方式一：RunToolLoop（推荐）
 
 `RunToolLoop` 自动处理 Tool Use 的完整循环：发请求 → 检测 tool_calls → 执行工具 → 回传结果 → 再次请求 → ... 直到模型给出最终文本回复。
@@ -374,7 +413,7 @@ provider.ParamSchema{
 ```go
 resp, err := provider.RunToolLoop(ctx, p, &provider.ChatRequest{
     Messages: []provider.Message{
-        {Role: provider.RoleUser, Content: "北京天气怎么样？"},
+        provider.UserText("北京天气怎么样？"),
     },
     Tools: tools,
 }, 5, func(ctx context.Context, name, arguments string) (string, error) {
@@ -434,7 +473,7 @@ resp, err := provider.RunToolLoopWithOptions(
 ```go
 // 第一步：发送带 tools 的请求
 messages := []provider.Message{
-    {Role: provider.RoleUser, Content: "北京天气怎么样？"},
+    provider.UserText("北京天气怎么样？"),
 }
 
 resp, err := p.Chat(ctx, &provider.ChatRequest{
@@ -944,10 +983,10 @@ if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) 
 
 ```go
 history := []provider.Message{
-    {Role: provider.RoleSystem, Content: "你是一个 Go 语言助手"},
-    {Role: provider.RoleUser, Content: "什么是 channel？"},
-    {Role: provider.RoleAssistant, Content: "Channel 是 Go 中 goroutine 之间通信的管道..."},
-    {Role: provider.RoleUser, Content: "给我一个带缓冲 channel 的例子"},
+    provider.SystemText("你是一个 Go 语言助手"),
+    provider.UserText("什么是 channel？"),
+    provider.AssistantText("Channel 是 Go 中 goroutine 之间通信的管道..."),
+    provider.UserText("给我一个带缓冲 channel 的例子"),
 }
 
 resp, err := p.Chat(ctx, &provider.ChatRequest{Messages: history})
@@ -955,7 +994,7 @@ resp, err := p.Chat(ctx, &provider.ChatRequest{Messages: history})
 // 把新回复追加到 history 继续对话
 history = append(history, provider.Message{
     Role:    provider.RoleAssistant,
-    Content: resp.Content,
+    Content: []provider.ContentPart{provider.TextPart(resp.Content)},
 })
 ```
 
@@ -996,7 +1035,7 @@ func chatHandler(c *gin.Context) {
 
     resp, err := p.Chat(c.Request.Context(), &provider.ChatRequest{
         Model:    req.Model,
-        Messages: []provider.Message{{Role: provider.RoleUser, Content: req.Message}},
+        Messages: []provider.Message{provider.UserText(req.Message)},
     })
     if err != nil {
         c.JSON(500, gin.H{"error": err.Error()})
@@ -1204,10 +1243,35 @@ resp.AssistantMessage() Message // 转换为可追加到历史的 Message
 ```go
 type Message struct {
     Role       Role       // RoleSystem / RoleUser / RoleAssistant / RoleTool
-    Content    string
+    Content    []ContentPart
     ToolCalls  []ToolCall // Role == RoleAssistant 时，模型请求的工具调用
     ToolCallID string     // Role == RoleTool 时，关联的 ToolCall.ID
 }
+```
+
+### ContentPart
+
+```go
+type ContentPart struct {
+    Type        ContentType
+    Text        string
+    ImageURL    string
+    ImageData   []byte
+    MIMEType    string
+    ImageDetail ImageDetail
+}
+
+const (
+    ContentTypeText     ContentType = "text"
+    ContentTypeImageURL ContentType = "image_url"
+)
+
+// 便捷构造器
+provider.TextPart("hello")
+provider.ImageURLPart("https://example.com/cat.png")
+provider.ImageDataPart(bytes, "image/png")
+provider.UserText("hello")
+provider.UserMessage(provider.TextPart("describe"), provider.ImageURLPart("https://..."))
 ```
 
 ### Tool Use 类型
@@ -1424,7 +1488,7 @@ import (
     "io"
     "net/http"
 
-    "github.com/gtkit/go-llm-provider/provider"
+    "github.com/gtkit/go-llm-provider/v2/provider"
 )
 
 type Provider struct {
@@ -1488,7 +1552,7 @@ import (
     "os"
     "time"
 
-    "github.com/gtkit/go-llm-provider/provider"
+    "github.com/gtkit/go-llm-provider/v2/provider"
     "github.com/your-org/your-llm-extension/anthropicprovider"
 )
 

@@ -168,7 +168,7 @@ const (
 // Message 是一条对话消息。
 type Message struct {
 	Role    Role
-	Content string
+	Content []ContentPart
 
 	// ---------- Tool Use 相关字段 ----------
 
@@ -202,7 +202,7 @@ func (r *ChatResponse) HasToolCalls() bool {
 func (r *ChatResponse) AssistantMessage() Message {
 	return Message{
 		Role:      RoleAssistant,
-		Content:   r.Content,
+		Content:   []ContentPart{TextPart(r.Content)},
 		ToolCalls: r.ToolCalls,
 	}
 }
@@ -320,7 +320,7 @@ func (f ToolChoiceFunction) applyToolChoice(req *openai.ChatCompletionRequest) e
 func ToolResultMessage(toolCallID, content string) Message {
 	return Message{
 		Role:       RoleTool,
-		Content:    content,
+		Content:    []ContentPart{TextPart(content)},
 		ToolCallID: toolCallID,
 	}
 }
@@ -663,8 +663,37 @@ func (p *openaiProvider) buildRequest(req *ChatRequest) (openai.ChatCompletionRe
 
 func buildOpenAIMessage(m Message) openai.ChatCompletionMessage {
 	om := openai.ChatCompletionMessage{
-		Role:    string(m.Role),
-		Content: m.Content,
+		Role: string(m.Role),
+	}
+
+	switch {
+	case len(m.Content) == 1 && m.Content[0].Type == ContentTypeText:
+		om.Content = m.Content[0].Text
+	case len(m.Content) > 0:
+		om.MultiContent = make([]openai.ChatMessagePart, 0, len(m.Content))
+		for _, part := range m.Content {
+			switch part.Type {
+			case ContentTypeText:
+				om.MultiContent = append(om.MultiContent, openai.ChatMessagePart{
+					Type: openai.ChatMessagePartTypeText,
+					Text: part.Text,
+				})
+			case ContentTypeImageURL:
+				source, ok := part.preferredImageSource()
+				if !ok {
+					continue
+				}
+				om.MultiContent = append(om.MultiContent, openai.ChatMessagePart{
+					Type: openai.ChatMessagePartTypeImageURL,
+					ImageURL: &openai.ChatMessageImageURL{
+						URL:    source,
+						Detail: openai.ImageURLDetail(part.ImageDetail),
+					},
+				})
+			}
+		}
+	default:
+		om.Content = ""
 	}
 
 	if m.Role == RoleAssistant && len(m.ToolCalls) > 0 {

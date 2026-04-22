@@ -20,7 +20,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/gtkit/go-llm-provider/provider"
+	"github.com/gtkit/go-llm-provider/v2/provider"
 )
 
 // FAQ 知识库：生产环境应来自数据库或文件

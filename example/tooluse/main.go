@@ -8,7 +8,7 @@ import (
 
 	"github.com/gtkit/json"
 
-	"github.com/gtkit/go-llm-provider/provider"
+	"github.com/gtkit/go-llm-provider/v2/provider"
 )
 
 func main() {
@@ -76,8 +76,8 @@ func run() error {
 	}
 
 	messages := []provider.Message{
-		{Role: provider.RoleSystem, Content: "You are a helpful assistant that can call tools."},
-		{Role: provider.RoleUser, Content: "What is the weather in Beijing, and what is the USD to CNY exchange rate?"},
+		provider.SystemText("You are a helpful assistant that can call tools."),
+		provider.UserText("What is the weather in Beijing, and what is the USD to CNY exchange rate?"),
 	}
 
 	resp, err := p.Chat(ctx, &provider.ChatRequest{

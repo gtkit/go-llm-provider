@@ -15,7 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/gtkit/go-llm-provider/provider"
+	"github.com/gtkit/go-llm-provider/v2/provider"
 )
 
 func main() {

@@ -6,7 +6,19 @@
 
 ### Added
 
+- 新增 `ContentPart` / `ContentType` / `ImageDetail` 以及 `TextPart` / `ImageURLPart` / `ImageDataPart` 等便捷构造器，支持多模态消息内容
+- 新增 `example/vision/main.go`，演示文本 + 图像输入的最小调用方式
+
 ### Changed
+
+- **⚠ 破坏性变更**：`Message.Content` 从 `string` 升级为 `[]ContentPart`，旧写法 `Message{Content: "..."}` 不再编译
+- `openaiProvider.buildRequest` 现在按消息内容自动选择 `Content string` 或 `MultiContent []ChatMessagePart` 映射路径
+- 仓库内 Message 示例与调用代码统一改为 `UserText` / `SystemText` / `UserMessage(...parts)` 构造器写法
+- `go.mod` module path 已切换为 `github.com/gtkit/go-llm-provider/v2`
+
+### Removed
+
+- 移除 `Message.Content string` 纯文本直传写法，统一改为 parts 模型
 
 ## [1.2.0] - 2026-04-21
 
