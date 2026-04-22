@@ -1,0 +1,52 @@
+name: Release Tag Verify
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+      - "v*.*.*-*"
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Setup golangci-lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.5.0
+          install-mode: binary
+          args: --version
+
+      - name: Verify root module
+        run: |
+          go vet ./...
+          golangci-lint run ./...
+          go test -race -count=1 -timeout=5m ./...
+          go test -bench=. -benchmem -count=3 ./...
+          go test -coverprofile=coverage.out ./provider
+          coverage=$(go tool cover -func=coverage.out | awk '/^total:/ {gsub("%","",$3); print $3}')
+          awk -v got="$coverage" 'BEGIN { if (got+0 < 80.0) exit 1 }' || { echo "root provider coverage $coverage% < 80%"; exit 1; }
+          echo "root provider coverage: $coverage%"
+
+      - name: Verify v2 module
+        working-directory: v2
+        run: |
+          go vet ./...
+          golangci-lint run ./...
+          go test -race -count=1 -timeout=5m ./...
+          go test -bench=. -benchmem -count=3 ./...
+          go test -coverprofile=coverage.out ./provider
+          coverage=$(go tool cover -func=coverage.out | awk '/^total:/ {gsub("%","",$3); print $3}')
+          awk -v got="$coverage" 'BEGIN { if (got+0 < 80.0) exit 1 }' || { echo "v2 provider coverage $coverage% < 80%"; exit 1; }
+          echo "v2 provider coverage: $coverage%"
