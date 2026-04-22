@@ -1,0 +1,86 @@
+package provider
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"strings"
+)
+
+// SimpleChat 是最简便的调用方式：一问一答，返回纯文本。
+func SimpleChat(ctx context.Context, p Provider, userMessage string) (string, error) {
+	if providerIsNil(p) {
+		return "", ErrNilProvider
+	}
+
+	resp, err := p.Chat(ctx, &ChatRequest{
+		Messages: []Message{
+			UserText(userMessage),
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("simple chat: %w", err)
+	}
+	return resp.Content, nil
+}
+
+// SimpleChatWithSystem 带 system prompt 的一问一答。
+func SimpleChatWithSystem(ctx context.Context, p Provider, system, userMessage string) (string, error) {
+	if providerIsNil(p) {
+		return "", ErrNilProvider
+	}
+
+	msgs := make([]Message, 0, 2)
+	if system != "" {
+		msgs = append(msgs, SystemText(system))
+	}
+	msgs = append(msgs, UserText(userMessage))
+
+	resp, err := p.Chat(ctx, &ChatRequest{Messages: msgs})
+	if err != nil {
+		return "", fmt.Errorf("simple chat with system: %w", err)
+	}
+	return resp.Content, nil
+}
+
+// CollectStream 将流式响应收集为完整的文本字符串。
+// onChunk 可选：如果提供，每收到一个 chunk 会回调（用于实时打印等场景）。
+func CollectStream(ctx context.Context, p Provider, req *ChatRequest, onChunk func(delta string)) (result string, err error) {
+	if providerIsNil(p) {
+		return "", ErrNilProvider
+	}
+	if req == nil {
+		return "", ErrNilChatRequest
+	}
+
+	stream, err := p.ChatStream(ctx, req)
+	if err != nil {
+		return "", fmt.Errorf("collect stream: %w", err)
+	}
+	defer func() {
+		err = errors.Join(err, stream.Close())
+	}()
+
+	var sb strings.Builder
+	for {
+		select {
+		case <-ctx.Done():
+			return sb.String(), context.Cause(ctx)
+		default:
+		}
+
+		chunk, err := stream.Recv()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return sb.String(), fmt.Errorf("collect stream recv: %w", err)
+		}
+		sb.WriteString(chunk.Delta)
+		if onChunk != nil {
+			onChunk(chunk.Delta)
+		}
+	}
+	return sb.String(), nil
+}
