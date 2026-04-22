@@ -66,12 +66,12 @@ go get github.com/gtkit/go-llm-provider/v2
 | 平台 | ProviderName | 预设 BaseURL | 默认 Chat 模型 | 默认 Embedding 模型 | API Key 获取 |
 |------|-------------|-------------|---------|---------|-------------|
 | DeepSeek | `deepseek` | `https://api.deepseek.com/v1` | `deepseek-chat` | — | [platform.deepseek.com](https://platform.deepseek.com/) |
-| 通义千问（百炼） | `qwen` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus` | `text-embedding-v3` | [百炼控制台](https://bailian.console.aliyun.com/) |
-| 智谱 AI | `zhipu` | `https://open.bigmodel.cn/api/paas/v4/` | `glm-4-plus` | `embedding-3` | [open.bigmodel.cn](https://open.bigmodel.cn/) |
-| 百度千帆 | `qianfan` | `https://qianfan.baidubce.com/v2` | `ernie-4.0-8k` | `embedding-v1` | [千帆控制台](https://console.bce.baidu.com/qianfan/) |
+| 通义千问（百炼） | `qwen` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen3.6-plus` | `text-embedding-v3` | [百炼控制台](https://bailian.console.aliyun.com/) |
+| 智谱 AI | `zhipu` | `https://open.bigmodel.cn/api/paas/v4/` | `glm-5.1` | `embedding-3` | [open.bigmodel.cn](https://open.bigmodel.cn/) |
+| 百度千帆 | `qianfan` | `https://qianfan.baidubce.com/v2` | `ernie-4.5-turbo-32k` | `embedding-v1` | [千帆控制台](https://console.bce.baidu.com/qianfan/) |
 | 硅基流动 | `siliconflow` | `https://api.siliconflow.cn/v1` | `deepseek-ai/DeepSeek-V3` | `BAAI/bge-m3` | [siliconflow.cn](https://siliconflow.cn/) |
-| Moonshot / Kimi | `moonshot` | `https://api.moonshot.cn/v1` | `moonshot-v1-8k` | — | [platform.moonshot.cn](https://platform.moonshot.cn/) |
-| OpenAI | `openai` | `https://api.openai.com/v1` | `gpt-4.1-mini` | `text-embedding-3-small` | [platform.openai.com](https://platform.openai.com/) |
+| Moonshot / Kimi | `moonshot` | `https://api.moonshot.cn/v1` | `kimi-k2-turbo-preview` | — | [platform.moonshot.cn](https://platform.moonshot.cn/) |
+| OpenAI | `openai` | `https://api.openai.com/v1` | `gpt-5.4-mini` | `text-embedding-3-small` | [platform.openai.com](https://platform.openai.com/) |
 
 > 预设地址和默认模型可能随平台更新而变化，建议定期对照各平台官方文档确认。
 > Embedding 列显示"—"的平台表示官方暂无 embedding 接口，`NewEmbedderFromPreset` 会返回错误。
@@ -194,7 +194,7 @@ if err != nil {
 使用预设地址，但自定义模型名。适合同一个平台想用不同模型的场景。
 
 ```go
-// 用千问的 qwen-max 模型而不是默认的 qwen-plus
+// 用千问的 qwen-max 模型而不是默认的 qwen3.6-plus
 p, err := provider.NewProviderFromPreset(
     provider.ProviderQwen,
     os.Getenv("QWEN_API_KEY"),

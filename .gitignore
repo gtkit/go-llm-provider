@@ -24,10 +24,15 @@ coverage.html
 *.out
 *.prof
 
-# go build ./example/xxx/ 产生的二进制（与子目录同名）
+# go run / go build 示例程序可能生成的二进制
 /embedding
 /tooluse
 /toolloop
+/middleware
+/structured
+/reasoning
+/vision
+/main
 
 # 日志
 *.log

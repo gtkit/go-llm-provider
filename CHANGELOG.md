@@ -8,7 +8,15 @@
 
 ### Changed
 
-## [1.2.0] - 2026-04-21
+### Deprecated
+
+### Removed
+
+### Fixed
+
+### Security
+
+## [1.3.0] - 2026-04-22
 
 ### Added
 
@@ -22,27 +30,16 @@
 
 ### Changed
 
-- 内部实现：仓库所有 `encoding/json` 引用迁移到 `github.com/gtkit/json`，对外行为不变
 - `RunToolLoop` 默认改为向模型回传脱敏后的工具错误 JSON，不再默认暴露原始内部错误字符串
 - `ProviderError` 新增原始诊断字段，保留 provider-native `code` / `type` / `param` 信息
-- README 明确 `QuickRegistry` 默认 provider 采用 `ProviderName` 排序后的首个成功注册项
+- 各平台预设默认 Chat 模型同步更新到 2026-04 官方推荐值，覆盖 OpenAI / 通义千问 / 智谱 / 百度千帆 / Moonshot 等平台
+- README 补充 `Middleware`、工具错误脱敏与 `v1` / `v2` 差异说明，便于调用方选择升级路径
 
-## [1.0.1] - 2026-04-17
+## [1.2.0] - 2026-04-21
 
-### Fixed
+### Changed
 
-- 基础能力稳定性修复与文档完善
-
-## [1.0.0] - 初始发布
-
-### Added
-
-- `Provider` 接口 + `Registry` 注册表，支持 7 家 OpenAI 兼容平台预设（OpenAI / DeepSeek / 通义千问 / 智谱 / 百度千帆 / 硅基流动 / Moonshot）
-- 非流式 `Chat` 与流式 `ChatStream`
-- `SimpleChat` / `SimpleChatWithSystem` / `CollectStream` 便捷函数
-- Tool Use / Function Calling 完整支持，含 `RunToolLoop` 自动多轮执行器
-- `ParamSchema` JSON Schema 构建器
-- `NewStreamReader` 开放式流读取器，供扩展包复用
+- 该版本标签已发布，但实际对应代码快照与 `v1.1.1` 相同，未引入额外 API 或行为变化
 
 ## [1.1.1] - 2026-04-20
 
@@ -58,3 +55,31 @@
 - 新增错误变量：`ErrNilEmbedder` / `ErrNilEmbeddingRequest` / `ErrEmptyEmbeddingInput` / `ErrInvalidEmbedderConfig`
 - 新增 `example/embedding/main.go` 演示基于 Embedding 的最小 RAG 检索闭环
 - README 新增「Embedding（文本向量化）」章节与「常用 Embedding 模型速查」子章节，"支持的平台"表格补充 Embedding 默认模型列
+
+## [1.0.2] - 2026-04-20
+
+### Added
+
+- 新增 OpenAI 官方平台预设与快速注册支持，统一纳入现有 `Provider` / `Registry` 使用方式
+
+### Changed
+
+- 流式响应读取器重构为可复用的 `StreamReader`，便于扩展包复用
+- 示例与 README 补充 OpenAI 使用方式，以及 Claude / Gemini 扩展接入说明
+
+## [1.0.1] - 2026-03-27
+
+### Fixed
+
+- 基础能力稳定性修复与文档完善
+
+## [1.0.0] - 2026-03-06
+
+### Added
+
+- `Provider` 接口 + `Registry` 注册表，支持 7 家 OpenAI 兼容平台预设（OpenAI / DeepSeek / 通义千问 / 智谱 / 百度千帆 / 硅基流动 / Moonshot）
+- 非流式 `Chat` 与流式 `ChatStream`
+- `SimpleChat` / `SimpleChatWithSystem` / `CollectStream` 便捷函数
+- Tool Use / Function Calling 完整支持，含 `RunToolLoop` 自动多轮执行器
+- `ParamSchema` JSON Schema 构建器
+- `NewStreamReader` 开放式流读取器，供扩展包复用

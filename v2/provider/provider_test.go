@@ -51,6 +51,37 @@ func TestNewProviderFromPreset(t *testing.T) {
 	})
 }
 
+func TestNewProviderFromPresetUsesApprovedDefaultModels(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name          string
+		providerName  ProviderName
+		expectedModel string
+	}{
+		{name: "deepseek", providerName: ProviderDeepSeek, expectedModel: "deepseek-chat"},
+		{name: "qwen", providerName: ProviderQwen, expectedModel: "qwen3.6-plus"},
+		{name: "zhipu", providerName: ProviderZhipu, expectedModel: "glm-5.1"},
+		{name: "qianfan", providerName: ProviderQianfan, expectedModel: "ernie-4.5-turbo-32k"},
+		{name: "siliconflow", providerName: ProviderSiliconFlow, expectedModel: "deepseek-ai/DeepSeek-V3"},
+		{name: "moonshot", providerName: ProviderMoonshot, expectedModel: "kimi-k2-turbo-preview"},
+		{name: "openai", providerName: ProviderOpenAI, expectedModel: "gpt-5.4-mini"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			p, err := NewProviderFromPreset(tc.providerName, "test-key", "")
+			require.NoError(t, err)
+
+			op, ok := p.(*openaiProvider)
+			require.True(t, ok)
+			assert.Equal(t, tc.expectedModel, op.model)
+		})
+	}
+}
+
 // ============================================================
 // Registry 测试
 // ============================================================

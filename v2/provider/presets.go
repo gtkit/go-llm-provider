@@ -23,24 +23,24 @@ type Preset struct {
 var presetCatalog = map[ProviderName]Preset{
 	ProviderDeepSeek: {
 		BaseURL:      "https://api.deepseek.com/v1",
-		DefaultModel: "deepseek-chat", // DeepSeek-V3
+		DefaultModel: "deepseek-chat", // DeepSeek-V3.2 非思考模式
 		// DeepSeek 官方暂无 embedding 模型
 	},
 	ProviderZhipu: {
 		BaseURL:        "https://open.bigmodel.cn/api/paas/v4/",
-		DefaultModel:   "glm-4-plus",
+		DefaultModel:   "glm-5.1",
 		EmbeddingModel: "embedding-3",
 	},
 	ProviderQwen: {
 		// 阿里百炼 / DashScope OpenAI 兼容端点
 		BaseURL:        "https://dashscope.aliyuncs.com/compatible-mode/v1",
-		DefaultModel:   "qwen-plus",
+		DefaultModel:   "qwen3.6-plus",
 		EmbeddingModel: "text-embedding-v3",
 	},
 	ProviderQianfan: {
 		// 百度千帆 OpenAI 兼容 V2 接口
 		BaseURL:        "https://qianfan.baidubce.com/v2",
-		DefaultModel:   "ernie-4.0-8k",
+		DefaultModel:   "ernie-4.5-turbo-32k",
 		EmbeddingModel: "embedding-v1",
 	},
 	ProviderSiliconFlow: {
@@ -50,12 +50,12 @@ var presetCatalog = map[ProviderName]Preset{
 	},
 	ProviderMoonshot: {
 		BaseURL:      "https://api.moonshot.cn/v1",
-		DefaultModel: "moonshot-v1-8k",
+		DefaultModel: "kimi-k2-turbo-preview",
 		// Moonshot 官方暂无 embedding 模型
 	},
 	ProviderOpenAI: {
 		BaseURL:        "https://api.openai.com/v1",
-		DefaultModel:   "gpt-4.1-mini",
+		DefaultModel:   "gpt-5.4-mini",
 		EmbeddingModel: "text-embedding-3-small",
 	},
 }
