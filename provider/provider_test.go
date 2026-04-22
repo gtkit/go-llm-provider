@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -436,17 +437,6 @@ func TestBuildRequestWithTools(t *testing.T) {
 		assert.True(t, *got)
 	})
 
-	t.Run("maps enable thinking", func(t *testing.T) {
-		t.Parallel()
-		req, err := p.buildRequest(&ChatRequest{
-			Messages:       []Message{UserText("hi")},
-			EnableThinking: true,
-		})
-		require.NoError(t, err)
-		require.NotNil(t, req.ChatTemplateKwargs)
-		assert.Equal(t, true, req.ChatTemplateKwargs["enable_thinking"])
-	})
-
 	t.Run("rejects invalid tool choice", func(t *testing.T) {
 		t.Parallel()
 		_, err := p.buildRequest(&ChatRequest{
@@ -467,20 +457,6 @@ func TestBuildRequestWithTools(t *testing.T) {
 		assert.ErrorIs(t, err, ErrInvalidToolChoice)
 	})
 
-	t.Run("rejects thinking on unsupported provider", func(t *testing.T) {
-		t.Parallel()
-		other := &openaiProvider{
-			name:  ProviderQwen,
-			model: "qwen-plus",
-		}
-
-		_, err := other.buildRequest(&ChatRequest{
-			Messages:       []Message{UserText("hi")},
-			EnableThinking: true,
-		})
-		require.Error(t, err)
-		assert.ErrorIs(t, err, ErrUnsupportedThinking)
-	})
 }
 
 func TestBuildRequestWithToolMessages(t *testing.T) {
@@ -755,4 +731,90 @@ func TestOpenAIProviderChat_WrapsProviderError(t *testing.T) {
 			assert.ErrorIs(t, err, tt.wantIs)
 		})
 	}
+}
+
+func TestOpenAIProviderChat_MapsReasoningFields(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_reasoning",
+			"object":"chat.completion",
+			"created":1,
+			"model":"deepseek-reasoner",
+			"choices":[
+				{
+					"index":0,
+					"message":{
+						"role":"assistant",
+						"content":"final answer",
+						"reasoning_content":"thinking trace"
+					},
+					"finish_reason":"stop"
+				}
+			],
+			"usage":{
+				"prompt_tokens":10,
+				"completion_tokens":20,
+				"total_tokens":30,
+				"completion_tokens_details":{
+					"reasoning_tokens":7
+				}
+			}
+		}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	p, err := NewProvider(ProviderConfig{
+		Name:    ProviderDeepSeek,
+		BaseURL: srv.URL,
+		APIKey:  "sk-test",
+		Model:   "deepseek-reasoner",
+	})
+	require.NoError(t, err)
+
+	resp, err := p.Chat(t.Context(), &ChatRequest{
+		Messages: []Message{UserText("hello")},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "final answer", resp.Content)
+	assert.Equal(t, "thinking trace", resp.Reasoning)
+	assert.Equal(t, 7, resp.Usage.ReasoningTokens)
+}
+
+func TestOpenAIProviderChatStream_MapsReasoningDelta(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"id\":\"chunk_1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"deepseek-reasoner\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"reasoning_content\":\"thinking step\"},\"finish_reason\":\"\"}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: {\"id\":\"chunk_2\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"deepseek-reasoner\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"final answer\"},\"finish_reason\":\"stop\"}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(srv.Close)
+
+	p, err := NewProvider(ProviderConfig{
+		Name:    ProviderDeepSeek,
+		BaseURL: srv.URL,
+		APIKey:  "sk-test",
+		Model:   "deepseek-reasoner",
+	})
+	require.NoError(t, err)
+
+	stream, err := p.ChatStream(t.Context(), &ChatRequest{
+		Messages: []Message{UserText("hello")},
+	})
+	require.NoError(t, err)
+	defer func() { _ = stream.Close() }()
+
+	first, err := stream.Recv()
+	require.NoError(t, err)
+	assert.Equal(t, "thinking step", first.ReasoningDelta)
+	assert.Empty(t, first.Delta)
+
+	second, err := stream.Recv()
+	require.NoError(t, err)
+	assert.Equal(t, "final answer", second.Delta)
+	assert.Equal(t, "stop", second.FinishReason)
 }

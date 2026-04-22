@@ -28,6 +28,8 @@ llm-provider/
 │   ├── presets.go             # 各平台预设配置（BaseURL + Chat/Embedding 默认模型）
 │   ├── helpers.go             # Chat 便捷函数：SimpleChat、CollectStream
 │   ├── toolrun.go             # RunToolLoop：Tool Use 自动循环执行器
+│   ├── reasoning.go           # Thinking 结构与推理模式常量
+│   ├── response_format.go     # Structured Output 结构与构造器
 │   ├── embedder.go            # Embedder 接口、请求/响应、openaiEmbedder 实现
 │   ├── embedder_helpers.go    # Embedding 便捷函数：SimpleEmbed、EmbedBatch
 │   ├── errors.go              # ProviderError / ErrorCode / WrapProviderError
@@ -35,11 +37,15 @@ llm-provider/
 │   ├── provider_test.go       # Chat / Tool Use 单测
 │   ├── embedder_test.go       # Embedding 单测
 │   ├── content_test.go        # ContentPart 构造器与映射测试
+│   ├── reasoning_test.go      # Thinking / Reasoning 映射测试
+│   ├── response_format_test.go # Structured Output 构造器与映射测试
 │   ├── errors_test.go         # ProviderError / ErrorCode / WrapProviderError 单测
 │   ├── middleware_test.go     # Middleware 装饰器 + 洋葱顺序测试
 │   └── runtime_test.go        # 运行时集成测试
 └── example/
     ├── main.go                # 基础使用示例（Chat）
+    ├── reasoning/main.go      # Thinking / Reasoning 示例
+    ├── structured/main.go     # Structured Output 示例
     ├── vision/main.go         # Vision 多模态输入示例（text + image）
     ├── tooluse/main.go        # Tool Use 手动多轮示例
     ├── toolloop/main.go       # RunToolLoop 自动循环示例
@@ -136,7 +142,8 @@ go run main.go
 - `StreamReader.Close()` 现在返回 `error`，推荐显式处理，或像示例一样在 `defer` 中忽略。
 - `ToolChoice` 不再接受任意 `string/any`，请改用 `provider.ToolChoiceAuto`、`provider.ToolChoiceNone`、`provider.ToolChoiceRequired` 或 `provider.ToolChoiceFunction{...}`。
 - `Message.Content` 已从 `string` 升级为 `[]ContentPart`。旧写法 `Message{Role: ..., Content: "..."}` 不再编译，请改用 `provider.UserText(...)`、`provider.SystemText(...)`、`provider.TextPart(...)` 等构造器。
-- `EnableThinking` 目前只对 `DeepSeek` 生效；对其他 provider 开启会直接返回错误。
+- `ChatRequest.EnableThinking` 已被移除，请改用 `ChatRequest.Thinking = &provider.Thinking{...}`。
+- 如需强制 JSON 输出，改用 `ChatRequest.ResponseFormat = provider.JSONObjectFormat()` 或 `provider.JSONSchemaFormatStrict(...)`。
 - 新代码优先使用 `provider.AllPresets()` 读取预设；`provider.Presets` 仅为兼容旧代码保留。
 - 如果你不希望 `QuickRegistry` 静默跳过失败项，请改用 `QuickRegistryStrict`。
 
@@ -405,6 +412,63 @@ resp, err := p.Chat(ctx, &provider.ChatRequest{
     },
 })
 ```
+
+### Thinking（思考模式）
+
+`Thinking` 抽象把“让模型多想一会”和“显式开关 provider 思考模式”统一到了一个字段里：
+
+```go
+enabled := true
+resp, err := p.Chat(ctx, &provider.ChatRequest{
+    Messages: []provider.Message{
+        provider.UserText("请解释 Go 的 goroutine 调度模型"),
+    },
+    Thinking: &provider.Thinking{
+        Enabled: &enabled,                     // DeepSeek 等支持显式开关的 provider
+        Effort:  provider.ThinkingEffortHigh,  // OpenAI o-series reasoning_effort
+    },
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println(resp.Content)
+fmt.Println(resp.Reasoning)
+fmt.Println(resp.Usage.ReasoningTokens)
+```
+
+说明：
+
+- DeepSeek：优先识别 `Enabled`
+- OpenAI：优先识别 `Effort`
+- 其他 OpenAI 兼容 provider：当前静默忽略，不报错
+
+### Structured Output（结构化输出）
+
+如果你希望模型严格按 JSON 返回，可以使用 `ResponseFormat`：
+
+```go
+resp, err := p.Chat(ctx, &provider.ChatRequest{
+    Messages: []provider.Message{
+        provider.UserText("返回一个包含 city 和 summary 的 JSON 对象"),
+    },
+    ResponseFormat: provider.JSONSchemaFormatStrict("city_summary", provider.ParamSchema{
+        Type: "object",
+        Properties: map[string]provider.ParamSchema{
+            "city":    {Type: "string"},
+            "summary": {Type: "string"},
+        },
+        Required: []string{"city", "summary"},
+    }),
+})
+```
+
+常用构造器：
+
+- `provider.TextFormat()`
+- `provider.JSONObjectFormat()`
+- `provider.JSONSchemaFormat(name, schema)`
+- `provider.JSONSchemaFormatStrict(name, schema)`
 
 ### 方式一：RunToolLoop（推荐）
 
@@ -1220,6 +1284,10 @@ type ChatRequest struct {
     Tools             []Tool           // 可用工具列表
     ToolChoice        ToolChoiceOption // ToolChoiceAuto / ToolChoiceNone / ToolChoiceRequired / ToolChoiceFunction{}
     ParallelToolCalls *bool            // 是否允许并行 tool calls
+
+    // Reasoning / Structured Output
+    Thinking       *Thinking
+    ResponseFormat *ResponseFormat
 }
 ```
 
@@ -1228,6 +1296,7 @@ type ChatRequest struct {
 ```go
 type ChatResponse struct {
     Content      string     // assistant 回复内容（tool call 时可能为空）
+    Reasoning    string     // 推理/思考内容
     FinishReason string     // "stop" / "length" / "tool_calls"
     Usage        Usage      // Token 用量统计
     ToolCalls    []ToolCall // 模型请求的工具调用列表
@@ -1311,9 +1380,10 @@ provider.ToolResultMessageJSON(toolCallID, result) (Message, error) // 自动序
 
 ```go
 type StreamChunk struct {
-    Delta        string          // 增量文本
-    FinishReason string          // 非空表示流结束
-    ToolCalls    []ToolCallDelta // 流式 tool call 增量
+    Delta          string          // 增量文本
+    ReasoningDelta string          // 增量推理文本
+    FinishReason   string          // 非空表示流结束
+    ToolCalls      []ToolCallDelta // 流式 tool call 增量
 }
 
 type ToolCallDelta struct {

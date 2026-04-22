@@ -99,21 +99,26 @@ func TestRunToolLoopRejectsTypedNilProvider(t *testing.T) {
 	assert.ErrorContains(t, err, "provider is nil")
 }
 
-func TestRunToolLoopPreservesEnableThinking(t *testing.T) {
+func TestRunToolLoopPreservesThinking(t *testing.T) {
 	t.Parallel()
 
+	enabled := true
 	p := &stubProvider{
 		name: ProviderDeepSeek,
 		chat: func(_ context.Context, req *ChatRequest) (*ChatResponse, error) {
 			require.NotNil(t, req)
-			assert.True(t, req.EnableThinking)
+			require.NotNil(t, req.Thinking)
+			require.NotNil(t, req.Thinking.Enabled)
+			assert.True(t, *req.Thinking.Enabled)
 			return &ChatResponse{Content: "done"}, nil
 		},
 	}
 
 	resp, err := RunToolLoop(t.Context(), p, &ChatRequest{
-		Messages:       []Message{UserText("hello")},
-		EnableThinking: true,
+		Messages: []Message{UserText("hello")},
+		Thinking: &Thinking{
+			Enabled: &enabled,
+		},
 	}, 1, func(context.Context, string, string) (string, error) {
 		return "", nil
 	})

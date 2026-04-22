@@ -35,8 +35,6 @@ var (
 	ErrInvalidProviderConfig = errors.New("invalid provider config")
 	// ErrInvalidToolChoice indicates that ChatRequest.ToolChoice contains an unsupported value.
 	ErrInvalidToolChoice = errors.New("invalid tool choice")
-	// ErrUnsupportedThinking indicates that EnableThinking is not supported by the selected provider.
-	ErrUnsupportedThinking = errors.New("enable thinking is only supported for deepseek")
 	// ErrNilEmbedder indicates that the caller passed a nil Embedder.
 	ErrNilEmbedder = errors.New("embedder is nil")
 	// ErrNilEmbeddingRequest indicates that the caller passed a nil embedding request.
@@ -151,8 +149,11 @@ type ChatRequest struct {
 
 	// ---------- 其他 ----------
 
-	// EnableThinking 用于支持 DeepSeek-R1 等思考模式模型。
-	EnableThinking bool
+	// Thinking controls provider-specific reasoning behavior.
+	Thinking *Thinking
+
+	// ResponseFormat requests structured output when supported by the provider.
+	ResponseFormat *ResponseFormat
 }
 
 // Role 定义消息角色。
@@ -184,6 +185,7 @@ type Message struct {
 // ChatResponse 是非流式对话的完整响应。
 type ChatResponse struct {
 	Content      string // assistant 回复的文本内容（可能为空，如果模型选择调用工具）
+	Reasoning    string // assistant 的推理/思考内容
 	FinishReason string // "stop", "length", "tool_calls" 等
 	Usage        Usage
 
@@ -211,6 +213,7 @@ func (r *ChatResponse) AssistantMessage() Message {
 type Usage struct {
 	PromptTokens     int
 	CompletionTokens int
+	ReasoningTokens  int
 	TotalTokens      int
 }
 
@@ -371,8 +374,9 @@ type StreamReader struct {
 
 // StreamChunk 是流式响应的一个片段。
 type StreamChunk struct {
-	Delta        string // 增量文本
-	FinishReason string // 非空时表示流结束
+	Delta          string // 增量文本
+	ReasoningDelta string // 增量推理文本
+	FinishReason   string // 非空时表示流结束
 
 	// ToolCalls 流式模式下的增量 tool call 数据。
 	// 每个 chunk 可能只包含部分 tool call 信息（如部分 arguments），
@@ -507,10 +511,12 @@ func (p *openaiProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRespo
 	choice := resp.Choices[0]
 	chatResp := &ChatResponse{
 		Content:      choice.Message.Content,
+		Reasoning:    choice.Message.ReasoningContent,
 		FinishReason: string(choice.FinishReason),
 		Usage: Usage{
 			PromptTokens:     resp.Usage.PromptTokens,
 			CompletionTokens: resp.Usage.CompletionTokens,
+			ReasoningTokens:  reasoningTokens(resp.Usage),
 			TotalTokens:      resp.Usage.TotalTokens,
 		},
 	}
@@ -564,6 +570,7 @@ func (p *openaiProvider) ChatStream(ctx context.Context, req *ChatRequest) (*Str
 		if len(resp.Choices) > 0 {
 			delta := resp.Choices[0].Delta
 			chunk.Delta = delta.Content
+			chunk.ReasoningDelta = delta.ReasoningContent
 			chunk.FinishReason = string(resp.Choices[0].FinishReason)
 
 			// 映射流式 tool call delta
@@ -648,17 +655,76 @@ func (p *openaiProvider) buildRequest(req *ChatRequest) (openai.ChatCompletionRe
 		oReq.ParallelToolCalls = req.ParallelToolCalls
 	}
 
-	if req.EnableThinking {
-		if p.name != ProviderDeepSeek {
-			return openai.ChatCompletionRequest{}, fmt.Errorf("%w: provider %q", ErrUnsupportedThinking, p.name)
-		}
-
-		oReq.ChatTemplateKwargs = map[string]any{
-			"enable_thinking": true,
-		}
+	applyThinking(&oReq, p.name, req.Thinking)
+	if err := applyResponseFormat(&oReq, req.ResponseFormat); err != nil {
+		return openai.ChatCompletionRequest{}, err
 	}
 
 	return oReq, nil
+}
+
+func reasoningTokens(usage openai.Usage) int {
+	if usage.CompletionTokensDetails == nil {
+		return 0
+	}
+	return usage.CompletionTokensDetails.ReasoningTokens
+}
+
+func applyThinking(req *openai.ChatCompletionRequest, providerName ProviderName, thinking *Thinking) {
+	if req == nil || thinking == nil {
+		return
+	}
+
+	if providerName == ProviderDeepSeek && thinking.Enabled != nil {
+		if req.ChatTemplateKwargs == nil {
+			req.ChatTemplateKwargs = make(map[string]any, 1)
+		}
+		req.ChatTemplateKwargs["enable_thinking"] = *thinking.Enabled
+	}
+
+	if providerName == ProviderOpenAI && thinking.Effort != "" {
+		req.ReasoningEffort = thinking.Effort
+	}
+}
+
+func applyResponseFormat(req *openai.ChatCompletionRequest, format *ResponseFormat) error {
+	if req == nil || format == nil {
+		return nil
+	}
+
+	switch format.Type {
+	case ResponseFormatText:
+		req.ResponseFormat = &openai.ChatCompletionResponseFormat{
+			Type: openai.ChatCompletionResponseFormatTypeText,
+		}
+	case ResponseFormatJSONObject:
+		req.ResponseFormat = &openai.ChatCompletionResponseFormat{
+			Type: openai.ChatCompletionResponseFormatTypeJSONObject,
+		}
+	case ResponseFormatJSONSchema:
+		schema, err := marshalResponseFormatSchema(format.Schema)
+		if err != nil {
+			return fmt.Errorf("marshal response format schema: %w", err)
+		}
+
+		strict := false
+		if format.Strict != nil {
+			strict = *format.Strict
+		}
+
+		req.ResponseFormat = &openai.ChatCompletionResponseFormat{
+			Type: openai.ChatCompletionResponseFormatTypeJSONSchema,
+			JSONSchema: &openai.ChatCompletionResponseFormatJSONSchema{
+				Name:   format.Name,
+				Schema: schema,
+				Strict: strict,
+			},
+		}
+	default:
+		return fmt.Errorf("unsupported response format type %q", format.Type)
+	}
+
+	return nil
 }
 
 func buildOpenAIMessage(m Message) openai.ChatCompletionMessage {
