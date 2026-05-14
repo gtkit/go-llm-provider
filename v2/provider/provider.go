@@ -13,8 +13,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/gtkit/json"
 
@@ -43,6 +46,18 @@ var (
 	ErrEmptyEmbeddingInput = errors.New("embedding input is empty")
 	// ErrInvalidEmbedderConfig indicates that EmbedderConfig is missing required fields.
 	ErrInvalidEmbedderConfig = errors.New("invalid embedder config")
+	// ErrNilStructuredTarget indicates that GenerateJSONInto received a nil target.
+	ErrNilStructuredTarget = errors.New("structured target is nil")
+	// ErrStructuredDecode indicates that structured response content could not be decoded.
+	ErrStructuredDecode = errors.New("structured response decode failed")
+	// ErrStructuredValidation indicates that decoded structured response content failed caller validation.
+	ErrStructuredValidation = errors.New("structured response validation failed")
+	// ErrEmptyEmbeddingVector indicates that a vector operation received no vector data.
+	ErrEmptyEmbeddingVector = errors.New("embedding vector is empty")
+	// ErrZeroEmbeddingVector indicates that cosine similarity received a zero-length magnitude vector.
+	ErrZeroEmbeddingVector = errors.New("embedding vector magnitude is zero")
+	// ErrEmbeddingDimensionMismatch indicates that vector dimensions differ.
+	ErrEmbeddingDimensionMismatch = errors.New("embedding vector dimensions mismatch")
 
 	// ErrAuth 表示鉴权失败。
 	// 与 *ProviderError 互认：errors.Is(err, ErrAuth) 在 Code == ErrorCodeAuth 时返回 true。
@@ -81,6 +96,32 @@ func providerIsNil(p Provider) bool {
 	return p == nil
 }
 
+// HTTPDoer is the minimal HTTP client contract used by Provider and Embedder.
+type HTTPDoer interface {
+	Do(req *http.Request) (*http.Response, error)
+}
+
+// DefaultHTTPClient returns the package default reusable HTTP client.
+//
+// The client intentionally leaves http.Client.Timeout unset so request budgets
+// stay under the caller's context, while transport-level timeouts prevent
+// hanging dial, TLS, and response-header waits.
+func DefaultHTTPClient() *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
+			DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          100,
+			MaxIdleConnsPerHost:   10,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ResponseHeaderTimeout: 60 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		},
+	}
+}
+
 // ProviderName identifies a registered provider.
 type ProviderName string
 
@@ -96,11 +137,12 @@ const (
 
 // ProviderConfig 描述一个供应商的连接配置。
 type ProviderConfig struct {
-	Name    ProviderName
-	BaseURL string // 平台 API 地址，例如 "https://open.bigmodel.cn/api/paas/v4/"
-	APIKey  string
-	Model   string // 默认模型，如 "glm-4"、"deepseek-chat"
-	OrgID   string // 可选，部分平台需要
+	Name       ProviderName
+	BaseURL    string // 平台 API 地址，例如 "https://open.bigmodel.cn/api/paas/v4/"
+	APIKey     string
+	Model      string // 默认模型，如 "glm-4"、"deepseek-chat"
+	OrgID      string // 可选，部分平台需要
+	HTTPClient HTTPDoer
 }
 
 // Provider 是统一的大模型调用接口。
@@ -469,6 +511,11 @@ func NewProvider(cfg ProviderConfig) (Provider, error) {
 	}
 	if cfg.OrgID != "" {
 		ocfg.OrgID = cfg.OrgID
+	}
+	if cfg.HTTPClient == nil {
+		ocfg.HTTPClient = DefaultHTTPClient()
+	} else {
+		ocfg.HTTPClient = cfg.HTTPClient
 	}
 
 	return &openaiProvider{

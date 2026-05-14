@@ -54,10 +54,11 @@ type Embedding struct {
 
 // EmbedderConfig 描述一个 embedder 的连接配置。
 type EmbedderConfig struct {
-	Name    ProviderName
-	BaseURL string
-	APIKey  string
-	Model   string // embedding 专用默认模型，如 "text-embedding-3-small"
+	Name       ProviderName
+	BaseURL    string
+	APIKey     string
+	Model      string // embedding 专用默认模型，如 "text-embedding-3-small"
+	HTTPClient HTTPDoer
 }
 
 // Validate reports missing required EmbedderConfig fields.
@@ -90,6 +91,11 @@ func NewEmbedder(cfg EmbedderConfig) (Embedder, error) {
 	ocfg := openai.DefaultConfig(cfg.APIKey)
 	if cfg.BaseURL != "" {
 		ocfg.BaseURL = cfg.BaseURL
+	}
+	if cfg.HTTPClient == nil {
+		ocfg.HTTPClient = DefaultHTTPClient()
+	} else {
+		ocfg.HTTPClient = cfg.HTTPClient
 	}
 
 	return &openaiEmbedder{

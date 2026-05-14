@@ -16,6 +16,18 @@
 
 ### Security
 
+## [2.1.0] - 2026-05-14
+
+### Added
+
+- 新增 `Capability` / `ModelCapabilities` 与 `ModelCapabilitiesFromPreset` / `AllModelCapabilities` / `ModelCapabilitiesByCapability`，让调用方可查询预设模型是否支持 Chat、Stream、Tools、Structured Output、Vision、Reasoning、Embedding
+- 新增 `HTTPDoer` 以及 `ProviderConfig.HTTPClient` / `EmbedderConfig.HTTPClient`，支持注入自定义 HTTP 客户端用于超时、代理、观测、测试和传输层治理
+- 新增 `DefaultHTTPClient`，默认 Provider / Embedder 现在具备传输层超时保护，同时继续由调用方 context 控制请求总预算
+- 新增 `GenerateJSON` / `GenerateJSONInto` / `GenerateJSONWithValidator` / `GenerateJSONIntoWithValidator`，在 `ResponseFormat` 基础上提供类型化 JSON 结构化输出解码与业务校验助手
+- 新增 DeepSeek 真实接口 smoke test，设置 `DEEPSEEK_API_KEY` 后可验证 Chat 与结构化输出链路
+- 新增 `CosineSimilarity` / `RankBySimilarity` / `MostSimilar` 与 `SimilarityResult`，为 Embedding/RAG 场景提供轻量相似度工具
+- 新增结构化输出和相似度工具的可验证 Example 与 Benchmark
+
 ## [2.0.0] - 2026-04-22
 
 ### Added

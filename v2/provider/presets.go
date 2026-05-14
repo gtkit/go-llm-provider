@@ -3,7 +3,6 @@ package provider
 import (
 	"errors"
 	"fmt"
-	"maps"
 	"slices"
 )
 
@@ -18,6 +17,8 @@ type Preset struct {
 	// 空字符串表示该平台暂无官方 embedding 接口（如 DeepSeek、Moonshot），
 	// NewEmbedderFromPreset 遇到空串会返回错误。
 	EmbeddingModel string
+	// Capabilities 描述预设默认模型的已知能力。
+	Capabilities ModelCapabilities
 }
 
 var presetCatalog = map[ProviderName]Preset{
@@ -25,49 +26,140 @@ var presetCatalog = map[ProviderName]Preset{
 		BaseURL:      "https://api.deepseek.com/v1",
 		DefaultModel: "deepseek-chat", // DeepSeek-V3.2 非思考模式
 		// DeepSeek 官方暂无 embedding 模型
+		Capabilities: ModelCapabilities{
+			Provider:  ProviderDeepSeek,
+			ChatModel: "deepseek-chat",
+			Capabilities: []Capability{
+				CapabilityChat,
+				CapabilityStreaming,
+				CapabilityTools,
+				CapabilityStructuredOutput,
+				CapabilityReasoning,
+			},
+		},
 	},
 	ProviderZhipu: {
 		BaseURL:        "https://open.bigmodel.cn/api/paas/v4/",
 		DefaultModel:   "glm-5.1",
 		EmbeddingModel: "embedding-3",
+		Capabilities: ModelCapabilities{
+			Provider:       ProviderZhipu,
+			ChatModel:      "glm-5.1",
+			EmbeddingModel: "embedding-3",
+			Capabilities: []Capability{
+				CapabilityChat,
+				CapabilityStreaming,
+				CapabilityTools,
+				CapabilityStructuredOutput,
+				CapabilityEmbedding,
+			},
+		},
 	},
 	ProviderQwen: {
 		// 阿里百炼 / DashScope OpenAI 兼容端点
 		BaseURL:        "https://dashscope.aliyuncs.com/compatible-mode/v1",
 		DefaultModel:   "qwen3.6-plus",
 		EmbeddingModel: "text-embedding-v3",
+		Capabilities: ModelCapabilities{
+			Provider:       ProviderQwen,
+			ChatModel:      "qwen3.6-plus",
+			EmbeddingModel: "text-embedding-v3",
+			Capabilities: []Capability{
+				CapabilityChat,
+				CapabilityStreaming,
+				CapabilityTools,
+				CapabilityStructuredOutput,
+				CapabilityEmbedding,
+			},
+		},
 	},
 	ProviderQianfan: {
 		// 百度千帆 OpenAI 兼容 V2 接口
 		BaseURL:        "https://qianfan.baidubce.com/v2",
 		DefaultModel:   "ernie-4.5-turbo-32k",
 		EmbeddingModel: "embedding-v1",
+		Capabilities: ModelCapabilities{
+			Provider:       ProviderQianfan,
+			ChatModel:      "ernie-4.5-turbo-32k",
+			EmbeddingModel: "embedding-v1",
+			Capabilities: []Capability{
+				CapabilityChat,
+				CapabilityStreaming,
+				CapabilityTools,
+				CapabilityStructuredOutput,
+				CapabilityEmbedding,
+			},
+		},
 	},
 	ProviderSiliconFlow: {
 		BaseURL:        "https://api.siliconflow.cn/v1",
 		DefaultModel:   "deepseek-ai/DeepSeek-V3",
 		EmbeddingModel: "BAAI/bge-m3",
+		Capabilities: ModelCapabilities{
+			Provider:       ProviderSiliconFlow,
+			ChatModel:      "deepseek-ai/DeepSeek-V3",
+			EmbeddingModel: "BAAI/bge-m3",
+			Capabilities: []Capability{
+				CapabilityChat,
+				CapabilityStreaming,
+				CapabilityTools,
+				CapabilityStructuredOutput,
+				CapabilityEmbedding,
+			},
+		},
 	},
 	ProviderMoonshot: {
 		BaseURL:      "https://api.moonshot.cn/v1",
 		DefaultModel: "kimi-k2-turbo-preview",
 		// Moonshot 官方暂无 embedding 模型
+		Capabilities: ModelCapabilities{
+			Provider:  ProviderMoonshot,
+			ChatModel: "kimi-k2-turbo-preview",
+			Capabilities: []Capability{
+				CapabilityChat,
+				CapabilityStreaming,
+				CapabilityTools,
+				CapabilityStructuredOutput,
+			},
+		},
 	},
 	ProviderOpenAI: {
 		BaseURL:        "https://api.openai.com/v1",
 		DefaultModel:   "gpt-5.4-mini",
 		EmbeddingModel: "text-embedding-3-small",
+		Capabilities: ModelCapabilities{
+			Provider:       ProviderOpenAI,
+			ChatModel:      "gpt-5.4-mini",
+			EmbeddingModel: "text-embedding-3-small",
+			Capabilities: []Capability{
+				CapabilityChat,
+				CapabilityStreaming,
+				CapabilityTools,
+				CapabilityStructuredOutput,
+				CapabilityReasoning,
+				CapabilityEmbedding,
+			},
+		},
 	},
 }
 
 // Presets 保留旧版导出变量以兼容既有调用方。
 //
 // Deprecated: 不要修改此 map。包内逻辑不依赖它，新增代码请改用 AllPresets。
-var Presets = maps.Clone(presetCatalog)
+var Presets = AllPresets()
 
 // AllPresets 返回平台预设的副本，调用方可读取但不会修改包内全局状态。
 func AllPresets() map[ProviderName]Preset {
-	return maps.Clone(presetCatalog)
+	out := make(map[ProviderName]Preset, len(presetCatalog))
+	for name, preset := range presetCatalog {
+		out[name] = clonePreset(preset)
+	}
+	return out
+}
+
+func clonePreset(preset Preset) Preset {
+	preset.Capabilities = cloneModelCapabilities(preset.Capabilities)
+	return preset
 }
 
 // NewProviderFromPreset 使用预设配置快速创建 Provider，

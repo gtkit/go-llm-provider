@@ -481,6 +481,45 @@ resp, err := p.Chat(ctx, &provider.ChatRequest{
 - `provider.JSONSchemaFormat(name, schema)`
 - `provider.JSONSchemaFormatStrict(name, schema)`
 
+如果你希望直接把 JSON 回复解码到 Go 类型，可以使用类型化助手：
+
+```go
+type CitySummary struct {
+    City    string `json:"city"`
+    Summary string `json:"summary"`
+}
+
+result, resp, err := provider.GenerateJSON[CitySummary](ctx, p, &provider.ChatRequest{
+    Messages: []provider.Message{
+        provider.UserText("返回一个包含 city 和 summary 的 JSON 对象"),
+    },
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println(result.City, result.Summary)
+fmt.Println(resp.Usage.TotalTokens)
+```
+
+`GenerateJSON` 会在请求未设置 `ResponseFormat` 时自动使用 `JSONObjectFormat()`；如果你已经传入 `JSONSchemaFormatStrict(...)`，它会保留原有格式设置。需要复用已有变量时用 `GenerateJSONInto(ctx, p, req, &target)`。
+
+如果需要在解码后做业务校验，使用 validator 变体。校验失败时可以通过 `errors.Is(err, provider.ErrStructuredValidation)` 判断：
+
+```go
+result, resp, err := provider.GenerateJSONWithValidator[CitySummary](ctx, p, req, func(v CitySummary) error {
+    if v.City == "" {
+        return fmt.Errorf("city is required")
+    }
+    return nil
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println(result.City, resp.Usage.TotalTokens)
+```
+
 ### 方式一：RunToolLoop（推荐）
 
 `RunToolLoop` 自动处理 Tool Use 的完整循环：发请求 → 检测 tool_calls → 执行工具 → 回传结果 → 再次请求 → ... 直到模型给出最终文本回复。
@@ -769,17 +808,29 @@ docVecs, _ := provider.EmbedBatch(ctx, emb, docs)
 query := "怎么申请返还款项"
 queryVec, _ := provider.SimpleEmbed(ctx, emb, query)
 
-// 3. 相似度检索：业务层自己实现余弦相似度
-bestIdx := argmaxCosine(queryVec, docVecs) // 调用方实现
+// 3. 相似度检索：用内置轻量工具按余弦相似度排序
+best, _ := provider.MostSimilar(queryVec, docVecs)
 
 // 4. 把匹配文档拼进 prompt 让 LLM 回答
 reply, _ := provider.SimpleChatWithSystem(ctx, chat,
-    "基于以下资料回答: "+docs[bestIdx],
+    "基于以下资料回答: "+docs[best.Index],
     query,
 )
 ```
 
-完整可运行示例（含余弦相似度实现）见 [`example/embedding/main.go`](example/embedding/main.go)。
+完整可运行示例见 [`example/embedding/main.go`](example/embedding/main.go)。
+
+### 相似度工具
+
+Embedding 常见的第一步检索可以直接用以下函数：
+
+```go
+score, err := provider.CosineSimilarity(queryVec, docVec)
+ranked, err := provider.RankBySimilarity(queryVec, docVecs)
+best, err := provider.MostSimilar(queryVec, docVecs)
+```
+
+这些函数只做纯内存向量计算，不依赖任何向量数据库；向量存储、文档切片和召回策略仍由业务层决定。
 
 ### 直接构造 Embedder（不走 Registry）
 
@@ -803,11 +854,56 @@ emb, err = provider.NewEmbedder(provider.EmbedderConfig{
 ### 边界：本库不做什么
 
 - ❌ 向量存储（业务侧选向量数据库：pgvector / Milvus / Qdrant / Chroma 等）
-- ❌ 相似度计算（10 行代码可写完，内置反而限制）
 - ❌ 文档切片 / chunking 策略
 - ❌ 完整 RAG 框架（LangChain / LlamaIndex 的定位）
 
 这和"不管理对话历史"是同一个设计哲学 —— 库只负责与 LLM 平台的交互，存储与业务逻辑交给调用方。
+
+## 模型能力元数据
+
+预设模型会暴露一份轻量能力元数据，便于调用方在运行前判断是否支持 Vision、Reasoning、Embedding 等能力：
+
+```go
+caps, ok := provider.ModelCapabilitiesFromPreset(provider.ProviderOpenAI)
+if ok && caps.Supports(provider.CapabilityEmbedding) {
+    fmt.Println("该预设提供默认 embedding 模型:", caps.EmbeddingModel)
+}
+
+embedders := provider.ModelCapabilitiesByCapability(provider.CapabilityEmbedding)
+for name := range embedders {
+    fmt.Println("可用于 embedding:", name)
+}
+```
+
+`AllModelCapabilities()` 会返回副本，调用方修改结果不会影响包内预设。能力元数据描述的是本库在预设配置中明确掌握的能力，不等同于平台所有模型的完整清单；`ContextWindow` 为 `0` 表示本库未声明该值。如果你覆盖 `Model`，请以具体模型官方文档为准。
+
+## 自定义 HTTP 客户端
+
+默认情况下，`NewProvider` / `NewEmbedder` 会使用 `DefaultHTTPClient()`。它不设置 `http.Client.Timeout`，请求总预算仍由调用方传入的 `context.Context` 控制；但会设置 dial、TLS handshake、response header、idle connection 等传输层超时，避免底层 IO 无限等待。
+
+需要统一超时、代理、链路追踪、测试替身或自定义 transport 时，可以向 `ProviderConfig` / `EmbedderConfig` 注入实现了 `Do(*http.Request) (*http.Response, error)` 的客户端：
+
+```go
+httpClient := &http.Client{Timeout: 30 * time.Second}
+
+p, err := provider.NewProvider(provider.ProviderConfig{
+    Name:       provider.ProviderOpenAI,
+    BaseURL:    "https://api.openai.com/v1",
+    APIKey:     os.Getenv("OPENAI_API_KEY"),
+    Model:      "gpt-5.4-mini",
+    HTTPClient: httpClient,
+})
+
+emb, err := provider.NewEmbedder(provider.EmbedderConfig{
+    Name:       provider.ProviderOpenAI,
+    BaseURL:    "https://api.openai.com/v1",
+    APIKey:     os.Getenv("OPENAI_API_KEY"),
+    Model:      "text-embedding-3-small",
+    HTTPClient: httpClient,
+})
+```
+
+请求级超时仍推荐由调用方通过 `context.WithTimeout` 控制；自定义 `HTTPClient` 主要用于传输层策略复用。调用方传入自定义客户端后，本库不会覆盖它的超时设置。
 
 ---
 
@@ -1440,12 +1536,21 @@ provider.SimpleChat(ctx, p, "你好")                           // 一问一答
 provider.SimpleChatWithSystem(ctx, p, "你是助手", "你好")       // 带 system prompt
 provider.CollectStream(ctx, p, req, onChunkFn)                // 流式收集+回调
 provider.RunToolLoop(ctx, p, req, maxRounds, handler)         // Tool Use 自动循环
+provider.GenerateJSON[MyType](ctx, p, req)                    // JSON 结构化输出 → Go 类型
+provider.GenerateJSONWithValidator[MyType](ctx, p, req, fn)   // JSON 结构化输出 → Go 类型 + 业务校验
+provider.GenerateJSONInto(ctx, p, req, &out)                  // 解码到已有变量
+provider.GenerateJSONIntoWithValidator(ctx, p, req, &out, fn) // 解码到已有变量 + 业务校验
+provider.DefaultHTTPClient()                                  // 默认传输层超时 HTTP 客户端
 
 // Embedding
 provider.SimpleEmbed(ctx, emb, "你好")                        // 单条文本 → 向量
 provider.EmbedBatch(ctx, emb, []string{"a", "b"})             // 批量 → 向量数组
+provider.CosineSimilarity(a, b)                               // 两个向量余弦相似度
+provider.RankBySimilarity(query, candidates)                  // 按相似度排序
+provider.MostSimilar(query, candidates)                       // 取最相似向量
 provider.NewEmbedderFromPreset(name, apiKey, model)           // 从预设构造
 provider.NewEmbedder(EmbedderConfig{...})                     // 完全自定义
+provider.ModelCapabilitiesFromPreset(name)                    // 查询预设能力元数据
 ```
 
 ### Embedder 核心类型
@@ -1475,11 +1580,38 @@ type Embedding struct {
 }
 
 type EmbedderConfig struct {
-    Name    ProviderName
-    BaseURL string
-    APIKey  string
-    Model   string // embedding 专用默认模型
+    Name       ProviderName
+    BaseURL    string
+    APIKey     string
+    Model      string // embedding 专用默认模型
+    HTTPClient HTTPDoer
 }
+```
+
+### 模型能力类型
+
+```go
+type Capability string
+
+const (
+    CapabilityChat             Capability = "chat"
+    CapabilityStreaming        Capability = "streaming"
+    CapabilityTools            Capability = "tools"
+    CapabilityStructuredOutput Capability = "structured_output"
+    CapabilityVision           Capability = "vision"
+    CapabilityReasoning        Capability = "reasoning"
+    CapabilityEmbedding        Capability = "embedding"
+)
+
+type ModelCapabilities struct {
+    Provider       ProviderName
+    ChatModel      string
+    EmbeddingModel string
+    ContextWindow  int
+    Capabilities   []Capability
+}
+
+caps.Supports(provider.CapabilityVision) bool
 ```
 
 ## 设计决策
@@ -1679,6 +1811,14 @@ func main() {
 ```bash
 go test ./provider/ -v
 ```
+
+真实 DeepSeek smoke test 默认跳过，只有设置 `DEEPSEEK_API_KEY` 时才会访问外部接口：
+
+```bash
+DEEPSEEK_API_KEY="sk-xxxxxxxx" go test ./provider -run 'TestDeepSeek.*Smoke' -count=1 -v
+```
+
+不要把真实 API Key 写入源码、README、测试 fixture 或 shell history；本命令中的值只应使用临时密钥或本地安全注入方式。
 
 ## License
 
