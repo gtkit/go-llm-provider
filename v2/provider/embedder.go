@@ -41,9 +41,10 @@ type EmbeddingRequest struct {
 
 // EmbeddingResponse 是向量化调用的响应。
 type EmbeddingResponse struct {
-	Data  []Embedding
-	Model string
-	Usage Usage // 复用 Chat 场景同名类型；embedding 场景 CompletionTokens 通常为 0
+	Data     []Embedding
+	Model    string
+	Usage    Usage // 复用 Chat 场景同名类型；embedding 场景 CompletionTokens 通常为 0
+	Metadata ResponseMetadata
 }
 
 // Embedding 表示一条文本对应的向量。
@@ -161,7 +162,8 @@ func (e *openaiEmbedder) Embed(ctx context.Context, req *EmbeddingRequest) (*Emb
 	}
 
 	out := &EmbeddingResponse{
-		Model: string(resp.Model),
+		Model:    string(resp.Model),
+		Metadata: metadataFromHeader(e.name, string(resp.Model), resp.Header()),
 		Usage: Usage{
 			PromptTokens:     resp.Usage.PromptTokens,
 			CompletionTokens: resp.Usage.CompletionTokens,

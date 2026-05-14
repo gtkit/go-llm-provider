@@ -230,6 +230,7 @@ type ChatResponse struct {
 	Reasoning    string // assistant 的推理/思考内容
 	FinishReason string // "stop", "length", "tool_calls" 等
 	Usage        Usage
+	Metadata     ResponseMetadata
 
 	// ToolCalls 当 FinishReason == "tool_calls" 时，包含模型请求调用的工具列表。
 	ToolCalls []ToolCall
@@ -560,6 +561,7 @@ func (p *openaiProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRespo
 		Content:      choice.Message.Content,
 		Reasoning:    choice.Message.ReasoningContent,
 		FinishReason: string(choice.FinishReason),
+		Metadata:     metadataFromHeader(p.name, resp.Model, resp.Header()),
 		Usage: Usage{
 			PromptTokens:     resp.Usage.PromptTokens,
 			CompletionTokens: resp.Usage.CompletionTokens,

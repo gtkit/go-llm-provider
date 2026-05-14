@@ -6,6 +6,10 @@
 
 ### Added
 
+- 新增 `ResponseMetadata`，在 `ChatResponse` / `EmbeddingResponse` 中暴露 provider、模型、request id 与白名单响应头，便于线上排障
+- 新增 `WithRetry` / `TryWithRetry` / `RetryMiddleware` / `RetryStreamMiddleware`，基于 `ProviderError.Retryable` 提供内置重试能力
+- 新增 `NewFallbackProvider`，支持按顺序在多个 provider 之间做可重试错误 fallback
+
 ### Changed
 
 ### Deprecated

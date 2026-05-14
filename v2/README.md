@@ -999,37 +999,31 @@ p := provider.WithMiddlewares(base, provider.MiddlewareOptions{
 })
 ```
 
-### 重试中间件（基于 `ProviderError.Retryable`）
+### 内置重试（基于 `ProviderError.Retryable`）
 
 ```go
-func retryMiddleware(maxAttempts int) provider.Middleware {
-    return func(next provider.Handler) provider.Handler {
-        return func(ctx context.Context, req *provider.ChatRequest) (*provider.ChatResponse, error) {
-            var last error
-            for attempt := 1; attempt <= maxAttempts; attempt++ {
-                resp, err := next(ctx, req)
-                if err == nil {
-                    return resp, nil
-                }
-                last = err
+retrying := provider.WithRetry(base, provider.RetryOptions{
+    MaxAttempts: 3,
+    Backoff:     provider.ExponentialBackoff(200*time.Millisecond, 2*time.Second),
+})
 
-                var pErr *provider.ProviderError
-                if !errors.As(err, &pErr) || !pErr.Retryable || attempt == maxAttempts {
-                    return nil, last
-                }
-
-                // 这里为演示保持最简；生产环境建议加退避、jitter、上限。
-                select {
-                case <-ctx.Done():
-                    return nil, ctx.Err()
-                case <-time.After(500 * time.Millisecond):
-                }
-            }
-            return nil, last
-        }
-    }
-}
+resp, err := retrying.Chat(ctx, req)
 ```
+
+`WithRetry` 会同时装饰 `Chat` 与 `ChatStream` 创建阶段，默认只重试 `ProviderError.Retryable == true` 的错误。需要自定义策略时设置 `RetryOptions.ShouldRetry`。
+
+### Fallback Provider
+
+```go
+fallback, err := provider.NewFallbackProvider(primary, backup)
+if err != nil {
+    log.Fatal(err)
+}
+
+resp, err := fallback.Chat(ctx, req)
+```
+
+`FallbackProvider` 会按传入顺序调用 provider。只有当前 provider 返回可重试错误时，才会继续尝试下一个 provider；遇到无效请求、鉴权失败等不可重试错误会立即返回，避免把调用方问题扩散到备用平台。
 
 完整示例见 [`example/middleware/main.go`](example/middleware/main.go)。
 示例还演示了 `tokenStatsMiddleware(stats *int64)`，用 `atomic.AddInt64` 累计总 token 消耗。
@@ -1094,6 +1088,24 @@ type ProviderError struct {
 - `RawCode` / `RawType` / `RawParam`：厂商原始诊断字段，适合日志和告警。
 - `Retryable`：是否值得调用方自行重试。
 - `Message` / `Cause`：平台返回消息与原始错误链。
+
+### 响应元数据：`ResponseMetadata`
+
+成功响应会在 `ChatResponse.Metadata` / `EmbeddingResponse.Metadata` 中携带安全白名单内的诊断信息：
+
+```go
+resp, err := p.Chat(ctx, req)
+if err != nil {
+    return err
+}
+
+fmt.Println(resp.Metadata.Provider)
+fmt.Println(resp.Metadata.Model)
+fmt.Println(resp.Metadata.RequestID)
+fmt.Println(resp.Metadata.Header("x-ratelimit-remaining-requests"))
+```
+
+`ResponseMetadata.Headers` 只保留 request id、correlation id、rate limit 等诊断头，不会复制 `Set-Cookie`、鉴权头或其他敏感响应头。
 
 8 个 sentinel 如下：
 
@@ -1541,6 +1553,8 @@ provider.GenerateJSONWithValidator[MyType](ctx, p, req, fn)   // JSON 结构化�
 provider.GenerateJSONInto(ctx, p, req, &out)                  // 解码到已有变量
 provider.GenerateJSONIntoWithValidator(ctx, p, req, &out, fn) // 解码到已有变量 + 业务校验
 provider.DefaultHTTPClient()                                  // 默认传输层超时 HTTP 客户端
+provider.WithRetry(p, provider.RetryOptions{...})             // 为 Chat / ChatStream 创建阶段添加重试
+provider.NewFallbackProvider(primary, backup)                 // 多 provider fallback
 
 // Embedding
 provider.SimpleEmbed(ctx, emb, "你好")                        // 单条文本 → 向量

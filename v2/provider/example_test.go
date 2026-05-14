@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
+	"time"
 
 	"github.com/gtkit/go-llm-provider/v2/provider"
 )
@@ -15,7 +17,17 @@ func (exampleProvider) Name() provider.ProviderName {
 }
 
 func (exampleProvider) Chat(context.Context, *provider.ChatRequest) (*provider.ChatResponse, error) {
-	return &provider.ChatResponse{Content: `{"city":"杭州","temperature":27}`}, nil
+	return &provider.ChatResponse{
+		Content: `{"city":"杭州","temperature":27}`,
+		Metadata: provider.ResponseMetadata{
+			Provider:  provider.ProviderOpenAI,
+			Model:     "example-model",
+			RequestID: "req_example",
+			Headers: http.Header{
+				"X-Request-Id": []string{"req_example"},
+			},
+		},
+	}, nil
 }
 
 func (exampleProvider) ChatStream(context.Context, *provider.ChatRequest) (*provider.StreamReader, error) {
@@ -102,4 +114,54 @@ func ExampleRankBySimilarity() {
 
 	fmt.Println(results[0].Index)
 	// Output: 1
+}
+
+func ExampleResponseMetadata() {
+	resp, err := exampleProvider{}.Chat(context.Background(), &provider.ChatRequest{})
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+
+	fmt.Println(resp.Metadata.Provider)
+	fmt.Println(resp.Metadata.RequestID)
+	// Output:
+	// openai
+	// req_example
+}
+
+func ExampleWithRetry() {
+	wrapped := provider.WithRetry(exampleProvider{}, provider.RetryOptions{
+		MaxAttempts: 2,
+		Backoff:     provider.ConstantBackoff(10 * time.Millisecond),
+	})
+
+	resp, err := wrapped.Chat(context.Background(), &provider.ChatRequest{})
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+
+	fmt.Println(resp.Metadata.Provider)
+	// Output: openai
+}
+
+func ExampleNewFallbackProvider() {
+	primary := exampleProvider{}
+	backup := exampleProvider{}
+
+	p, err := provider.NewFallbackProvider(primary, backup)
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+
+	resp, err := p.Chat(context.Background(), &provider.ChatRequest{})
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+
+	fmt.Println(resp.Metadata.RequestID)
+	// Output: req_example
 }

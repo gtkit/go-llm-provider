@@ -15,6 +15,7 @@ import (
 type recordingHTTPClient struct {
 	requests []*http.Request
 	response string
+	header   http.Header
 }
 
 func (c *recordingHTTPClient) Do(req *http.Request) (*http.Response, error) {
@@ -26,7 +27,7 @@ func (c *recordingHTTPClient) Do(req *http.Request) (*http.Response, error) {
 	return &http.Response{
 		StatusCode: http.StatusOK,
 		Status:     "200 OK",
-		Header:     make(http.Header),
+		Header:     c.header.Clone(),
 		Body:       io.NopCloser(bytes.NewBufferString(c.response)),
 		Request:    req,
 	}, nil
