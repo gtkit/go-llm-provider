@@ -165,3 +165,18 @@ func ExampleNewFallbackProvider() {
 	fmt.Println(resp.Metadata.RequestID)
 	// Output: req_example
 }
+
+func ExampleWithObservability() {
+	wrapped := provider.WithObservability(exampleProvider{}, provider.ObserveOptions{
+		OnEvent: func(_ context.Context, event provider.ObserveEvent) {
+			fmt.Println(event.Operation, event.Provider, event.RequestID)
+		},
+	})
+
+	_, err := wrapped.Chat(context.Background(), &provider.ChatRequest{})
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	// Output: chat openai req_example
+}

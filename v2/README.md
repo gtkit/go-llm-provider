@@ -34,6 +34,9 @@ llm-provider/
 │   ├── embedder_helpers.go    # Embedding 便捷函数：SimpleEmbed、EmbedBatch
 │   ├── errors.go              # ProviderError / ErrorCode / WrapProviderError
 │   ├── middleware.go          # Middleware / Handler 类型 + WithMiddlewares 装饰器
+│   ├── retry.go               # WithRetry / RetryMiddleware / BackoffFunc
+│   ├── fallback.go            # FallbackProvider 多 provider 失败切换
+│   ├── observability.go       # WithObservability / ObserveEvent 观测 hook
 │   ├── provider_test.go       # Chat / Tool Use 单测
 │   ├── embedder_test.go       # Embedding 单测
 │   ├── content_test.go        # ContentPart 构造器与映射测试
@@ -41,6 +44,7 @@ llm-provider/
 │   ├── response_format_test.go # Structured Output 构造器与映射测试
 │   ├── errors_test.go         # ProviderError / ErrorCode / WrapProviderError 单测
 │   ├── middleware_test.go     # Middleware 装饰器 + 洋葱顺序测试
+│   ├── observability_test.go  # 观测 hook 单测
 │   └── runtime_test.go        # 运行时集成测试
 └── example/
     ├── main.go                # 基础使用示例（Chat）
@@ -1012,6 +1016,45 @@ resp, err := retrying.Chat(ctx, req)
 
 `WithRetry` 会同时装饰 `Chat` 与 `ChatStream` 创建阶段，默认只重试 `ProviderError.Retryable == true` 的错误。需要自定义策略时设置 `RetryOptions.ShouldRetry`。
 
+### 观测 Hook（日志 / 指标 / Trace）
+
+`WithObservability` 提供零外部依赖的观测 hook，不绑定 `slog`、Prometheus 或 OpenTelemetry。每次 `Chat`、`ChatStream` 创建、`Embed` 完成后，库会向 `OnEvent` 发送一个 `ObserveEvent`，其中包含 operation、provider、model、duration、usage、metadata、request id 和错误分类。
+
+```go
+observed := provider.WithObservability(base, provider.ObserveOptions{
+    OnEvent: func(ctx context.Context, event provider.ObserveEvent) {
+        slog.InfoContext(ctx, "llm call",
+            "operation", event.Operation,
+            "provider", event.Provider,
+            "model", event.Model,
+            "request_id", event.RequestID,
+            "duration_ms", event.Duration.Milliseconds(),
+            "tokens", event.Usage.TotalTokens,
+            "error_code", event.ErrorCode,
+            "retryable", event.Retryable,
+        )
+    },
+})
+
+resp, err := observed.Chat(ctx, req)
+```
+
+Embedding 路径使用对称的 `WithEmbedderObservability`：
+
+```go
+observedEmb := provider.WithEmbedderObservability(emb, provider.ObserveOptions{
+    OnEvent: func(ctx context.Context, event provider.ObserveEvent) {
+        slog.InfoContext(ctx, "llm embedding",
+            "provider", event.Provider,
+            "model", event.Model,
+            "duration_ms", event.Duration.Milliseconds(),
+        )
+    },
+})
+```
+
+`OnEvent` 在调用 goroutine 内同步执行，生产环境里应保持快速、非阻塞；记录日志或指标时不要输出 API Key、prompt 原文、响应正文等敏感内容。`ChatStream` 当前只观测流创建结果，不跟踪每个 chunk 的生命周期。
+
 ### Fallback Provider
 
 ```go
@@ -1555,6 +1598,7 @@ provider.GenerateJSONIntoWithValidator(ctx, p, req, &out, fn) // 解码到已有
 provider.DefaultHTTPClient()                                  // 默认传输层超时 HTTP 客户端
 provider.WithRetry(p, provider.RetryOptions{...})             // 为 Chat / ChatStream 创建阶段添加重试
 provider.NewFallbackProvider(primary, backup)                 // 多 provider fallback
+provider.WithObservability(p, provider.ObserveOptions{...})   // Chat / ChatStream 观测 hook
 
 // Embedding
 provider.SimpleEmbed(ctx, emb, "你好")                        // 单条文本 → 向量
@@ -1564,6 +1608,7 @@ provider.RankBySimilarity(query, candidates)                  // 按相似度排
 provider.MostSimilar(query, candidates)                       // 取最相似向量
 provider.NewEmbedderFromPreset(name, apiKey, model)           // 从预设构造
 provider.NewEmbedder(EmbedderConfig{...})                     // 完全自定义
+provider.WithEmbedderObservability(emb, provider.ObserveOptions{...}) // Embed 观测 hook
 provider.ModelCapabilitiesFromPreset(name)                    // 查询预设能力元数据
 ```
 
