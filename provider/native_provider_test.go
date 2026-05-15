@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"net/http"
@@ -403,10 +404,114 @@ func TestNativeProviderV1AdditionalBranches(t *testing.T) {
 	})
 }
 
+func TestDoNativeStream(t *testing.T) {
+	t.Parallel()
+
+	t.Run("opens stream request", func(t *testing.T) {
+		t.Parallel()
+
+		client := &recordingNativeStreamClient{
+			response: &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     make(http.Header),
+				Body:       io.NopCloser(bytes.NewBufferString("data: {\"ok\":true}\n\n")),
+			},
+		}
+
+		reader, err := doNativeStream(t.Context(), client, nativeHTTPRequest{
+			Method:   http.MethodPost,
+			URL:      "https://example.test/v1/messages",
+			Body:     map[string]string{"message": "hello"},
+			Provider: ProviderAnthropic,
+			SetHeaders: func(req *http.Request) {
+				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set("x-test", "yes")
+			},
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { assert.NoError(t, reader.Close()) })
+
+		require.NotNil(t, client.request)
+		assert.Equal(t, "text/event-stream", client.request.Header.Get("Accept"))
+		assert.Equal(t, "application/json", client.request.Header.Get("Content-Type"))
+		assert.Equal(t, "yes", client.request.Header.Get("x-test"))
+
+		data, err := reader.Next()
+		require.NoError(t, err)
+		assert.JSONEq(t, `{"ok":true}`, string(data))
+	})
+
+	t.Run("wraps transport error", func(t *testing.T) {
+		t.Parallel()
+
+		reader, err := doNativeStream(t.Context(), failingHTTPDoer{err: assert.AnError}, nativeHTTPRequest{
+			Method:   http.MethodPost,
+			URL:      "https://example.test/v1/messages",
+			Body:     map[string]string{"message": "hello"},
+			Provider: ProviderAnthropic,
+		})
+		require.Error(t, err)
+		assert.Nil(t, reader)
+		require.ErrorIs(t, err, assert.AnError)
+
+		var providerErr *ProviderError
+		require.ErrorAs(t, err, &providerErr)
+		assert.Equal(t, ErrorCodeNetwork, providerErr.Code)
+		assert.Equal(t, ProviderAnthropic, providerErr.Provider)
+	})
+
+	t.Run("decodes non success and closes body", func(t *testing.T) {
+		t.Parallel()
+
+		body := &trackingReadCloser{Buffer: bytes.NewBufferString(`{"error":{"type":"overloaded_error","message":"busy"}}`)}
+		client := &recordingNativeStreamClient{
+			response: &http.Response{
+				StatusCode: http.StatusServiceUnavailable,
+				Status:     "503 Service Unavailable",
+				Header:     make(http.Header),
+				Body:       body,
+			},
+		}
+
+		reader, err := doNativeStream(t.Context(), client, nativeHTTPRequest{
+			Method:      http.MethodPost,
+			URL:         "https://example.test/v1/messages",
+			Body:        map[string]string{"message": "hello"},
+			Provider:    ProviderAnthropic,
+			DecodeError: decodeAnthropicError,
+		})
+		require.Error(t, err)
+		assert.Nil(t, reader)
+		assert.True(t, body.closed)
+		require.ErrorIs(t, err, ErrServerError)
+	})
+}
+
 type failingHTTPDoer struct {
 	err error
 }
 
 func (f failingHTTPDoer) Do(*http.Request) (*http.Response, error) {
 	return nil, f.err
+}
+
+type recordingNativeStreamClient struct {
+	request  *http.Request
+	response *http.Response
+}
+
+func (c *recordingNativeStreamClient) Do(req *http.Request) (*http.Response, error) {
+	c.request = req
+	return c.response, nil
+}
+
+type trackingReadCloser struct {
+	*bytes.Buffer
+	closed bool
+}
+
+func (r *trackingReadCloser) Close() error {
+	r.closed = true
+	return nil
 }

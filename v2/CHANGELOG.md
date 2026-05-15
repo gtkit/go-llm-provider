@@ -12,6 +12,8 @@
 
 ### Changed
 
+- Claude / Gemini 原生流式调用复用统一的 HTTP/SSE 打开逻辑，保持对外行为不变
+
 ### Deprecated
 
 ### Removed

@@ -149,28 +149,17 @@ func (p *anthropicProvider) ChatStream(ctx context.Context, req *ChatRequest) (*
 		return nil, err
 	}
 
-	httpReq, err := buildNativeHTTPRequest(ctx, nativeHTTPRequest{
-		Method:     http.MethodPost,
-		URL:        p.baseURL + "/v1/messages",
-		Body:       nativeReq,
-		Provider:   ProviderAnthropic,
-		SetHeaders: p.setHeaders,
+	reader, err := doNativeStream(ctx, p.httpClient, nativeHTTPRequest{
+		Method:      http.MethodPost,
+		URL:         p.baseURL + "/v1/messages",
+		Body:        nativeReq,
+		Provider:    ProviderAnthropic,
+		SetHeaders:  p.setHeaders,
+		DecodeError: decodeAnthropicError,
 	})
 	if err != nil {
 		return nil, err
 	}
-	httpReq.Header.Set("Accept", "text/event-stream")
-
-	resp, err := p.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, wrapNativeTransportError(ProviderAnthropic, err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		defer resp.Body.Close()
-		return nil, decodeNativeHTTPError(ProviderAnthropic, resp, decodeAnthropicError)
-	}
-
-	reader := newSSEReader(resp.Body)
 	return NewStreamReader(func() (*StreamChunk, error) {
 		return recvAnthropicStreamChunk(reader)
 	}, reader.Close), nil
@@ -334,28 +323,17 @@ func (p *geminiProvider) ChatStream(ctx context.Context, req *ChatRequest) (*Str
 	query.Set("alt", "sse")
 	streamURL.RawQuery = query.Encode()
 
-	httpReq, err := buildNativeHTTPRequest(ctx, nativeHTTPRequest{
-		Method:     http.MethodPost,
-		URL:        streamURL.String(),
-		Body:       nativeReq,
-		Provider:   ProviderGemini,
-		SetHeaders: p.setHeaders,
+	reader, err := doNativeStream(ctx, p.httpClient, nativeHTTPRequest{
+		Method:      http.MethodPost,
+		URL:         streamURL.String(),
+		Body:        nativeReq,
+		Provider:    ProviderGemini,
+		SetHeaders:  p.setHeaders,
+		DecodeError: decodeGeminiError,
 	})
 	if err != nil {
 		return nil, err
 	}
-	httpReq.Header.Set("Accept", "text/event-stream")
-
-	resp, err := p.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, wrapNativeTransportError(ProviderGemini, err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		defer resp.Body.Close()
-		return nil, decodeNativeHTTPError(ProviderGemini, resp, decodeGeminiError)
-	}
-
-	reader := newSSEReader(resp.Body)
 	return NewStreamReader(func() (*StreamChunk, error) {
 		return recvGeminiStreamChunk(reader)
 	}, reader.Close), nil
@@ -424,6 +402,25 @@ func doNativeJSON[T any](ctx context.Context, client HTTPDoer, cfg nativeHTTPReq
 		return zero, fmt.Errorf("[%s] decode response: %w", cfg.Provider, err)
 	}
 	return zero, nil
+}
+
+func doNativeStream(ctx context.Context, client HTTPDoer, cfg nativeHTTPRequest) (*sseReader, error) {
+	req, err := buildNativeHTTPRequest(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "text/event-stream")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, wrapNativeTransportError(cfg.Provider, err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		defer resp.Body.Close()
+		return nil, decodeNativeHTTPError(cfg.Provider, resp, cfg.DecodeError)
+	}
+
+	return newSSEReader(resp.Body), nil
 }
 
 func buildNativeHTTPRequest(ctx context.Context, cfg nativeHTTPRequest) (*http.Request, error) {

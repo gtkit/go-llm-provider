@@ -12,6 +12,7 @@
 ### Changed
 
 - README 补充 v1 Claude / Gemini 原生 HTTP provider 的实现位置、最小用法和真实接口运行命令
+- Claude / Gemini 原生流式调用复用统一的 HTTP/SSE 打开逻辑，保持对外行为不变
 
 ### Deprecated
 
