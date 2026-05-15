@@ -7,8 +7,11 @@
 ### Added
 
 - README 新增 v1 provider 能力矩阵，明确 Chat、Streaming、Tools、Structured Output、Vision 与 Embedding 的当前覆盖范围
+- 新增 v1 `example/native` 与 GoDoc 示例，展示 Claude / Gemini 原生 HTTP provider 的预设构造、直接构造和流式调用方式
 
 ### Changed
+
+- README 补充 v1 Claude / Gemini 原生 HTTP provider 的实现位置、最小用法和真实接口运行命令
 
 ### Deprecated
 

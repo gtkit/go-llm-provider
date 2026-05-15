@@ -40,6 +40,7 @@ llm-provider/
 │   └── runtime_test.go        # 运行时集成测试
 └── example/
     ├── main.go                # 基础使用示例（Chat）
+    ├── native/main.go         # Claude / Gemini 原生 HTTP provider 示例
     ├── tooluse/main.go        # Tool Use 手动多轮示例
     ├── toolloop/main.go       # RunToolLoop 自动循环示例
     ├── middleware/main.go     # Middleware：Logging / TokenStats / Retry 参考实现
@@ -95,6 +96,61 @@ Claude 和 Gemini 不是 OpenAI 兼容协议，但主包不引入官方 SDK，�
 - `ProviderGemini` 走 Gemini Generative Language API：`generateContent` / `streamGenerateContent`
 - 两者都复用统一的 `Provider`、`ChatRequest`、`ChatResponse`、`StreamReader` 和 `ProviderError`
 - v1 原生实现覆盖文本对话、基础 SSE 流式、Tool Use / Function Calling 和错误分类；多模态与结构化输出建议使用 v2
+
+实现位置：
+
+- 构造函数和 HTTP 调用主流程：`provider/native.go`
+- Claude 请求 / 响应映射：`provider/native_anthropic.go`
+- Gemini 请求 / 响应映射：`provider/native_gemini.go`
+- 原生 provider 单元测试：`provider/native_provider_test.go`
+- 真实接口 smoke test：`provider/native_smoke_test.go`
+
+最小用法：
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+
+claude, err := provider.NewProviderFromPreset(
+    provider.ProviderAnthropic,
+    os.Getenv("ANTHROPIC_API_KEY"),
+    "", // 留空使用 claude-sonnet-4-5
+)
+if err != nil {
+    return err
+}
+
+reply, err := provider.SimpleChatWithSystem(ctx, claude,
+    "You are a concise assistant.",
+    "用一句话介绍 Go 语言",
+)
+```
+
+Gemini 可以走同样的预设构造，也可以显式覆盖 BaseURL / HTTP client：
+
+```go
+gemini, err := provider.NewGeminiProvider(provider.NativeProviderConfig{
+    APIKey: os.Getenv("GEMINI_API_KEY"),
+    Model:  "gemini-2.5-flash",
+})
+if err != nil {
+    return err
+}
+
+streamText, err := provider.CollectStream(ctx, gemini, &provider.ChatRequest{
+    Messages: []provider.Message{
+        {Role: provider.RoleUser, Content: "给我两个 Go 服务稳定性建议"},
+    },
+    MaxTokens: 128,
+}, nil)
+```
+
+完整可运行示例见 [`example/native/main.go`](example/native/main.go)：
+
+```bash
+ANTHROPIC_API_KEY="<ANTHROPIC_API_KEY>" go run ./example/native
+GEMINI_API_KEY="<GEMINI_API_KEY>" go run ./example/native
+```
 
 ## 快速开始
 
@@ -1566,6 +1622,7 @@ make release-check
 ```bash
 ANTHROPIC_API_KEY="<ANTHROPIC_API_KEY>" go test ./provider -run TestAnthropicSmoke -count=1 -v
 GEMINI_API_KEY="<GEMINI_API_KEY>" go test ./provider -run TestGeminiSmoke -count=1 -v
+ANTHROPIC_API_KEY="<ANTHROPIC_API_KEY>" GEMINI_API_KEY="<GEMINI_API_KEY>" go run ./example/native
 ```
 
 不要把真实 API Key 写入源码、README、测试 fixture 或 shell history；本命令中的值只应使用临时密钥或本地安全注入方式。
