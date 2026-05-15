@@ -76,21 +76,21 @@ go get github.com/gtkit/go-llm-provider/v2
 | 硅基流动 | `siliconflow` | `https://api.siliconflow.cn/v1` | `deepseek-ai/DeepSeek-V3` | `BAAI/bge-m3` | [siliconflow.cn](https://siliconflow.cn/) |
 | Moonshot / Kimi | `moonshot` | `https://api.moonshot.cn/v1` | `kimi-k2-turbo-preview` | — | [platform.moonshot.cn](https://platform.moonshot.cn/) |
 | OpenAI | `openai` | `https://api.openai.com/v1` | `gpt-5.4-mini` | `text-embedding-3-small` | [platform.openai.com](https://platform.openai.com/) |
+| Anthropic / Claude | `anthropic` | `https://api.anthropic.com` | `claude-sonnet-4-5` | — | [console.anthropic.com](https://console.anthropic.com/) |
+| Google Gemini | `gemini` | `https://generativelanguage.googleapis.com/v1beta` | `gemini-2.5-flash` | — | [aistudio.google.com](https://aistudio.google.com/) |
+| xAI / Grok | `xai` | `https://api.x.ai/v1` | `grok-4-1-fast-non-reasoning` | — | [console.x.ai](https://console.x.ai/) |
 
 > 预设地址和默认模型可能随平台更新而变化，建议定期对照各平台官方文档确认。
 > Embedding 列显示"—"的平台表示官方暂无 embedding 接口，`NewEmbedderFromPreset` 会返回错误。
 
 ### 关于 Claude / Google Gemini
 
-主包不直接内置 Claude 和 Google Gemini 的官方实现。
+Claude 和 Gemini 不是 OpenAI 兼容协议，但本库不引入官方 SDK，而是用标准库 `net/http` 直接实现各自的原生 HTTP API：
 
-原因是这两家接口不是 OpenAI 兼容协议，如果把官方 SDK 直接塞进主包，会让当前这个库失去“轻量统一接入层”的定位。当前状态是：
-
-- 主包继续内置 OpenAI 及 OpenAI 兼容平台
-- 已经为 Claude / Gemini 这类非兼容协议预留了可选扩展包接入点
-- 扩展包可以复用主包的 `Provider`、`ChatRequest`、`ChatResponse`、`Registry`、`RunToolLoop`
-- 主包新增了可供外部 provider 复用的 `provider.NewStreamReader(...)`
-- 当前仓库里还没有现成可直接 `import` 的 Claude / Gemini 扩展包实现
+- `ProviderAnthropic` 走 Anthropic Messages API：`POST /v1/messages`
+- `ProviderGemini` 走 Gemini Generative Language API：`generateContent` / `streamGenerateContent`
+- 两者都复用统一的 `Provider`、`ChatRequest`、`ChatResponse`、`StreamReader`、`ProviderError`、`ResponseMetadata`
+- 当前 native 实现覆盖文本、多模态图片输入、非流式、基础 SSE 流式、错误分类；Tool Use 与结构化输出会返回明确的 `ErrInvalidRequest`，避免静默降级
 
 ## 快速开始
 
@@ -111,10 +111,12 @@ import (
 func main() {
     // 一行创建注册表，传入各平台 API Key（空值自动跳过）
     reg := provider.QuickRegistry(map[provider.ProviderName]string{
-        provider.ProviderOpenAI:  os.Getenv("OPENAI_API_KEY"),
-        provider.ProviderDeepSeek: os.Getenv("DEEPSEEK_API_KEY"),
-        provider.ProviderQwen:    os.Getenv("QWEN_API_KEY"),
-        provider.ProviderZhipu:   os.Getenv("ZHIPU_API_KEY"),
+        provider.ProviderOpenAI:    os.Getenv("OPENAI_API_KEY"),
+        provider.ProviderDeepSeek:  os.Getenv("DEEPSEEK_API_KEY"),
+        provider.ProviderQwen:      os.Getenv("QWEN_API_KEY"),
+        provider.ProviderZhipu:     os.Getenv("ZHIPU_API_KEY"),
+        provider.ProviderAnthropic: os.Getenv("ANTHROPIC_API_KEY"),
+        provider.ProviderGemini:    os.Getenv("GEMINI_API_KEY"),
     })
 
     ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -174,6 +176,9 @@ reg := provider.QuickRegistry(map[provider.ProviderName]string{
     provider.ProviderZhipu:       os.Getenv("ZHIPU_API_KEY"),
     provider.ProviderSiliconFlow: os.Getenv("SILICONFLOW_API_KEY"),
     provider.ProviderMoonshot:    os.Getenv("MOONSHOT_API_KEY"),
+    provider.ProviderAnthropic:   os.Getenv("ANTHROPIC_API_KEY"),
+    provider.ProviderGemini:      os.Getenv("GEMINI_API_KEY"),
+    provider.ProviderXAI:         os.Getenv("XAI_API_KEY"),
 })
 
 // 默认 provider 按成功注册的 ProviderName 排序后取第一个
@@ -184,9 +189,11 @@ p, err := reg.Default()
 
 ```go
 reg, err := provider.QuickRegistryStrict(map[provider.ProviderName]string{
-    provider.ProviderOpenAI:   os.Getenv("OPENAI_API_KEY"),
-    provider.ProviderDeepSeek: os.Getenv("DEEPSEEK_API_KEY"),
-    provider.ProviderQwen:     os.Getenv("QWEN_API_KEY"),
+    provider.ProviderOpenAI:    os.Getenv("OPENAI_API_KEY"),
+    provider.ProviderDeepSeek:  os.Getenv("DEEPSEEK_API_KEY"),
+    provider.ProviderQwen:      os.Getenv("QWEN_API_KEY"),
+    provider.ProviderAnthropic: os.Getenv("ANTHROPIC_API_KEY"),
+    provider.ProviderGemini:    os.Getenv("GEMINI_API_KEY"),
 })
 if err != nil {
     log.Fatal(err)
@@ -225,6 +232,42 @@ if err != nil {
     log.Fatal(err)
 }
 ```
+
+### Claude / Gemini 原生 HTTP Provider
+
+Claude 和 Gemini 可以直接走预设：
+
+```go
+claude, err := provider.NewProviderFromPreset(
+    provider.ProviderAnthropic,
+    os.Getenv("ANTHROPIC_API_KEY"),
+    "", // 留空使用 claude-sonnet-4-5
+)
+
+gemini, err := provider.NewProviderFromPreset(
+    provider.ProviderGemini,
+    os.Getenv("GEMINI_API_KEY"),
+    "", // 留空使用 gemini-2.5-flash
+)
+```
+
+如果要覆盖 BaseURL 或注入自定义 HTTP client，使用原生构造函数：
+
+```go
+claude, err := provider.NewAnthropicProvider(provider.NativeProviderConfig{
+    APIKey:     os.Getenv("ANTHROPIC_API_KEY"),
+    Model:      "claude-sonnet-4-5",
+    HTTPClient: httpClient,
+})
+
+gemini, err := provider.NewGeminiProvider(provider.NativeProviderConfig{
+    APIKey:  os.Getenv("GEMINI_API_KEY"),
+    BaseURL: "https://generativelanguage.googleapis.com/v1beta",
+    Model:   "gemini-2.5-flash",
+})
+```
+
+当前原生实现支持文本、多模态图片输入、非流式、基础 SSE 流式、request id 元数据与错误分类。Tool Use / Function Calling 和结构化输出暂未映射到 Claude / Gemini 原生协议；如果请求中包含 `Tools`、`ToolChoice`、`ParallelToolCalls` 或 `ResponseFormat`，会返回 `ErrInvalidRequest`。
 
 ## 调用方式
 
@@ -1675,9 +1718,9 @@ caps.Supports(provider.CapabilityVision) bool
 
 ## 设计决策
 
-**为什么主包里只有一个内建的 `openaiProvider` 实现？**
+**为什么 OpenAI 兼容平台共用一个 `openaiProvider` 实现？**
 
-因为 OpenAI、本仓库内置的国内平台，本质上都走 OpenAI 兼容协议。给每个平台写一个 struct 是过度设计。对于 Claude、Google Gemini 这类非兼容协议，架构上已经预留了放到可选扩展包里实现 `Provider` 接口的能力，但当前仓库还没有提供现成扩展包，以避免先引入空壳目录或额外维护成本。
+因为 OpenAI、本仓库内置的国内平台以及 xAI，本质上都走 OpenAI 兼容协议。给每个平台写一个 struct 是过度设计。Claude、Google Gemini 不是 OpenAI 兼容协议，因此分别提供 `NewAnthropicProvider` / `NewGeminiProvider` 原生 HTTP 实现，但仍复用同一套 `Provider` 接口。
 
 **为什么不管理对话历史？**
 
@@ -1737,11 +1780,11 @@ func (p *myCustomProvider) ChatStream(ctx context.Context, req *provider.ChatReq
 reg.Register(&myCustomProvider{})
 ```
 
-> 说明：Claude / Google Gemini 当前也属于这一类。主包已经预留扩展点，但本仓库暂未提供可直接使用的官方扩展包实现。
+> 说明：Claude / Google Gemini 已有内置原生 HTTP 实现。这个扩展示例主要面向其他不兼容 OpenAI 协议的平台。
 
 ### 可选扩展包怎么接
 
-如果你要自己实现 `Claude` 或 `Google Gemini` 扩展包，推荐按下面的方式组织：
+如果你要自己实现其他平台扩展包，推荐按下面的方式组织：
 
 ```text
 your-llm-extension/

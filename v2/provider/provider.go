@@ -133,6 +133,9 @@ const (
 	ProviderSiliconFlow ProviderName = "siliconflow" // 硅基流动
 	ProviderMoonshot    ProviderName = "moonshot"    // Moonshot / Kimi
 	ProviderOpenAI      ProviderName = "openai"      // 原版 OpenAI，兼容自部署
+	ProviderAnthropic   ProviderName = "anthropic"   // Anthropic Claude native Messages API
+	ProviderGemini      ProviderName = "gemini"      // Google Gemini native Generative Language API
+	ProviderXAI         ProviderName = "xai"         // xAI Grok，OpenAI 兼容
 )
 
 // ProviderConfig 描述一个供应商的连接配置。

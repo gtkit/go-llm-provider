@@ -1059,6 +1059,9 @@ func TestPresetsEmbeddingModelDefaults(t *testing.T) {
 		ProviderSiliconFlow: "BAAI/bge-m3",
 		ProviderDeepSeek:    "", // 明确无 embedding 模型
 		ProviderMoonshot:    "", // 明确无 embedding 模型
+		ProviderAnthropic:   "", // 明确无 embedding 模型
+		ProviderGemini:      "", // 当前 native provider 暂未实现 embedding
+		ProviderXAI:         "", // 当前预设暂未声明 embedding 模型
 	}
 
 	catalog := AllPresets()

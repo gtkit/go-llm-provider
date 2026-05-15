@@ -10,6 +10,8 @@
 - 新增 `WithRetry` / `TryWithRetry` / `RetryMiddleware` / `RetryStreamMiddleware`，基于 `ProviderError.Retryable` 提供内置重试能力
 - 新增 `NewFallbackProvider`，支持按顺序在多个 provider 之间做可重试错误 fallback
 - 新增 `WithObservability` / `WithEmbedderObservability` 与 `ObserveEvent`，以零外部依赖 hook 暴露 Chat、Stream、Embed 的 duration、usage、metadata 和错误分类
+- 新增 `NewAnthropicProvider` / `NewGeminiProvider` 与 `ProviderAnthropic` / `ProviderGemini`，无需官方 SDK 即可通过原生 HTTP API 接入 Claude 与 Gemini
+- 新增 `ProviderXAI` 预设，通过 OpenAI 兼容接口接入 xAI Grok
 
 ### Changed
 

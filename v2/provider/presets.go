@@ -141,6 +141,46 @@ var presetCatalog = map[ProviderName]Preset{
 			},
 		},
 	},
+	ProviderAnthropic: {
+		BaseURL:      defaultAnthropicBaseURL,
+		DefaultModel: defaultAnthropicModel,
+		Capabilities: ModelCapabilities{
+			Provider:  ProviderAnthropic,
+			ChatModel: defaultAnthropicModel,
+			Capabilities: []Capability{
+				CapabilityChat,
+				CapabilityStreaming,
+				CapabilityVision,
+			},
+		},
+	},
+	ProviderGemini: {
+		BaseURL:      defaultGeminiBaseURL,
+		DefaultModel: defaultGeminiModel,
+		Capabilities: ModelCapabilities{
+			Provider:  ProviderGemini,
+			ChatModel: defaultGeminiModel,
+			Capabilities: []Capability{
+				CapabilityChat,
+				CapabilityStreaming,
+				CapabilityVision,
+			},
+		},
+	},
+	ProviderXAI: {
+		BaseURL:      "https://api.x.ai/v1",
+		DefaultModel: "grok-4-1-fast-non-reasoning",
+		Capabilities: ModelCapabilities{
+			Provider:  ProviderXAI,
+			ChatModel: "grok-4-1-fast-non-reasoning",
+			Capabilities: []Capability{
+				CapabilityChat,
+				CapabilityStreaming,
+				CapabilityTools,
+				CapabilityStructuredOutput,
+			},
+		},
+	},
 }
 
 // Presets 保留旧版导出变量以兼容既有调用方。
@@ -173,6 +213,21 @@ func NewProviderFromPreset(name ProviderName, apiKey, model string) (Provider, e
 
 	if model == "" {
 		model = preset.DefaultModel
+	}
+
+	switch name {
+	case ProviderAnthropic:
+		return NewAnthropicProvider(NativeProviderConfig{
+			APIKey:  apiKey,
+			BaseURL: preset.BaseURL,
+			Model:   model,
+		})
+	case ProviderGemini:
+		return NewGeminiProvider(NativeProviderConfig{
+			APIKey:  apiKey,
+			BaseURL: preset.BaseURL,
+			Model:   model,
+		})
 	}
 
 	return NewProvider(ProviderConfig{

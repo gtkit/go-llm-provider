@@ -180,3 +180,21 @@ func ExampleWithObservability() {
 	}
 	// Output: chat openai req_example
 }
+
+func ExampleNewAnthropicProvider() {
+	p, err := provider.NewAnthropicProvider(provider.NativeProviderConfig{
+		APIKey: "sk-ant-xxxxxxxx",
+		Model:  "claude-sonnet-4-5",
+	})
+	fmt.Println(p != nil, err == nil)
+	// Output: true true
+}
+
+func ExampleNewGeminiProvider() {
+	p, err := provider.NewGeminiProvider(provider.NativeProviderConfig{
+		APIKey: "AIza-xxxxxxxx",
+		Model:  "gemini-2.5-flash",
+	})
+	fmt.Println(p != nil, err == nil)
+	// Output: true true
+}
