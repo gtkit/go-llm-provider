@@ -57,12 +57,20 @@ func TestWithMiddlewares_EmptyOptions_PassThrough(t *testing.T) {
 	assert.Equal(t, "ok", resp.Content)
 }
 
-func TestWithMiddlewares_PanicsOnNilProvider(t *testing.T) {
+func TestWithMiddlewaresNilProviderReturnsErroringProvider(t *testing.T) {
 	t.Parallel()
 
-	assert.PanicsWithError(t, ErrNilProvider.Error(), func() {
-		WithMiddlewares(nil, MiddlewareOptions{})
-	})
+	wrapped := WithMiddlewares(nil, MiddlewareOptions{})
+	require.NotNil(t, wrapped)
+	assert.Empty(t, wrapped.Name())
+
+	resp, err := wrapped.Chat(t.Context(), &ChatRequest{})
+	require.ErrorIs(t, err, ErrNilProvider)
+	assert.Nil(t, resp)
+
+	stream, err := wrapped.ChatStream(t.Context(), &ChatRequest{})
+	require.ErrorIs(t, err, ErrNilProvider)
+	assert.Nil(t, stream)
 }
 
 func TestTryWithMiddlewares_ReturnsErrorOnNilProvider(t *testing.T) {
@@ -317,12 +325,16 @@ func TestWithEmbedderMiddlewares_OnionOrder(t *testing.T) {
 	assert.Equal(t, []string{"A-enter", "B-enter", "core", "B-exit", "A-exit"}, events)
 }
 
-func TestWithEmbedderMiddlewares_PanicsOnNilEmbedder(t *testing.T) {
+func TestWithEmbedderMiddlewaresNilEmbedderReturnsErroringEmbedder(t *testing.T) {
 	t.Parallel()
 
-	assert.PanicsWithError(t, ErrNilEmbedder.Error(), func() {
-		WithEmbedderMiddlewares(nil)
-	})
+	wrapped := WithEmbedderMiddlewares(nil)
+	require.NotNil(t, wrapped)
+	assert.Empty(t, wrapped.Name())
+
+	resp, err := wrapped.Embed(t.Context(), &EmbeddingRequest{Input: []string{"x"}})
+	require.ErrorIs(t, err, ErrNilEmbedder)
+	assert.Nil(t, resp)
 }
 
 func TestTryWithEmbedderMiddlewares_ReturnsErrorOnNilEmbedder(t *testing.T) {

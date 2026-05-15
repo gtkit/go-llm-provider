@@ -100,22 +100,132 @@ func TestAnthropicProviderChatMapsRequestAndResponse(t *testing.T) {
 	assert.NotContains(t, source, "data")
 }
 
-func TestAnthropicProviderChatRejectsTools(t *testing.T) {
+func TestAnthropicProviderChatMapsToolsAndToolCalls(t *testing.T) {
 	t.Parallel()
+
+	var captured map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&captured))
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id": "msg_1",
+			"type": "message",
+			"role": "assistant",
+			"model": "claude-sonnet-4-5",
+			"stop_reason": "tool_use",
+			"content": [{
+				"type": "tool_use",
+				"id": "toolu_1",
+				"name": "get_weather",
+				"input": {"city":"Paris"}
+			}],
+			"usage": {"input_tokens": 12, "output_tokens": 8}
+		}`))
+	}))
+	t.Cleanup(srv.Close)
 
 	p, err := NewAnthropicProvider(NativeProviderConfig{
 		APIKey:  "test-key",
-		BaseURL: "http://127.0.0.1:1",
+		BaseURL: srv.URL,
 		Model:   "claude-sonnet-4-5",
 	})
 	require.NoError(t, err)
 
 	resp, err := p.Chat(t.Context(), &ChatRequest{
 		Messages: []Message{UserText("hi")},
-		Tools:    []Tool{{Function: FunctionDef{Name: "get_weather"}}},
+		Tools: []Tool{{
+			Function: FunctionDef{
+				Name:        "get_weather",
+				Description: "Get weather",
+				Parameters: ParamSchema{
+					Type:       "object",
+					Properties: map[string]ParamSchema{"city": {Type: "string"}},
+					Required:   []string{"city"},
+				},
+			},
+		}},
+		ToolChoice: ToolChoiceFunction{Name: "get_weather"},
 	})
-	require.ErrorIs(t, err, ErrInvalidRequest)
-	assert.Nil(t, resp)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, "tool_calls", resp.FinishReason)
+	require.Len(t, resp.ToolCalls, 1)
+	assert.Equal(t, "toolu_1", resp.ToolCalls[0].ID)
+	assert.Equal(t, "get_weather", resp.ToolCalls[0].Function.Name)
+	assert.JSONEq(t, `{"city":"Paris"}`, resp.ToolCalls[0].Function.Arguments)
+
+	tools, ok := captured["tools"].([]any)
+	require.True(t, ok)
+	require.Len(t, tools, 1)
+	tool, ok := tools[0].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "get_weather", tool["name"])
+	assert.Equal(t, "Get weather", tool["description"])
+	assert.Contains(t, tool, "input_schema")
+	toolChoice, ok := captured["tool_choice"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "tool", toolChoice["type"])
+	assert.Equal(t, "get_weather", toolChoice["name"])
+}
+
+func TestAnthropicProviderChatMapsJSONSchemaResponseFormatToToolChoice(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&captured))
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id": "msg_1",
+			"type": "message",
+			"role": "assistant",
+			"model": "claude-sonnet-4-5",
+			"stop_reason": "tool_use",
+			"content": [{
+				"type": "tool_use",
+				"id": "toolu_json",
+				"name": "city_response",
+				"input": {"city":"Paris"}
+			}],
+			"usage": {"input_tokens": 12, "output_tokens": 8}
+		}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	p, err := NewAnthropicProvider(NativeProviderConfig{
+		APIKey:  "test-key",
+		BaseURL: srv.URL,
+		Model:   "claude-sonnet-4-5",
+	})
+	require.NoError(t, err)
+
+	resp, err := p.Chat(t.Context(), &ChatRequest{
+		Messages: []Message{UserText("return city JSON")},
+		ResponseFormat: JSONSchemaFormatStrict("city_response", ParamSchema{
+			Type:       "object",
+			Properties: map[string]ParamSchema{"city": {Type: "string"}},
+			Required:   []string{"city"},
+		}),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.JSONEq(t, `{"city":"Paris"}`, resp.Content)
+	assert.Equal(t, "stop", resp.FinishReason)
+	assert.Empty(t, resp.ToolCalls)
+
+	tools, ok := captured["tools"].([]any)
+	require.True(t, ok)
+	require.Len(t, tools, 1)
+	tool, ok := tools[0].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "city_response", tool["name"])
+	assert.Contains(t, tool, "input_schema")
+	toolChoice, ok := captured["tool_choice"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "tool", toolChoice["type"])
+	assert.Equal(t, "city_response", toolChoice["name"])
 }
 
 func TestAnthropicProviderChatStreamMapsEvents(t *testing.T) {
@@ -265,22 +375,132 @@ func TestGeminiProviderChatMapsRequestAndResponse(t *testing.T) {
 	assert.NotEmpty(t, inlineData["data"])
 }
 
-func TestGeminiProviderChatRejectsTools(t *testing.T) {
+func TestGeminiProviderChatMapsToolsAndToolCalls(t *testing.T) {
 	t.Parallel()
+
+	var captured map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&captured))
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"candidates": [{
+				"content": {"role":"model","parts":[{
+					"functionCall": {"id":"call_gemini_1","name":"get_weather","args":{"city":"Paris"}}
+				}]},
+				"finishReason": "STOP"
+			}],
+			"usageMetadata": {
+				"promptTokenCount": 5,
+				"candidatesTokenCount": 6,
+				"totalTokenCount": 11
+			},
+			"modelVersion": "gemini-2.5-flash"
+		}`))
+	}))
+	t.Cleanup(srv.Close)
 
 	p, err := NewGeminiProvider(NativeProviderConfig{
 		APIKey:  "test-key",
-		BaseURL: "http://127.0.0.1:1/v1beta",
+		BaseURL: srv.URL + "/v1beta",
 		Model:   "gemini-2.5-flash",
 	})
 	require.NoError(t, err)
 
 	resp, err := p.Chat(t.Context(), &ChatRequest{
 		Messages: []Message{UserText("hi")},
-		Tools:    []Tool{{Function: FunctionDef{Name: "get_weather"}}},
+		Tools: []Tool{{
+			Function: FunctionDef{
+				Name:        "get_weather",
+				Description: "Get weather",
+				Parameters: ParamSchema{
+					Type:       "object",
+					Properties: map[string]ParamSchema{"city": {Type: "string"}},
+					Required:   []string{"city"},
+				},
+			},
+		}},
+		ToolChoice: ToolChoiceFunction{Name: "get_weather"},
 	})
-	require.ErrorIs(t, err, ErrInvalidRequest)
-	assert.Nil(t, resp)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, "tool_calls", resp.FinishReason)
+	require.Len(t, resp.ToolCalls, 1)
+	assert.Equal(t, "call_gemini_1", resp.ToolCalls[0].ID)
+	assert.Equal(t, "get_weather", resp.ToolCalls[0].Function.Name)
+	assert.JSONEq(t, `{"city":"Paris"}`, resp.ToolCalls[0].Function.Arguments)
+
+	tools, ok := captured["tools"].([]any)
+	require.True(t, ok)
+	require.Len(t, tools, 1)
+	tool, ok := tools[0].(map[string]any)
+	require.True(t, ok)
+	declarations, ok := tool["functionDeclarations"].([]any)
+	require.True(t, ok)
+	require.Len(t, declarations, 1)
+	declaration, ok := declarations[0].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "get_weather", declaration["name"])
+	assert.Equal(t, "Get weather", declaration["description"])
+	assert.Contains(t, declaration, "parameters")
+
+	toolConfig, ok := captured["toolConfig"].(map[string]any)
+	require.True(t, ok)
+	functionConfig, ok := toolConfig["functionCallingConfig"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "ANY", functionConfig["mode"])
+	assert.Equal(t, []any{"get_weather"}, functionConfig["allowedFunctionNames"])
+}
+
+func TestGeminiProviderChatMapsJSONSchemaResponseFormat(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&captured))
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"candidates": [{
+				"content": {"role":"model","parts":[{"text":"{\"city\":\"Paris\"}"}]},
+				"finishReason": "STOP"
+			}],
+			"usageMetadata": {
+				"promptTokenCount": 5,
+				"candidatesTokenCount": 6,
+				"totalTokenCount": 11
+			},
+			"modelVersion": "gemini-2.5-flash"
+		}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	p, err := NewGeminiProvider(NativeProviderConfig{
+		APIKey:  "test-key",
+		BaseURL: srv.URL + "/v1beta",
+		Model:   "gemini-2.5-flash",
+	})
+	require.NoError(t, err)
+
+	resp, err := p.Chat(t.Context(), &ChatRequest{
+		Messages: []Message{UserText("return city JSON")},
+		ResponseFormat: JSONSchemaFormatStrict("city_response", ParamSchema{
+			Type:       "object",
+			Properties: map[string]ParamSchema{"city": {Type: "string"}},
+			Required:   []string{"city"},
+		}),
+	})
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"city":"Paris"}`, resp.Content)
+
+	generation, ok := captured["generationConfig"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "application/json", generation["responseMimeType"])
+	schema, ok := generation["responseSchema"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "object", schema["type"])
+	assert.NotContains(t, generation, "name")
+	assert.NotContains(t, generation, "strict")
 }
 
 func TestGeminiProviderChatStreamMapsSSE(t *testing.T) {
@@ -394,19 +614,74 @@ func TestNativeProviderTransportErrorIsWrapped(t *testing.T) {
 func TestNativeProviderUnsupportedRoleReturnsError(t *testing.T) {
 	t.Parallel()
 
+	p, err := NewAnthropicProvider(NativeProviderConfig{
+		APIKey:  "test-key",
+		BaseURL: "http://127.0.0.1:1",
+		Model:   "claude-sonnet-4-5",
+	})
+	require.NoError(t, err)
+
+	resp, err := p.Chat(t.Context(), &ChatRequest{
+		Messages: []Message{{Role: Role("developer"), Content: []ContentPart{TextPart("hi")}}},
+	})
+	require.ErrorIs(t, err, ErrInvalidRequest)
+	assert.Nil(t, resp)
+	assert.Contains(t, err.Error(), "developer")
+}
+
+func TestGeminiProviderChatMapsToolResultMessages(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&captured))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"candidates": [{
+				"content": {"role":"model","parts":[{"text":"done"}]},
+				"finishReason": "STOP"
+			}],
+			"modelVersion": "gemini-2.5-flash"
+		}`))
+	}))
+	t.Cleanup(srv.Close)
+
 	p, err := NewGeminiProvider(NativeProviderConfig{
 		APIKey:  "test-key",
-		BaseURL: "http://127.0.0.1:1/v1beta",
+		BaseURL: srv.URL + "/v1beta",
 		Model:   "gemini-2.5-flash",
 	})
 	require.NoError(t, err)
 
 	resp, err := p.Chat(t.Context(), &ChatRequest{
-		Messages: []Message{ToolResultMessage("call_1", "ok")},
+		Messages: []Message{
+			UserText("call tool"),
+			{
+				Role: RoleAssistant,
+				ToolCalls: []ToolCall{{
+					ID:       "call_1",
+					Function: FunctionCall{Name: "get_weather", Arguments: `{"city":"Paris"}`},
+				}},
+			},
+			ToolResultMessage("call_1", `{"temperature":20}`),
+		},
 	})
-	require.ErrorIs(t, err, ErrInvalidRequest)
-	assert.Nil(t, resp)
-	assert.Contains(t, err.Error(), string(RoleTool))
+	require.NoError(t, err)
+	assert.Equal(t, "done", resp.Content)
+
+	contents, ok := captured["contents"].([]any)
+	require.True(t, ok)
+	require.Len(t, contents, 3)
+	toolContent, ok := contents[2].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "function", toolContent["role"])
+	parts, ok := toolContent["parts"].([]any)
+	require.True(t, ok)
+	require.Len(t, parts, 1)
+	response, ok := parts[0].(map[string]any)["functionResponse"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "call_1", response["id"])
+	assert.Equal(t, "call_1", response["name"])
 }
 
 func TestSSEReaderSkipsInvalidJSONAndComments(t *testing.T) {

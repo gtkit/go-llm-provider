@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"encoding/base64"
 	"fmt"
 	"net/http"
 	"strings"
@@ -28,21 +27,13 @@ type anthropicMessage struct {
 }
 
 type anthropicContentPart struct {
-	Type      string                `json:"type"`
-	Text      string                `json:"text,omitempty"`
-	Source    *anthropicImageSource `json:"source,omitempty"`
-	ID        string                `json:"id,omitempty"`
-	Name      string                `json:"name,omitempty"`
-	Input     any                   `json:"input,omitempty"`
-	ToolUseID string                `json:"tool_use_id,omitempty"`
-	Content   any                   `json:"content,omitempty"`
-}
-
-type anthropicImageSource struct {
 	Type      string `json:"type"`
-	MediaType string `json:"media_type,omitempty"`
-	Data      string `json:"data,omitempty"`
-	URL       string `json:"url,omitempty"`
+	Text      string `json:"text,omitempty"`
+	ID        string `json:"id,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Input     any    `json:"input,omitempty"`
+	ToolUseID string `json:"tool_use_id,omitempty"`
+	Content   any    `json:"content,omitempty"`
 }
 
 type anthropicResponse struct {
@@ -100,34 +91,13 @@ type anthropicErrorBody struct {
 	Message string `json:"message"`
 }
 
-func anthropicContentParts(parts []ContentPart) ([]anthropicContentPart, error) {
-	if len(parts) == 0 {
-		return []anthropicContentPart{{Type: "text", Text: ""}}, nil
-	}
-	out := make([]anthropicContentPart, 0, len(parts))
-	for _, part := range parts {
-		switch part.Type {
-		case ContentTypeText:
-			out = append(out, anthropicContentPart{Type: "text", Text: part.Text})
-		case ContentTypeImageURL:
-			image, err := anthropicImagePart(part)
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, image)
-		default:
-			return nil, fmt.Errorf("%w: unsupported anthropic content type %q", ErrInvalidRequest, part.Type)
-		}
-	}
-	return out, nil
+func anthropicContentParts(content string) []anthropicContentPart {
+	return []anthropicContentPart{{Type: "text", Text: content}}
 }
 
 func anthropicAssistantParts(msg Message) ([]anthropicContentPart, error) {
-	parts, err := anthropicContentParts(msg.Content)
-	if err != nil {
-		return nil, err
-	}
-	if len(parts) == 1 && parts[0].Type == "text" && parts[0].Text == "" && len(msg.ToolCalls) > 0 {
+	parts := anthropicContentParts(msg.Content)
+	if msg.Content == "" && len(msg.ToolCalls) > 0 {
 		parts = parts[:0]
 	}
 	for _, call := range msg.ToolCalls {
@@ -153,55 +123,6 @@ func anthropicToolResultPart(msg Message) anthropicContentPart {
 	}
 }
 
-func anthropicImagePart(part ContentPart) (anthropicContentPart, error) {
-	if len(part.ImageData) > 0 {
-		if part.MIMEType == "" {
-			return anthropicContentPart{}, fmt.Errorf("%w: image MIME type is required", ErrInvalidRequest)
-		}
-		return anthropicContentPart{
-			Type: "image",
-			Source: &anthropicImageSource{
-				Type:      "base64",
-				MediaType: part.MIMEType,
-				Data:      base64.StdEncoding.EncodeToString(part.ImageData),
-			},
-		}, nil
-	}
-	if part.ImageURL == "" {
-		return anthropicContentPart{}, fmt.Errorf("%w: image source is required", ErrInvalidRequest)
-	}
-	if strings.HasPrefix(part.ImageURL, "data:") {
-		mimeType, data, ok := parseDataURLImage(part.ImageURL)
-		if !ok {
-			return anthropicContentPart{}, fmt.Errorf("%w: invalid data URL image", ErrInvalidRequest)
-		}
-		return anthropicContentPart{
-			Type: "image",
-			Source: &anthropicImageSource{
-				Type:      "base64",
-				MediaType: mimeType,
-				Data:      data,
-			},
-		}, nil
-	}
-	return anthropicContentPart{
-		Type: "image",
-		Source: &anthropicImageSource{
-			Type: "url",
-			URL:  part.ImageURL,
-		},
-	}, nil
-}
-
-func anthropicRole(role Role) string {
-	switch role {
-	case RoleAssistant:
-		return "assistant"
-	default:
-		return "user"
-	}
-}
-
 func anthropicTools(tools []Tool) []anthropicTool {
 	if len(tools) == 0 {
 		return nil
@@ -215,41 +136,6 @@ func anthropicTools(tools []Tool) []anthropicTool {
 		})
 	}
 	return out
-}
-
-func anthropicStructuredTool(format *ResponseFormat) (*anthropicTool, *anthropicToolChoice, error) {
-	if format == nil || format.Type == ResponseFormatText {
-		return nil, nil, nil
-	}
-	switch format.Type {
-	case ResponseFormatJSONObject, ResponseFormatJSONSchema:
-	default:
-		return nil, nil, fmt.Errorf("%w: unsupported anthropic response format %q", ErrInvalidRequest, format.Type)
-	}
-
-	name := format.Name
-	if name == "" {
-		name = "json_response"
-	}
-	schema := format.Schema
-	if schema == nil {
-		schema = ParamSchema{
-			Type:                 "object",
-			AdditionalProperties: boolPtr(true),
-		}
-	}
-	return &anthropicTool{
-			Name:        name,
-			Description: "Return the response as structured JSON.",
-			InputSchema: schema,
-		}, &anthropicToolChoice{
-			Type: "tool",
-			Name: name,
-		}, nil
-}
-
-func boolPtr(value bool) *bool {
-	return &value
 }
 
 func buildAnthropicToolChoice(req *ChatRequest) (*anthropicToolChoice, error) {
@@ -289,6 +175,15 @@ func buildAnthropicToolChoice(req *ChatRequest) (*anthropicToolChoice, error) {
 	return choice, nil
 }
 
+func anthropicRole(role Role) string {
+	switch role {
+	case RoleAssistant:
+		return "assistant"
+	default:
+		return "user"
+	}
+}
+
 func anthropicResponseContent(resp anthropicResponse) (content, finishReason string, toolCalls []ToolCall, err error) {
 	var text strings.Builder
 	for _, part := range resp.Content {
@@ -317,24 +212,10 @@ func anthropicResponseContent(resp anthropicResponse) (content, finishReason str
 	return text.String(), finishReason, toolCalls, nil
 }
 
-func anthropicStructuredContent(resp anthropicResponse) (content string, ok bool, err error) {
-	for _, part := range resp.Content {
-		if part.Type != "tool_use" {
-			continue
-		}
-		data, err := json.Marshal(part.Input)
-		if err != nil {
-			return "", false, fmt.Errorf("marshal anthropic structured input: %w", err)
-		}
-		return string(data), true, nil
-	}
-	return "", false, nil
-}
-
 func decodeAnthropicError(provider ProviderName, statusCode int, status string, body []byte) error {
 	var envelope anthropicErrorEnvelope
 	if err := json.Unmarshal(body, &envelope); err != nil {
-		return nativeStatusError(provider, statusCode, status, string(body))
+		return nativeStatusError(provider, statusCode, status, "", "", string(body), nil)
 	}
 	code := anthropicErrorCode(statusCode, envelope.Error.Type)
 	return &ProviderError{

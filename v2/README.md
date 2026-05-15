@@ -13,7 +13,7 @@ Go 语言统一多模型 LLM 调用库。一套代码接入 OpenAI 以及 DeepSe
 - `Registry` 注册表管理多个 Provider，运行时按名称切换
 - 支持非流式和流式两种调用模式
 - 完整的 Tool Use / Function Calling 支持，包含自动循环执行的 `RunToolLoop`
-- 主包保持轻量，零额外厂商 SDK 依赖，底层只用 `sashabaranov/go-openai`
+- 主包保持轻量，零额外厂商 SDK 依赖；OpenAI 兼容路径复用 `sashabaranov/go-openai`，非兼容路径用标准库 `net/http`
 
 ## 项目结构
 
@@ -71,13 +71,14 @@ go get github.com/gtkit/go-llm-provider/v2
 |------|-------------|-------------|---------|---------|-------------|
 | DeepSeek | `deepseek` | `https://api.deepseek.com/v1` | `deepseek-chat` | — | [platform.deepseek.com](https://platform.deepseek.com/) |
 | 通义千问（百炼） | `qwen` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen3.6-plus` | `text-embedding-v3` | [百炼控制台](https://bailian.console.aliyun.com/) |
-| 智谱 AI | `zhipu` | `https://open.bigmodel.cn/api/paas/v4/` | `glm-5.1` | `embedding-3` | [open.bigmodel.cn](https://open.bigmodel.cn/) |
+| 智谱 AI / GLM | `zhipu`（别名：`ProviderGLM`） | `https://open.bigmodel.cn/api/paas/v4/` | `glm-5.1` | `embedding-3` | [open.bigmodel.cn](https://open.bigmodel.cn/) |
 | 百度千帆 | `qianfan` | `https://qianfan.baidubce.com/v2` | `ernie-4.5-turbo-32k` | `embedding-v1` | [千帆控制台](https://console.bce.baidu.com/qianfan/) |
 | 硅基流动 | `siliconflow` | `https://api.siliconflow.cn/v1` | `deepseek-ai/DeepSeek-V3` | `BAAI/bge-m3` | [siliconflow.cn](https://siliconflow.cn/) |
-| Moonshot / Kimi | `moonshot` | `https://api.moonshot.cn/v1` | `kimi-k2-turbo-preview` | — | [platform.moonshot.cn](https://platform.moonshot.cn/) |
+| Moonshot / Kimi | `moonshot`（别名：`ProviderKimi`） | `https://api.moonshot.cn/v1` | `kimi-k2-turbo-preview` | — | [platform.moonshot.cn](https://platform.moonshot.cn/) |
 | OpenAI | `openai` | `https://api.openai.com/v1` | `gpt-5.4-mini` | `text-embedding-3-small` | [platform.openai.com](https://platform.openai.com/) |
 | Anthropic / Claude | `anthropic` | `https://api.anthropic.com` | `claude-sonnet-4-5` | — | [console.anthropic.com](https://console.anthropic.com/) |
 | Google Gemini | `gemini` | `https://generativelanguage.googleapis.com/v1beta` | `gemini-2.5-flash` | — | [aistudio.google.com](https://aistudio.google.com/) |
+| Ollama | `ollama` | `http://localhost:11434` | 需调用方指定 | — | 本地服务 |
 | xAI / Grok | `xai` | `https://api.x.ai/v1` | `grok-4-1-fast-non-reasoning` | — | [console.x.ai](https://console.x.ai/) |
 
 > 预设地址和默认模型可能随平台更新而变化，建议定期对照各平台官方文档确认。
@@ -90,7 +91,8 @@ Claude 和 Gemini 不是 OpenAI 兼容协议，但本库不引入官方 SDK，�
 - `ProviderAnthropic` 走 Anthropic Messages API：`POST /v1/messages`
 - `ProviderGemini` 走 Gemini Generative Language API：`generateContent` / `streamGenerateContent`
 - 两者都复用统一的 `Provider`、`ChatRequest`、`ChatResponse`、`StreamReader`、`ProviderError`、`ResponseMetadata`
-- 当前 native 实现覆盖文本、多模态图片输入、非流式、基础 SSE 流式、错误分类；Tool Use 与结构化输出会返回明确的 `ErrInvalidRequest`，避免静默降级
+- 当前 native 实现覆盖文本、多模态图片输入、非流式、基础 SSE 流式、错误分类；非流式 `Chat` 已映射 Tool Use / Function Calling 与结构化输出
+- 流式 Tool Use 暂未开放；包含 `Tools` / `ToolChoice` / `ParallelToolCalls` 的 native streaming 请求会返回明确的 `ErrInvalidRequest`
 
 ## 快速开始
 
@@ -267,7 +269,20 @@ gemini, err := provider.NewGeminiProvider(provider.NativeProviderConfig{
 })
 ```
 
-当前原生实现支持文本、多模态图片输入、非流式、基础 SSE 流式、request id 元数据与错误分类。Tool Use / Function Calling 和结构化输出暂未映射到 Claude / Gemini 原生协议；如果请求中包含 `Tools`、`ToolChoice`、`ParallelToolCalls` 或 `ResponseFormat`，会返回 `ErrInvalidRequest`。
+当前原生实现支持文本、多模态图片输入、非流式、基础 SSE 流式、request id 元数据与错误分类。非流式 `Chat` 已支持 Tool Use / Function Calling 和结构化输出；流式 Tool Use 暂未开放，会返回 `ErrInvalidRequest`。
+
+### Ollama 本地 Provider
+
+Ollama 走本地 `/api/chat`，不需要 API key。由于本地可用模型取决于调用方机器，`Model` 必须显式传入：
+
+```go
+ollama, err := provider.NewOllamaProvider(provider.OllamaProviderConfig{
+    BaseURL: "http://localhost:11434", // 可省略
+    Model:   "llama3.2",
+})
+```
+
+`NewProviderFromPreset(provider.ProviderOllama, "", "llama3.2")` 也可以创建本地 provider；`QuickRegistry` 仍按 API key 注册云平台，空 key 会跳过 Ollama。
 
 ## 调用方式
 
@@ -1145,7 +1160,7 @@ emb := provider.WithEmbedderMiddlewares(baseEmb, loggingEmbedMiddleware())
 
 `WithMiddlewares` 的返回值本身是 `Provider`，可以**再次传入** `WithMiddlewares` 外再包一层——适合"基础能力按全局注册、特定请求链路再加一层"。
 
-如果你不希望装饰阶段因空值直接 panic，改用 `TryWithMiddlewares` / `TryWithEmbedderMiddlewares`，由调用方显式处理 `ErrNilProvider` / `ErrNilEmbedder`。
+如果你希望在装饰阶段显式处理空值，改用 `TryWithMiddlewares` / `TryWithEmbedderMiddlewares`，由调用方直接接收 `ErrNilProvider` / `ErrNilEmbedder`。
 
 ### 错误处理：`ProviderError` + 8 个 Sentinel
 
@@ -1877,7 +1892,8 @@ func main() {
         "claude-sonnet-4-0",
     )
     if err != nil {
-        panic(err)
+        fmt.Println("create provider:", err)
+        return
     }
 
     reg := provider.NewRegistry()
@@ -1885,7 +1901,8 @@ func main() {
 
     p, err := reg.Get("claude")
     if err != nil {
-        panic(err)
+        fmt.Println("get provider:", err)
+        return
     }
 
     ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -1893,7 +1910,8 @@ func main() {
 
     reply, err := provider.SimpleChat(ctx, p, "用一句话介绍 Go")
     if err != nil {
-        panic(err)
+        fmt.Println("chat:", err)
+        return
     }
 
     fmt.Println(reply)
@@ -1914,10 +1932,19 @@ func main() {
 go test ./provider/ -v
 ```
 
-真实 DeepSeek smoke test 默认跳过，只有设置 `DEEPSEEK_API_KEY` 时才会访问外部接口：
+仓库根目录的发布前检查会分别验证根模块与 v2 子模块，并按核心 `provider` 包执行 80% 覆盖率门禁：
 
 ```bash
-DEEPSEEK_API_KEY="sk-xxxxxxxx" go test ./provider -run 'TestDeepSeek.*Smoke' -count=1 -v
+make release-check
+```
+
+真实 smoke test 默认跳过，只有设置对应环境变量时才会访问外部接口：
+
+```bash
+DEEPSEEK_API_KEY="<DEEPSEEK_API_KEY>" go test ./provider -run 'TestDeepSeek.*Smoke' -count=1 -v
+ANTHROPIC_API_KEY="<ANTHROPIC_API_KEY>" go test ./provider -run TestAnthropicSmoke -count=1 -v
+GEMINI_API_KEY="<GEMINI_API_KEY>" go test ./provider -run TestGeminiSmoke -count=1 -v
+OLLAMA_MODEL="llama3.2" OLLAMA_BASE_URL="http://localhost:11434" go test ./provider -run TestOllamaSmoke -count=1 -v
 ```
 
 不要把真实 API Key 写入源码、README、测试 fixture 或 shell history；本命令中的值只应使用临时密钥或本地安全注入方式。

@@ -73,6 +73,39 @@ func TestCollectStreamRejectsNilProvider(t *testing.T) {
 	assert.ErrorContains(t, err, "provider is nil")
 }
 
+func TestCollectStreamCollectsChunksAndInvokesCallback(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	p := &stubProvider{
+		name: ProviderOpenAI,
+		chatStream: func(context.Context, *ChatRequest) (*StreamReader, error) {
+			chunks := []*StreamChunk{{Delta: "hello"}, {Delta: " world"}}
+			index := 0
+			return NewStreamReader(func() (*StreamChunk, error) {
+				if index >= len(chunks) {
+					return nil, io.EOF
+				}
+				chunk := chunks[index]
+				index++
+				return chunk, nil
+			}, func() error {
+				calls++
+				return nil
+			}), nil
+		},
+	}
+
+	var seen []string
+	got, err := CollectStream(t.Context(), p, &ChatRequest{Messages: []Message{{Role: RoleUser, Content: "hi"}}}, func(delta string) {
+		seen = append(seen, delta)
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "hello world", got)
+	assert.Equal(t, []string{"hello", " world"}, seen)
+	assert.Equal(t, 1, calls)
+}
+
 func TestRunToolLoopRejectsNilRequest(t *testing.T) {
 	t.Parallel()
 

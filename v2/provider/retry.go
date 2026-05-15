@@ -57,7 +57,7 @@ func ExponentialBackoff(base, maximum time.Duration) BackoffFunc {
 func WithRetry(p Provider, opts RetryOptions) Provider {
 	wrapped, err := TryWithRetry(p, opts)
 	if err != nil {
-		panic(err)
+		return errorProvider{err: err}
 	}
 	return wrapped
 }

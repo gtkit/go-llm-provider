@@ -39,22 +39,9 @@ release-check-v2: ## Run release checks for v2 module and enforce provider cover
 release-check: release-check-root release-check-v2 ## Run release checks for both root and v2 modules
 
 ## 推送标签到远程仓库时，通常不需要指定分支
-tag:
-	@current=$$(grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' version.go | head -n1 | tr -d 'v'); \
-	if [ -z "$$current" ]; then echo "version not found in version.go"; exit 1; fi; \
-	maj=$$(echo $$current | cut -d. -f1); \
-	min=$$(echo $$current | cut -d. -f2); \
-	patch=$$(echo $$current | cut -d. -f3); \
-	newpatch=$$(expr $$patch + 1); \
-	new="v$$maj.$$min.$$newpatch"; \
-	printf "Bump: v%s -> %s\n" "$$current" "$$new"; \
-	sed -E -i.bak 's/(const Version = ")([^"]+)(")/\1'"$$new"'\3/' version.go; \
-	git add version.go; \
-	git commit -m "chore(release): $$new"; \
-	printf "Release: %s\n" "$$new"; \
-	git push gtkit HEAD; \
-	git tag -a "$$new" -m "release $$new"; \
-	printf "Tag: %s\n" "$$new"; \
-	git push gtkit "$$new"; \
-	printf "Done\n"
-	rm -f version.go.bak
+tag: ## Create a local annotated tag. Usage: make tag VERSION=v1.4.0
+	@test -n "$(VERSION)" || { echo "VERSION is required, for example: make tag VERSION=v1.4.0"; exit 1; }
+	@printf '%s\n' "$(VERSION)" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$$' || { echo "invalid VERSION: $(VERSION)"; exit 1; }
+	@git rev-parse -q --verify "refs/tags/$(VERSION)" >/dev/null && { echo "tag $(VERSION) already exists"; exit 1; } || true
+	git tag -a "$(VERSION)" -m "版本 $(VERSION)" -m "主要变更：" -m "- feat: 新增原生 provider 接入与发布前 smoke test"
+	@echo "created local tag $(VERSION). Push manually with: git push origin $(VERSION)"

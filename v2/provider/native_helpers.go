@@ -1,7 +1,10 @@
 package provider
 
 import (
+	"fmt"
 	"strings"
+
+	"github.com/gtkit/json"
 )
 
 func contentText(parts []ContentPart) string {
@@ -40,17 +43,35 @@ func parseDataURLImage(value string) (mimeType, data string, ok bool) {
 	return parts[0], encoded, true
 }
 
-func nativeStatusError(provider ProviderName, statusCode int, status, rawType, rawCode, message string, cause error) error {
+func rawJSONArgument(value string) (any, error) {
+	if value == "" {
+		return map[string]any{}, nil
+	}
+	var out any
+	if err := json.Unmarshal([]byte(value), &out); err != nil {
+		return nil, fmt.Errorf("parse JSON argument: %w", err)
+	}
+	return out, nil
+}
+
+func appendSystemText(system *string, text string) {
+	if text == "" {
+		return
+	}
+	if *system != "" {
+		*system += "\n"
+	}
+	*system += text
+}
+
+func nativeStatusError(provider ProviderName, statusCode int, status, message string) error {
 	code := CodeFromHTTPStatus(statusCode)
 	return &ProviderError{
 		Provider:   provider,
 		Code:       code,
 		StatusCode: statusCode,
 		Status:     status,
-		RawType:    rawType,
-		RawCode:    rawCode,
 		Retryable:  RetryableByCode(code),
 		Message:    message,
-		Cause:      cause,
 	}
 }

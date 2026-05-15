@@ -13,8 +13,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/gtkit/json"
 
@@ -83,26 +86,57 @@ func providerIsNil(p Provider) bool {
 	return p == nil
 }
 
+// HTTPDoer is the minimal HTTP client contract used by native providers.
+type HTTPDoer interface {
+	Do(req *http.Request) (*http.Response, error)
+}
+
+// DefaultHTTPClient returns the package default reusable HTTP client.
+//
+// The client intentionally leaves http.Client.Timeout unset so request budgets
+// stay under the caller's context, while transport-level timeouts prevent
+// hanging dial, TLS, and response-header waits.
+func DefaultHTTPClient() *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
+			DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          100,
+			MaxIdleConnsPerHost:   10,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ResponseHeaderTimeout: 60 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		},
+	}
+}
+
 // ProviderName identifies a registered provider.
 type ProviderName string
 
 const (
 	ProviderDeepSeek    ProviderName = "deepseek"
 	ProviderZhipu       ProviderName = "zhipu"       // 智谱 AI (GLM)
+	ProviderGLM         ProviderName = ProviderZhipu // Alias for GLM / Zhipu AI.
 	ProviderQwen        ProviderName = "qwen"        // 通义千问 / 阿里百炼 (DashScope)
 	ProviderQianfan     ProviderName = "qianfan"     // 百度千帆 (OpenAI 兼容 V2)
 	ProviderSiliconFlow ProviderName = "siliconflow" // 硅基流动
 	ProviderMoonshot    ProviderName = "moonshot"    // Moonshot / Kimi
-	ProviderOpenAI      ProviderName = "openai"      // 原版 OpenAI，兼容自部署
+	ProviderKimi        ProviderName = ProviderMoonshot
+	ProviderOpenAI      ProviderName = "openai"    // 原版 OpenAI，兼容自部署
+	ProviderAnthropic   ProviderName = "anthropic" // Anthropic Claude native Messages API
+	ProviderGemini      ProviderName = "gemini"    // Google Gemini native Generative Language API
 )
 
 // ProviderConfig 描述一个供应商的连接配置。
 type ProviderConfig struct {
-	Name    ProviderName
-	BaseURL string // 平台 API 地址，例如 "https://open.bigmodel.cn/api/paas/v4/"
-	APIKey  string
-	Model   string // 默认模型，如 "glm-4"、"deepseek-chat"
-	OrgID   string // 可选，部分平台需要
+	Name       ProviderName
+	BaseURL    string // 平台 API 地址，例如 "https://open.bigmodel.cn/api/paas/v4/"
+	APIKey     string
+	Model      string // 默认模型，如 "glm-4"、"deepseek-chat"
+	OrgID      string // 可选，部分平台需要
+	HTTPClient HTTPDoer
 }
 
 // Provider 是统一的大模型调用接口。
@@ -465,6 +499,11 @@ func NewProvider(cfg ProviderConfig) (Provider, error) {
 	}
 	if cfg.OrgID != "" {
 		ocfg.OrgID = cfg.OrgID
+	}
+	if cfg.HTTPClient == nil {
+		ocfg.HTTPClient = DefaultHTTPClient()
+	} else {
+		ocfg.HTTPClient = cfg.HTTPClient
 	}
 
 	return &openaiProvider{

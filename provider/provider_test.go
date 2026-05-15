@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -78,6 +79,21 @@ func TestNewProviderFromPresetUsesApprovedDefaultModels(t *testing.T) {
 			assert.Equal(t, tc.expectedModel, op.model)
 		})
 	}
+}
+
+func TestProviderAliasesUseCanonicalProviderNames(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, ProviderZhipu, ProviderGLM)
+	assert.Equal(t, ProviderMoonshot, ProviderKimi)
+
+	glm, err := NewProviderFromPreset(ProviderGLM, "test-key", "")
+	require.NoError(t, err)
+	assert.Equal(t, ProviderZhipu, glm.Name())
+
+	kimi, err := NewProviderFromPreset(ProviderKimi, "test-key", "")
+	require.NoError(t, err)
+	assert.Equal(t, ProviderMoonshot, kimi.Name())
 }
 
 // ============================================================
@@ -676,4 +692,42 @@ func TestOpenAIProviderChat_WrapsProviderError(t *testing.T) {
 			assert.ErrorIs(t, err, tt.wantIs)
 		})
 	}
+}
+
+func TestOpenAIProviderChatStreamMapsSSE(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\" world\"},\"finish_reason\":\"stop\"}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	t.Cleanup(srv.Close)
+
+	p, err := NewProvider(ProviderConfig{
+		Name:    ProviderOpenAI,
+		BaseURL: srv.URL,
+		APIKey:  "sk-test",
+		Model:   "gpt-4",
+	})
+	require.NoError(t, err)
+
+	stream, err := p.ChatStream(t.Context(), &ChatRequest{
+		Messages: []Message{{Role: RoleUser, Content: "hi"}},
+	})
+	require.NoError(t, err)
+	defer func() { assert.NoError(t, stream.Close()) }()
+
+	first, err := stream.Recv()
+	require.NoError(t, err)
+	assert.Equal(t, "hello", first.Delta)
+
+	second, err := stream.Recv()
+	require.NoError(t, err)
+	assert.Equal(t, " world", second.Delta)
+	assert.Equal(t, "stop", second.FinishReason)
+
+	_, err = stream.Recv()
+	require.ErrorIs(t, err, io.EOF)
 }

@@ -128,14 +128,17 @@ type ProviderName string
 const (
 	ProviderDeepSeek    ProviderName = "deepseek"
 	ProviderZhipu       ProviderName = "zhipu"       // 智谱 AI (GLM)
+	ProviderGLM         ProviderName = ProviderZhipu // Alias for GLM / Zhipu AI.
 	ProviderQwen        ProviderName = "qwen"        // 通义千问 / 阿里百炼 (DashScope)
 	ProviderQianfan     ProviderName = "qianfan"     // 百度千帆 (OpenAI 兼容 V2)
 	ProviderSiliconFlow ProviderName = "siliconflow" // 硅基流动
 	ProviderMoonshot    ProviderName = "moonshot"    // Moonshot / Kimi
-	ProviderOpenAI      ProviderName = "openai"      // 原版 OpenAI，兼容自部署
-	ProviderAnthropic   ProviderName = "anthropic"   // Anthropic Claude native Messages API
-	ProviderGemini      ProviderName = "gemini"      // Google Gemini native Generative Language API
-	ProviderXAI         ProviderName = "xai"         // xAI Grok，OpenAI 兼容
+	ProviderKimi        ProviderName = ProviderMoonshot
+	ProviderOpenAI      ProviderName = "openai"    // 原版 OpenAI，兼容自部署
+	ProviderAnthropic   ProviderName = "anthropic" // Anthropic Claude native Messages API
+	ProviderGemini      ProviderName = "gemini"    // Google Gemini native Generative Language API
+	ProviderOllama      ProviderName = "ollama"    // Local Ollama native API
+	ProviderXAI         ProviderName = "xai"       // xAI Grok，OpenAI 兼容
 )
 
 // ProviderConfig 描述一个供应商的连接配置。
@@ -400,12 +403,13 @@ func ToolResultMessageJSON(toolCallID string, result any) (Message, error) {
 //	    Required: []string{"city"},
 //	}
 type ParamSchema struct {
-	Type        string                 `json:"type"`
-	Description string                 `json:"description,omitempty"`
-	Properties  map[string]ParamSchema `json:"properties,omitempty"`
-	Required    []string               `json:"required,omitempty"`
-	Enum        []string               `json:"enum,omitempty"`
-	Items       *ParamSchema           `json:"items,omitempty"` // 用于 type: "array"
+	Type                 string                 `json:"type"`
+	Description          string                 `json:"description,omitempty"`
+	Properties           map[string]ParamSchema `json:"properties,omitempty"`
+	Required             []string               `json:"required,omitempty"`
+	Enum                 []string               `json:"enum,omitempty"`
+	Items                *ParamSchema           `json:"items,omitempty"` // 用于 type: "array"
+	AdditionalProperties *bool                  `json:"additionalProperties,omitempty"`
 }
 
 // ============================================================
@@ -423,6 +427,7 @@ type StreamChunk struct {
 	Delta          string // 增量文本
 	ReasoningDelta string // 增量推理文本
 	FinishReason   string // 非空时表示流结束
+	Usage          Usage  // 部分 provider 仅在最终 chunk 提供 token 统计
 
 	// ToolCalls 流式模式下的增量 tool call 数据。
 	// 每个 chunk 可能只包含部分 tool call 信息（如部分 arguments），

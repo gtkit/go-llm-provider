@@ -15,7 +15,7 @@ Go 语言统一多模型 LLM 调用库。一套代码接入 OpenAI 以及 DeepSe
 - `Registry` 注册表管理多个 Provider，运行时按名称切换
 - 支持非流式和流式两种调用模式
 - 完整的 Tool Use / Function Calling 支持，包含自动循环执行的 `RunToolLoop`
-- 主包保持轻量，零额外厂商 SDK 依赖，底层只用 `sashabaranov/go-openai`
+- 主包保持轻量，零额外厂商 SDK 依赖；OpenAI 兼容路径复用 `sashabaranov/go-openai`，非兼容路径用标准库 `net/http`
 
 ## 项目结构
 
@@ -60,26 +60,25 @@ go get github.com/gtkit/go-llm-provider
 |------|-------------|-------------|---------|---------|-------------|
 | DeepSeek | `deepseek` | `https://api.deepseek.com/v1` | `deepseek-chat` | — | [platform.deepseek.com](https://platform.deepseek.com/) |
 | 通义千问（百炼） | `qwen` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen3.6-plus` | `text-embedding-v3` | [百炼控制台](https://bailian.console.aliyun.com/) |
-| 智谱 AI | `zhipu` | `https://open.bigmodel.cn/api/paas/v4/` | `glm-5.1` | `embedding-3` | [open.bigmodel.cn](https://open.bigmodel.cn/) |
+| 智谱 AI / GLM | `zhipu`（别名：`ProviderGLM`） | `https://open.bigmodel.cn/api/paas/v4/` | `glm-5.1` | `embedding-3` | [open.bigmodel.cn](https://open.bigmodel.cn/) |
 | 百度千帆 | `qianfan` | `https://qianfan.baidubce.com/v2` | `ernie-4.5-turbo-32k` | `embedding-v1` | [千帆控制台](https://console.bce.baidu.com/qianfan/) |
 | 硅基流动 | `siliconflow` | `https://api.siliconflow.cn/v1` | `deepseek-ai/DeepSeek-V3` | `BAAI/bge-m3` | [siliconflow.cn](https://siliconflow.cn/) |
-| Moonshot / Kimi | `moonshot` | `https://api.moonshot.cn/v1` | `kimi-k2-turbo-preview` | — | [platform.moonshot.cn](https://platform.moonshot.cn/) |
+| Moonshot / Kimi | `moonshot`（别名：`ProviderKimi`） | `https://api.moonshot.cn/v1` | `kimi-k2-turbo-preview` | — | [platform.moonshot.cn](https://platform.moonshot.cn/) |
 | OpenAI | `openai` | `https://api.openai.com/v1` | `gpt-5.4-mini` | `text-embedding-3-small` | [platform.openai.com](https://platform.openai.com/) |
+| Anthropic / Claude | `anthropic` | `https://api.anthropic.com` | `claude-sonnet-4-5` | — | [console.anthropic.com](https://console.anthropic.com/) |
+| Google Gemini | `gemini` | `https://generativelanguage.googleapis.com/v1beta` | `gemini-2.5-flash` | — | [aistudio.google.com](https://aistudio.google.com/) |
 
 > 预设地址和默认模型可能随平台更新而变化，建议定期对照各平台官方文档确认。
 > Embedding 列显示"—"的平台表示官方暂无 embedding 接口，`NewEmbedderFromPreset` 会返回错误。
 
 ### 关于 Claude / Google Gemini
 
-主包不直接内置 Claude 和 Google Gemini 的官方实现。
+Claude 和 Gemini 不是 OpenAI 兼容协议，但主包不引入官方 SDK，而是通过标准库 `net/http` 直接实现各自的原生 HTTP API：
 
-原因是这两家接口不是 OpenAI 兼容协议，如果把官方 SDK 直接塞进主包，会让当前这个库失去“轻量统一接入层”的定位。当前状态是：
-
-- 主包继续内置 OpenAI 及 OpenAI 兼容平台
-- 已经为 Claude / Gemini 这类非兼容协议预留了可选扩展包接入点
-- 扩展包可以复用主包的 `Provider`、`ChatRequest`、`ChatResponse`、`Registry`、`RunToolLoop`
-- 主包新增了可供外部 provider 复用的 `provider.NewStreamReader(...)`
-- 当前仓库里还没有现成可直接 `import` 的 Claude / Gemini 扩展包实现
+- `ProviderAnthropic` 走 Anthropic Messages API：`POST /v1/messages`
+- `ProviderGemini` 走 Gemini Generative Language API：`generateContent` / `streamGenerateContent`
+- 两者都复用统一的 `Provider`、`ChatRequest`、`ChatResponse`、`StreamReader` 和 `ProviderError`
+- v1 原生实现覆盖文本对话、基础 SSE 流式、Tool Use / Function Calling 和错误分类；多模态与结构化输出建议使用 v2
 
 ## 快速开始
 
@@ -857,7 +856,7 @@ emb := provider.WithEmbedderMiddlewares(baseEmb, loggingEmbedMiddleware())
 
 `WithMiddlewares` 的返回值本身是 `Provider`，可以**再次传入** `WithMiddlewares` 外再包一层——适合"基础能力按全局注册、特定请求链路再加一层"。
 
-如果你不希望装饰阶段因空值直接 panic，改用 `TryWithMiddlewares` / `TryWithEmbedderMiddlewares`，由调用方显式处理 `ErrNilProvider` / `ErrNilEmbedder`。
+如果你希望在装饰阶段显式处理空值，改用 `TryWithMiddlewares` / `TryWithEmbedderMiddlewares`，由调用方直接接收 `ErrNilProvider` / `ErrNilEmbedder`。
 
 ### 错误处理：`ProviderError` + 8 个 Sentinel
 
@@ -1343,7 +1342,7 @@ type EmbedderConfig struct {
 
 **为什么主包里只有一个内建的 `openaiProvider` 实现？**
 
-因为 OpenAI、本仓库内置的国内平台，本质上都走 OpenAI 兼容协议。给每个平台写一个 struct 是过度设计。对于 Claude、Google Gemini 这类非兼容协议，架构上已经预留了放到可选扩展包里实现 `Provider` 接口的能力，但当前仓库还没有提供现成扩展包，以避免先引入空壳目录或额外维护成本。
+因为 OpenAI、本仓库内置的国内平台，本质上都走 OpenAI 兼容协议。给每个平台写一个 struct 是过度设计。Claude、Google Gemini 不是 OpenAI 兼容协议，因此分别提供 `NewAnthropicProvider` / `NewGeminiProvider` 原生 HTTP 实现，但仍复用同一套 `Provider` 接口。
 
 **为什么不管理对话历史？**
 
@@ -1403,11 +1402,11 @@ func (p *myCustomProvider) ChatStream(ctx context.Context, req *provider.ChatReq
 reg.Register(&myCustomProvider{})
 ```
 
-> 说明：Claude / Google Gemini 当前也属于这一类。主包已经预留扩展点，但本仓库暂未提供可直接使用的官方扩展包实现。
+> 说明：Claude / Google Gemini 已有内置原生 HTTP 实现。这个扩展示例主要面向其他不兼容 OpenAI 协议的平台。
 
 ### 可选扩展包怎么接
 
-如果你要自己实现 `Claude` 或 `Google Gemini` 扩展包，推荐按下面的方式组织：
+如果你要自己实现其他平台扩展包，推荐按下面的方式组织：
 
 ```text
 your-llm-extension/
@@ -1500,7 +1499,8 @@ func main() {
         "claude-sonnet-4-0",
     )
     if err != nil {
-        panic(err)
+        fmt.Println("create provider:", err)
+        return
     }
 
     reg := provider.NewRegistry()
@@ -1508,7 +1508,8 @@ func main() {
 
     p, err := reg.Get("claude")
     if err != nil {
-        panic(err)
+        fmt.Println("get provider:", err)
+        return
     }
 
     ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -1516,7 +1517,8 @@ func main() {
 
     reply, err := provider.SimpleChat(ctx, p, "用一句话介绍 Go")
     if err != nil {
-        panic(err)
+        fmt.Println("chat:", err)
+        return
     }
 
     fmt.Println(reply)
@@ -1536,6 +1538,21 @@ func main() {
 ```bash
 go test ./provider/ -v
 ```
+
+发布前检查会分别验证根模块与 v2 子模块，并按核心 `provider` 包执行 80% 覆盖率门禁：
+
+```bash
+make release-check
+```
+
+真实接口 smoke test 默认跳过，只有设置对应环境变量时才会访问外部接口：
+
+```bash
+ANTHROPIC_API_KEY="<ANTHROPIC_API_KEY>" go test ./provider -run TestAnthropicSmoke -count=1 -v
+GEMINI_API_KEY="<GEMINI_API_KEY>" go test ./provider -run TestGeminiSmoke -count=1 -v
+```
+
+不要把真实 API Key 写入源码、README、测试 fixture 或 shell history；本命令中的值只应使用临时密钥或本地安全注入方式。
 
 ## License
 

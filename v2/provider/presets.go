@@ -150,6 +150,8 @@ var presetCatalog = map[ProviderName]Preset{
 			Capabilities: []Capability{
 				CapabilityChat,
 				CapabilityStreaming,
+				CapabilityTools,
+				CapabilityStructuredOutput,
 				CapabilityVision,
 			},
 		},
@@ -163,7 +165,19 @@ var presetCatalog = map[ProviderName]Preset{
 			Capabilities: []Capability{
 				CapabilityChat,
 				CapabilityStreaming,
+				CapabilityTools,
+				CapabilityStructuredOutput,
 				CapabilityVision,
+			},
+		},
+	},
+	ProviderOllama: {
+		BaseURL: defaultOllamaBaseURL,
+		Capabilities: ModelCapabilities{
+			Provider: ProviderOllama,
+			Capabilities: []Capability{
+				CapabilityChat,
+				CapabilityStreaming,
 			},
 		},
 	},
@@ -225,6 +239,11 @@ func NewProviderFromPreset(name ProviderName, apiKey, model string) (Provider, e
 	case ProviderGemini:
 		return NewGeminiProvider(NativeProviderConfig{
 			APIKey:  apiKey,
+			BaseURL: preset.BaseURL,
+			Model:   model,
+		})
+	case ProviderOllama:
+		return NewOllamaProvider(OllamaProviderConfig{
 			BaseURL: preset.BaseURL,
 			Model:   model,
 		})

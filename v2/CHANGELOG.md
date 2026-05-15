@@ -6,13 +6,6 @@
 
 ### Added
 
-- 新增 `ResponseMetadata`，在 `ChatResponse` / `EmbeddingResponse` 中暴露 provider、模型、request id 与白名单响应头，便于线上排障
-- 新增 `WithRetry` / `TryWithRetry` / `RetryMiddleware` / `RetryStreamMiddleware`，基于 `ProviderError.Retryable` 提供内置重试能力
-- 新增 `NewFallbackProvider`，支持按顺序在多个 provider 之间做可重试错误 fallback
-- 新增 `WithObservability` / `WithEmbedderObservability` 与 `ObserveEvent`，以零外部依赖 hook 暴露 Chat、Stream、Embed 的 duration、usage、metadata 和错误分类
-- 新增 `NewAnthropicProvider` / `NewGeminiProvider` 与 `ProviderAnthropic` / `ProviderGemini`，无需官方 SDK 即可通过原生 HTTP API 接入 Claude 与 Gemini
-- 新增 `ProviderXAI` 预设，通过 OpenAI 兼容接口接入 xAI Grok
-
 ### Changed
 
 ### Deprecated
@@ -22,6 +15,27 @@
 ### Fixed
 
 ### Security
+
+## [2.2.0] - 2026-05-15
+
+### Added
+
+- 新增 `ResponseMetadata`，在 `ChatResponse` / `EmbeddingResponse` 中暴露 provider、模型、request id 与白名单响应头，便于线上排障
+- 新增 `WithRetry` / `TryWithRetry` / `RetryMiddleware` / `RetryStreamMiddleware`，基于 `ProviderError.Retryable` 提供内置重试能力
+- 新增 `NewFallbackProvider`，支持按顺序在多个 provider 之间做可重试错误 fallback
+- 新增 `WithObservability` / `WithEmbedderObservability` 与 `ObserveEvent`，以零外部依赖 hook 暴露 Chat、Stream、Embed 的 duration、usage、metadata 和错误分类
+- 新增 `NewAnthropicProvider` / `NewGeminiProvider` 与 `ProviderAnthropic` / `ProviderGemini`，无需官方 SDK 即可通过原生 HTTP API 接入 Claude 与 Gemini
+- 新增 `ProviderXAI` 预设，通过 OpenAI 兼容接口接入 xAI Grok
+- 新增 Claude / Gemini 原生非流式 Tool Use / Function Calling 映射
+- 新增 Claude / Gemini 原生结构化输出映射；Claude 通过强制 tool 返回 JSON，Gemini 通过 `generationConfig.responseMimeType` / `responseSchema`
+- 新增 `NewOllamaProvider` / `OllamaProviderConfig` / `ProviderOllama`，通过本地 `/api/chat` 接入 Ollama 文本对话与 NDJSON 流式响应
+- 新增 `ProviderGLM` / `ProviderKimi` 别名，便于从 GLM / Kimi 命名迁移到 `ProviderZhipu` / `ProviderMoonshot`
+- 新增 Claude / Gemini / Ollama 真实接口 smoke test，设置 `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` / `OLLAMA_MODEL` 后可验证原生 provider 链路
+
+### Changed
+
+- `ProviderAnthropic` / `ProviderGemini` 的能力标记新增 `tools` 与 `structured_output`
+- `StreamChunk` 新增 `Usage` 字段，用于承载部分 provider 在最终流式片段返回的 token 统计
 
 ## [2.1.0] - 2026-05-14
 

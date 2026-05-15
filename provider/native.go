@@ -103,17 +103,16 @@ func (p *anthropicProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRe
 		return nil, ErrNilChatRequest
 	}
 
-	nativeReq, model, err := p.buildRequest(req, false)
+	nativeReq, err := p.buildRequest(req, false)
 	if err != nil {
 		return nil, err
 	}
 
-	resp, metadata, err := doNativeJSON[anthropicResponse](ctx, p.httpClient, nativeHTTPRequest{
+	resp, err := doNativeJSON[anthropicResponse](ctx, p.httpClient, nativeHTTPRequest{
 		Method:      http.MethodPost,
 		URL:         p.baseURL + "/v1/messages",
 		Body:        nativeReq,
 		Provider:    ProviderAnthropic,
-		Model:       model,
 		SetHeaders:  p.setHeaders,
 		DecodeError: decodeAnthropicError,
 	})
@@ -125,19 +124,6 @@ func (p *anthropicProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRe
 	if err != nil {
 		return nil, err
 	}
-	if req.ResponseFormat != nil && req.ResponseFormat.Type != ResponseFormatText {
-		if structured, ok, err := anthropicStructuredContent(resp); err != nil {
-			return nil, err
-		} else if ok {
-			content = structured
-			finishReason = "stop"
-			toolCalls = nil
-		}
-	}
-	if metadata.Model == "" {
-		metadata.Model = firstString(resp.Model, model)
-	}
-
 	return &ChatResponse{
 		Content:      content,
 		FinishReason: finishReason,
@@ -146,7 +132,6 @@ func (p *anthropicProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRe
 			CompletionTokens: resp.Usage.OutputTokens,
 			TotalTokens:      resp.Usage.InputTokens + resp.Usage.OutputTokens,
 		},
-		Metadata:  metadata,
 		ToolCalls: toolCalls,
 	}, nil
 }
@@ -159,7 +144,7 @@ func (p *anthropicProvider) ChatStream(ctx context.Context, req *ChatRequest) (*
 		return nil, ErrNilChatRequest
 	}
 
-	nativeReq, model, err := p.buildRequest(req, true)
+	nativeReq, err := p.buildRequest(req, true)
 	if err != nil {
 		return nil, err
 	}
@@ -169,7 +154,6 @@ func (p *anthropicProvider) ChatStream(ctx context.Context, req *ChatRequest) (*
 		URL:        p.baseURL + "/v1/messages",
 		Body:       nativeReq,
 		Provider:   ProviderAnthropic,
-		Model:      model,
 		SetHeaders: p.setHeaders,
 	})
 	if err != nil {
@@ -198,20 +182,16 @@ func (p *anthropicProvider) setHeaders(req *http.Request) {
 	req.Header.Set("anthropic-version", defaultAnthropicVersion)
 }
 
-func (p *anthropicProvider) buildRequest(req *ChatRequest, stream bool) (anthropicRequest, string, error) {
+func (p *anthropicProvider) buildRequest(req *ChatRequest, stream bool) (anthropicRequest, error) {
 	if len(req.Messages) == 0 {
-		return anthropicRequest{}, "", fmt.Errorf("%w: messages are required", ErrInvalidRequest)
+		return anthropicRequest{}, fmt.Errorf("%w: messages are required", ErrInvalidRequest)
 	}
 	if stream && (len(req.Tools) > 0 || req.ToolChoice != nil || req.ParallelToolCalls != nil) {
-		return anthropicRequest{}, "", fmt.Errorf("%w: anthropic native streaming tool use is not implemented", ErrInvalidRequest)
+		return anthropicRequest{}, fmt.Errorf("%w: anthropic native streaming tool use is not implemented", ErrInvalidRequest)
 	}
 	toolChoice, err := buildAnthropicToolChoice(req)
 	if err != nil {
-		return anthropicRequest{}, "", err
-	}
-	structuredTool, structuredChoice, err := anthropicStructuredTool(req.ResponseFormat)
-	if err != nil {
-		return anthropicRequest{}, "", err
+		return anthropicRequest{}, err
 	}
 
 	model := firstString(req.Model, p.model)
@@ -221,10 +201,6 @@ func (p *anthropicProvider) buildRequest(req *ChatRequest, stream bool) (anthrop
 		Stream:     stream,
 		Tools:      anthropicTools(req.Tools),
 		ToolChoice: toolChoice,
-	}
-	if structuredTool != nil {
-		out.Tools = append(out.Tools, *structuredTool)
-		out.ToolChoice = structuredChoice
 	}
 	if req.MaxTokens > 0 {
 		out.MaxTokens = req.MaxTokens
@@ -240,38 +216,31 @@ func (p *anthropicProvider) buildRequest(req *ChatRequest, stream bool) (anthrop
 	}
 
 	for _, msg := range req.Messages {
-		if err := appendAnthropicMessage(&out, msg); err != nil {
-			return anthropicRequest{}, "", err
+		switch msg.Role {
+		case RoleSystem:
+			appendSystemText(&out.System, msg.Content)
+		case RoleUser, RoleAssistant:
+			parts := anthropicContentParts(msg.Content)
+			if msg.Role == RoleAssistant {
+				parts, err = anthropicAssistantParts(msg)
+			}
+			if err != nil {
+				return anthropicRequest{}, err
+			}
+			out.Messages = append(out.Messages, anthropicMessage{
+				Role:    anthropicRole(msg.Role),
+				Content: parts,
+			})
+		case RoleTool:
+			out.Messages = append(out.Messages, anthropicMessage{
+				Role:    "user",
+				Content: []anthropicContentPart{anthropicToolResultPart(msg)},
+			})
+		default:
+			return anthropicRequest{}, fmt.Errorf("%w: unsupported anthropic role %q", ErrInvalidRequest, msg.Role)
 		}
 	}
-	return out, model, nil
-}
-
-func appendAnthropicMessage(out *anthropicRequest, msg Message) error {
-	switch msg.Role {
-	case RoleSystem:
-		appendSystemText(&out.System, contentText(msg.Content))
-	case RoleUser, RoleAssistant:
-		parts, err := anthropicContentParts(msg.Content)
-		if msg.Role == RoleAssistant {
-			parts, err = anthropicAssistantParts(msg)
-		}
-		if err != nil {
-			return err
-		}
-		out.Messages = append(out.Messages, anthropicMessage{
-			Role:    anthropicRole(msg.Role),
-			Content: parts,
-		})
-	case RoleTool:
-		out.Messages = append(out.Messages, anthropicMessage{
-			Role:    "user",
-			Content: []anthropicContentPart{anthropicToolResultPart(msg)},
-		})
-	default:
-		return fmt.Errorf("%w: unsupported anthropic role %q", ErrInvalidRequest, msg.Role)
-	}
-	return nil
+	return out, nil
 }
 
 type geminiProvider struct {
@@ -316,12 +285,11 @@ func (p *geminiProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRespo
 		return nil, err
 	}
 
-	resp, metadata, err := doNativeJSON[geminiResponse](ctx, p.httpClient, nativeHTTPRequest{
+	resp, err := doNativeJSON[geminiResponse](ctx, p.httpClient, nativeHTTPRequest{
 		Method:      http.MethodPost,
 		URL:         p.modelURL(model, "generateContent"),
 		Body:        nativeReq,
 		Provider:    ProviderGemini,
-		Model:       model,
 		SetHeaders:  p.setHeaders,
 		DecodeError: decodeGeminiError,
 	})
@@ -333,9 +301,6 @@ func (p *geminiProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRespo
 	if err != nil {
 		return nil, err
 	}
-	if metadata.Model == "" {
-		metadata.Model = firstString(resp.ModelVersion, model)
-	}
 	return &ChatResponse{
 		Content:      content,
 		FinishReason: finishReason,
@@ -344,7 +309,6 @@ func (p *geminiProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRespo
 			CompletionTokens: resp.UsageMetadata.CandidatesTokenCount,
 			TotalTokens:      resp.UsageMetadata.TotalTokenCount,
 		},
-		Metadata:  metadata,
 		ToolCalls: toolCalls,
 	}, nil
 }
@@ -375,7 +339,6 @@ func (p *geminiProvider) ChatStream(ctx context.Context, req *ChatRequest) (*Str
 		URL:        streamURL.String(),
 		Body:       nativeReq,
 		Provider:   ProviderGemini,
-		Model:      model,
 		SetHeaders: p.setHeaders,
 	})
 	if err != nil {
@@ -411,12 +374,8 @@ func (p *geminiProvider) buildRequest(req *ChatRequest, stream bool) (geminiRequ
 	if len(req.Messages) == 0 {
 		return geminiRequest{}, "", fmt.Errorf("%w: messages are required", ErrInvalidRequest)
 	}
-	if err := validateGeminiRequest(req, stream); err != nil {
-		return geminiRequest{}, "", err
-	}
-	generation, err := applyGeminiResponseFormat(geminiGeneration(req), req.ResponseFormat)
-	if err != nil {
-		return geminiRequest{}, "", err
+	if stream && (len(req.Tools) > 0 || req.ToolChoice != nil || req.ParallelToolCalls != nil) {
+		return geminiRequest{}, "", fmt.Errorf("%w: gemini native streaming tool use is not implemented", ErrInvalidRequest)
 	}
 	toolConfig, err := buildGeminiToolConfig(req)
 	if err != nil {
@@ -425,7 +384,7 @@ func (p *geminiProvider) buildRequest(req *ChatRequest, stream bool) (geminiRequ
 
 	model := firstString(req.Model, p.model)
 	out := geminiRequest{
-		GenerationConfig: generation,
+		GenerationConfig: geminiGeneration(req),
 		Tools:            geminiTools(req.Tools),
 		ToolConfig:       toolConfig,
 	}
@@ -440,35 +399,31 @@ type nativeHTTPRequest struct {
 	URL         string
 	Body        any
 	Provider    ProviderName
-	Model       string
 	SetHeaders  func(*http.Request)
 	DecodeError func(ProviderName, int, string, []byte) error
 }
 
-func doNativeJSON[T any](ctx context.Context, client HTTPDoer, cfg nativeHTTPRequest) (T, ResponseMetadata, error) {
+func doNativeJSON[T any](ctx context.Context, client HTTPDoer, cfg nativeHTTPRequest) (T, error) {
 	var zero T
 	req, err := buildNativeHTTPRequest(ctx, cfg)
 	if err != nil {
-		return zero, ResponseMetadata{}, err
+		return zero, err
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return zero, ResponseMetadata{}, wrapNativeTransportError(cfg.Provider, err)
+		return zero, wrapNativeTransportError(cfg.Provider, err)
 	}
 	defer resp.Body.Close()
 
-	metadata := metadataFromHeader(cfg.Provider, cfg.Model, resp.Header)
-	metadata.StatusCode = resp.StatusCode
-	metadata.Status = resp.Status
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return zero, metadata, decodeNativeHTTPError(cfg.Provider, resp, cfg.DecodeError)
+		return zero, decodeNativeHTTPError(cfg.Provider, resp, cfg.DecodeError)
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&zero); err != nil {
-		return zero, metadata, fmt.Errorf("[%s] decode response: %w", cfg.Provider, err)
+		return zero, fmt.Errorf("[%s] decode response: %w", cfg.Provider, err)
 	}
-	return zero, metadata, nil
+	return zero, nil
 }
 
 func buildNativeHTTPRequest(ctx context.Context, cfg nativeHTTPRequest) (*http.Request, error) {
@@ -637,7 +592,7 @@ func geminiStreamChunk(data []byte) (*StreamChunk, bool, error) {
 		return nil, false, fmt.Errorf("%w: gemini native streaming tool use is not implemented", ErrInvalidRequest)
 	}
 	if content == "" && finishReason == "" {
-		return nil, false, errSkipNativeStreamEvent
+		return nil, false, nil
 	}
 	return &StreamChunk{Delta: content, FinishReason: finishReason}, true, nil
 }
@@ -658,10 +613,10 @@ func anthropicStreamChunk(data []byte) (*StreamChunk, bool, error) {
 		if event.Delta.StopReason != "" {
 			return &StreamChunk{FinishReason: event.Delta.StopReason}, true, nil
 		}
-	case "message_stop":
-		return nil, false, io.EOF
 	case "error":
 		return nil, false, anthropicStreamProviderError(event)
+	case "message_stop":
+		return nil, false, io.EOF
 	}
-	return nil, false, nil
+	return nil, false, errSkipNativeStreamEvent
 }

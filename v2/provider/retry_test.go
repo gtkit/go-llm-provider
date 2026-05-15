@@ -132,6 +132,22 @@ func TestRetryMiddlewareRejectsInvalidProvider(t *testing.T) {
 	assert.Nil(t, wrapped)
 }
 
+func TestWithRetryNilProviderReturnsErroringProvider(t *testing.T) {
+	t.Parallel()
+
+	wrapped := WithRetry(nil, RetryOptions{})
+	require.NotNil(t, wrapped)
+	assert.Empty(t, wrapped.Name())
+
+	resp, err := wrapped.Chat(t.Context(), &ChatRequest{})
+	require.ErrorIs(t, err, ErrNilProvider)
+	assert.Nil(t, resp)
+
+	stream, err := wrapped.ChatStream(t.Context(), &ChatRequest{})
+	require.ErrorIs(t, err, ErrNilProvider)
+	assert.Nil(t, stream)
+}
+
 func TestRetryMiddlewareUsesCustomShouldRetry(t *testing.T) {
 	t.Parallel()
 

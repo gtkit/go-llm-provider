@@ -16,6 +16,20 @@
 
 ### Security
 
+## [1.4.0] - 2026-05-15
+
+### Added
+
+- 新增 `NewAnthropicProvider` / `NewGeminiProvider` 与 `ProviderAnthropic` / `ProviderGemini`，无需官方 SDK 即可通过原生 HTTP API 接入 Claude 与 Gemini 文本对话
+- 新增 `NativeProviderConfig` / `HTTPDoer` / `DefaultHTTPClient`，支持原生 provider 注入自定义 HTTP client
+- 新增 Claude / Gemini 原生基础 SSE 流式响应与 Tool Use / Function Calling 映射
+- 新增 `ProviderGLM` / `ProviderKimi` 别名，便于从 GLM / Kimi 命名迁移到 `ProviderZhipu` / `ProviderMoonshot`
+- 新增 Claude / Gemini 真实接口 smoke test，设置 `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` 后可验证原生 provider 链路
+
+### Changed
+
+- `NewProviderFromPreset` 支持通过 `ProviderAnthropic` / `ProviderGemini` 创建原生 provider
+
 ## [1.3.0] - 2026-04-22
 
 ### Added

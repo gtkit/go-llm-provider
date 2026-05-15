@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"encoding/base64"
 	"fmt"
 	"strings"
 
@@ -23,32 +22,21 @@ type geminiContent struct {
 
 type geminiPart struct {
 	Text             string                  `json:"text,omitempty"`
-	InlineData       *geminiInlineData       `json:"inline_data,omitempty"`
 	FunctionCall     *geminiFunctionCall     `json:"functionCall,omitempty"`
 	FunctionResponse *geminiFunctionResponse `json:"functionResponse,omitempty"`
 }
 
-type geminiInlineData struct {
-	MIMEType string `json:"mime_type"`
-	Data     string `json:"data"`
-}
-
 type geminiGenerationConfig struct {
-	MaxOutputTokens  int      `json:"maxOutputTokens,omitempty"`
-	Temperature      *float32 `json:"temperature,omitempty"`
-	TopP             *float32 `json:"topP,omitempty"`
-	StopSequences    []string `json:"stopSequences,omitempty"`
-	ResponseMIMEType string   `json:"responseMimeType,omitempty"`
-	ResponseSchema   any      `json:"responseSchema,omitempty"`
+	MaxOutputTokens int      `json:"maxOutputTokens,omitempty"`
+	Temperature     *float32 `json:"temperature,omitempty"`
+	TopP            *float32 `json:"topP,omitempty"`
+	StopSequences   []string `json:"stopSequences,omitempty"`
 }
 
 type geminiResponse struct {
-	Candidates     []geminiCandidate `json:"candidates"`
-	UsageMetadata  geminiUsage       `json:"usageMetadata"`
-	ModelVersion   string            `json:"modelVersion"`
-	PromptFeedback struct {
-		BlockReason string `json:"blockReason"`
-	} `json:"promptFeedback"`
+	Candidates    []geminiCandidate `json:"candidates"`
+	UsageMetadata geminiUsage       `json:"usageMetadata"`
+	ModelVersion  string            `json:"modelVersion"`
 }
 
 type geminiCandidate struct {
@@ -103,107 +91,6 @@ type geminiErrorBody struct {
 	Status  string `json:"status"`
 }
 
-func geminiParts(parts []ContentPart) ([]geminiPart, error) {
-	if len(parts) == 0 {
-		return []geminiPart{{Text: ""}}, nil
-	}
-	out := make([]geminiPart, 0, len(parts))
-	for _, part := range parts {
-		switch part.Type {
-		case ContentTypeText:
-			out = append(out, geminiPart{Text: part.Text})
-		case ContentTypeImageURL:
-			image, err := geminiImagePart(part)
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, image)
-		default:
-			return nil, fmt.Errorf("%w: unsupported gemini content type %q", ErrInvalidRequest, part.Type)
-		}
-	}
-	return out, nil
-}
-
-func geminiAssistantParts(msg Message) ([]geminiPart, error) {
-	parts, err := geminiParts(msg.Content)
-	if err != nil {
-		return nil, err
-	}
-	if len(parts) == 1 && parts[0].Text == "" && len(msg.ToolCalls) > 0 {
-		parts = parts[:0]
-	}
-	for _, call := range msg.ToolCalls {
-		args, err := rawJSONArgument(call.Function.Arguments)
-		if err != nil {
-			return nil, err
-		}
-		parts = append(parts, geminiPart{
-			FunctionCall: &geminiFunctionCall{
-				ID:   call.ID,
-				Name: call.Function.Name,
-				Args: args,
-			},
-		})
-	}
-	return parts, nil
-}
-
-func geminiToolResponsePart(msg Message) geminiPart {
-	text := contentText(msg.Content)
-	response, err := rawJSONArgument(text)
-	if err != nil {
-		response = map[string]any{"content": text}
-	}
-	return geminiPart{
-		FunctionResponse: &geminiFunctionResponse{
-			ID:       msg.ToolCallID,
-			Name:     msg.ToolCallID,
-			Response: response,
-		},
-	}
-}
-
-func geminiTextParts(parts []ContentPart) []geminiPart {
-	out := make([]geminiPart, 0, len(parts))
-	for _, part := range parts {
-		if part.Type == ContentTypeText && part.Text != "" {
-			out = append(out, geminiPart{Text: part.Text})
-		}
-	}
-	return out
-}
-
-func geminiImagePart(part ContentPart) (geminiPart, error) {
-	if len(part.ImageData) > 0 {
-		if part.MIMEType == "" {
-			return geminiPart{}, fmt.Errorf("%w: image MIME type is required", ErrInvalidRequest)
-		}
-		return geminiPart{
-			InlineData: &geminiInlineData{
-				MIMEType: part.MIMEType,
-				Data:     base64.StdEncoding.EncodeToString(part.ImageData),
-			},
-		}, nil
-	}
-	if part.ImageURL == "" {
-		return geminiPart{}, fmt.Errorf("%w: image source is required", ErrInvalidRequest)
-	}
-	if strings.HasPrefix(part.ImageURL, "data:") {
-		mimeType, data, ok := parseDataURLImage(part.ImageURL)
-		if !ok {
-			return geminiPart{}, fmt.Errorf("%w: invalid data URL image", ErrInvalidRequest)
-		}
-		return geminiPart{
-			InlineData: &geminiInlineData{
-				MIMEType: mimeType,
-				Data:     data,
-			},
-		}, nil
-	}
-	return geminiPart{}, fmt.Errorf("%w: gemini image URL parts require inline data", ErrInvalidRequest)
-}
-
 func geminiRole(role Role) string {
 	switch role {
 	case RoleAssistant:
@@ -211,13 +98,6 @@ func geminiRole(role Role) string {
 	default:
 		return "user"
 	}
-}
-
-func validateGeminiRequest(req *ChatRequest, stream bool) error {
-	if stream && (len(req.Tools) > 0 || req.ToolChoice != nil || req.ParallelToolCalls != nil) {
-		return fmt.Errorf("%w: gemini native streaming tool use is not implemented", ErrInvalidRequest)
-	}
-	return nil
 }
 
 func geminiGeneration(req *ChatRequest) *geminiGenerationConfig {
@@ -238,25 +118,6 @@ func geminiGeneration(req *ChatRequest) *geminiGenerationConfig {
 		cfg.StopSequences = append([]string(nil), req.Stop...)
 	}
 	return cfg
-}
-
-func applyGeminiResponseFormat(cfg *geminiGenerationConfig, format *ResponseFormat) (*geminiGenerationConfig, error) {
-	if format == nil || format.Type == ResponseFormatText {
-		return cfg, nil
-	}
-	if cfg == nil {
-		cfg = &geminiGenerationConfig{}
-	}
-	switch format.Type {
-	case ResponseFormatJSONObject:
-		cfg.ResponseMIMEType = "application/json"
-	case ResponseFormatJSONSchema:
-		cfg.ResponseMIMEType = "application/json"
-		cfg.ResponseSchema = format.Schema
-	default:
-		return nil, fmt.Errorf("%w: unsupported gemini response format %q", ErrInvalidRequest, format.Type)
-	}
-	return cfg, nil
 }
 
 func geminiTools(tools []Tool) []geminiTool {
@@ -319,15 +180,16 @@ func fillGeminiContents(out *geminiRequest, messages []Message) error {
 func appendGeminiMessage(out *geminiRequest, msg Message) error {
 	switch msg.Role {
 	case RoleSystem:
-		parts := geminiTextParts(msg.Content)
-		if len(parts) > 0 {
-			out.SystemInstruction.Parts = append(out.SystemInstruction.Parts, parts...)
+		if msg.Content != "" {
+			out.SystemInstruction.Parts = append(out.SystemInstruction.Parts, geminiPart{Text: msg.Content})
 		}
-	case RoleUser, RoleAssistant:
-		parts, err := geminiParts(msg.Content)
-		if msg.Role == RoleAssistant {
-			parts, err = geminiAssistantParts(msg)
-		}
+	case RoleUser:
+		out.Contents = append(out.Contents, geminiContent{
+			Role:  "user",
+			Parts: []geminiPart{{Text: msg.Content}},
+		})
+	case RoleAssistant:
+		parts, err := geminiAssistantParts(msg)
 		if err != nil {
 			return err
 		}
@@ -345,6 +207,41 @@ func appendGeminiMessage(out *geminiRequest, msg Message) error {
 		return fmt.Errorf("%w: unsupported gemini role %q", ErrInvalidRequest, msg.Role)
 	}
 	return nil
+}
+
+func geminiAssistantParts(msg Message) ([]geminiPart, error) {
+	parts := []geminiPart{{Text: msg.Content}}
+	if msg.Content == "" && len(msg.ToolCalls) > 0 {
+		parts = parts[:0]
+	}
+	for _, call := range msg.ToolCalls {
+		args, err := rawJSONArgument(call.Function.Arguments)
+		if err != nil {
+			return nil, err
+		}
+		parts = append(parts, geminiPart{
+			FunctionCall: &geminiFunctionCall{
+				ID:   call.ID,
+				Name: call.Function.Name,
+				Args: args,
+			},
+		})
+	}
+	return parts, nil
+}
+
+func geminiToolResponsePart(msg Message) geminiPart {
+	response, err := rawJSONArgument(msg.Content)
+	if err != nil {
+		response = map[string]any{"content": msg.Content}
+	}
+	return geminiPart{
+		FunctionResponse: &geminiFunctionResponse{
+			ID:       msg.ToolCallID,
+			Name:     msg.ToolCallID,
+			Response: response,
+		},
+	}
 }
 
 func geminiResponseContent(resp geminiResponse) (content, finishReason string, toolCalls []ToolCall, err error) {
@@ -380,7 +277,7 @@ func geminiResponseContent(resp geminiResponse) (content, finishReason string, t
 func decodeGeminiError(provider ProviderName, statusCode int, status string, body []byte) error {
 	var envelope geminiErrorEnvelope
 	if err := json.Unmarshal(body, &envelope); err != nil {
-		return nativeStatusError(provider, statusCode, status, string(body))
+		return nativeStatusError(provider, statusCode, status, "", "", string(body), nil)
 	}
 	code := geminiErrorCode(statusCode, envelope.Error.Status)
 	return &ProviderError{

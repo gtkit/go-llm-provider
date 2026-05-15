@@ -82,6 +82,21 @@ func TestNewProviderFromPresetUsesApprovedDefaultModels(t *testing.T) {
 	}
 }
 
+func TestProviderAliasesUseCanonicalProviderNames(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, ProviderZhipu, ProviderGLM)
+	assert.Equal(t, ProviderMoonshot, ProviderKimi)
+
+	glm, err := NewProviderFromPreset(ProviderGLM, "test-key", "")
+	require.NoError(t, err)
+	assert.Equal(t, ProviderZhipu, glm.Name())
+
+	kimi, err := NewProviderFromPreset(ProviderKimi, "test-key", "")
+	require.NoError(t, err)
+	assert.Equal(t, ProviderMoonshot, kimi.Name())
+}
+
 // ============================================================
 // Registry 测试
 // ============================================================

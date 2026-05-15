@@ -58,6 +58,14 @@ var presetCatalog = map[ProviderName]Preset{
 		DefaultModel:   "gpt-5.4-mini",
 		EmbeddingModel: "text-embedding-3-small",
 	},
+	ProviderAnthropic: {
+		BaseURL:      defaultAnthropicBaseURL,
+		DefaultModel: defaultAnthropicModel,
+	},
+	ProviderGemini: {
+		BaseURL:      defaultGeminiBaseURL,
+		DefaultModel: defaultGeminiModel,
+	},
 }
 
 // Presets 保留旧版导出变量以兼容既有调用方。
@@ -83,12 +91,27 @@ func NewProviderFromPreset(name ProviderName, apiKey, model string) (Provider, e
 		model = preset.DefaultModel
 	}
 
-	return NewProvider(ProviderConfig{
-		Name:    name,
-		BaseURL: preset.BaseURL,
-		APIKey:  apiKey,
-		Model:   model,
-	})
+	switch name {
+	case ProviderAnthropic:
+		return NewAnthropicProvider(NativeProviderConfig{
+			APIKey:  apiKey,
+			BaseURL: preset.BaseURL,
+			Model:   model,
+		})
+	case ProviderGemini:
+		return NewGeminiProvider(NativeProviderConfig{
+			APIKey:  apiKey,
+			BaseURL: preset.BaseURL,
+			Model:   model,
+		})
+	default:
+		return NewProvider(ProviderConfig{
+			Name:    name,
+			BaseURL: preset.BaseURL,
+			APIKey:  apiKey,
+			Model:   model,
+		})
+	}
 }
 
 // NewEmbedderFromPreset 使用预设配置快速创建 Embedder，只需提供 APIKey。

@@ -32,12 +32,12 @@ type MiddlewareOptions struct {
 // 洋葱模型：opts.Chat[0] 最外层执行，opts.Chat[len-1] 最贴近真实 Provider.Chat；
 // opts.Stream 同理。切片中的 nil 条目会被跳过。
 //
-// 传入 nil Provider 会触发 panic(ErrNilProvider)——装饰器构造期的错误不适合由错误值承载。
+// 传入 nil Provider 时，返回的 Provider 会在 Chat / ChatStream 调用时返回 ErrNilProvider。
 // 返回的 Provider 的 Name() 代理到原 p。
 func WithMiddlewares(p Provider, opts MiddlewareOptions) Provider {
 	wrapped, err := TryWithMiddlewares(p, opts)
 	if err != nil {
-		panic(err)
+		return errorProvider{err: err}
 	}
 	return wrapped
 }
@@ -76,12 +76,12 @@ func TryWithMiddlewares(p Provider, opts MiddlewareOptions) (Provider, error) {
 // 洋葱模型：mws[0] 最外层，mws[len-1] 最贴近真实 Embedder.Embed。
 // 切片中的 nil 条目会被跳过。
 //
-// 传入 nil Embedder 会触发 panic(ErrNilEmbedder)。
+// 传入 nil Embedder 时，返回的 Embedder 会在 Embed 调用时返回 ErrNilEmbedder。
 // 返回的 Embedder 的 Name() 代理到原 e。
 func WithEmbedderMiddlewares(e Embedder, mws ...EmbedMiddleware) Embedder {
 	wrapped, err := TryWithEmbedderMiddlewares(e, mws...)
 	if err != nil {
-		panic(err)
+		return errorEmbedder{err: err}
 	}
 	return wrapped
 }
@@ -152,4 +152,32 @@ func (w *wrappedEmbedder) Embed(ctx context.Context, req *EmbeddingRequest) (*Em
 		return nil, ErrNilEmbedder
 	}
 	return w.embed(ctx, req)
+}
+
+type errorProvider struct {
+	err error
+}
+
+func (p errorProvider) Name() ProviderName {
+	return ""
+}
+
+func (p errorProvider) Chat(context.Context, *ChatRequest) (*ChatResponse, error) {
+	return nil, p.err
+}
+
+func (p errorProvider) ChatStream(context.Context, *ChatRequest) (*StreamReader, error) {
+	return nil, p.err
+}
+
+type errorEmbedder struct {
+	err error
+}
+
+func (e errorEmbedder) Name() ProviderName {
+	return ""
+}
+
+func (e errorEmbedder) Embed(context.Context, *EmbeddingRequest) (*EmbeddingResponse, error) {
+	return nil, e.err
 }
