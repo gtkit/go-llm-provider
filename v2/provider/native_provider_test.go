@@ -569,6 +569,141 @@ func TestGeminiProviderErrorClassification(t *testing.T) {
 	assert.ErrorIs(t, err, ErrAuth)
 }
 
+func TestGeminiEmbedderEmbedMapsSingleRequestAndResponse(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/v1beta/models/gemini-embedding-001:embedContent", r.URL.Path)
+		assert.Equal(t, "test-key", r.Header.Get("x-goog-api-key"))
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&captured))
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("x-request-id", "req-gemini-embedding")
+		_, _ = w.Write([]byte(`{"embedding":{"values":[0.1,0.2,0.3]}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	e, err := NewGeminiEmbedder(NativeProviderConfig{
+		APIKey:  "test-key",
+		BaseURL: srv.URL + "/v1beta",
+	})
+	require.NoError(t, err)
+
+	dimensions := 256
+	resp, err := e.Embed(t.Context(), &EmbeddingRequest{
+		Input:      []string{"hello"},
+		Dimensions: &dimensions,
+	})
+	require.NoError(t, err)
+
+	require.Len(t, resp.Data, 1)
+	assert.Equal(t, 0, resp.Data[0].Index)
+	require.Len(t, resp.Data[0].Vector, 3)
+	assert.InDelta(t, 0.1, resp.Data[0].Vector[0], 0.0001)
+	assert.InDelta(t, 0.2, resp.Data[0].Vector[1], 0.0001)
+	assert.InDelta(t, 0.3, resp.Data[0].Vector[2], 0.0001)
+	assert.Equal(t, defaultGeminiEmbeddingModel, resp.Model)
+	assert.Equal(t, ProviderGemini, resp.Metadata.Provider)
+	assert.Equal(t, defaultGeminiEmbeddingModel, resp.Metadata.Model)
+	assert.Equal(t, "req-gemini-embedding", resp.Metadata.RequestID)
+
+	assert.Equal(t, "models/gemini-embedding-001", captured["model"])
+	assert.InDelta(t, 256, captured["outputDimensionality"], 0.0001)
+	content, ok := captured["content"].(map[string]any)
+	require.True(t, ok)
+	parts, ok := content["parts"].([]any)
+	require.True(t, ok)
+	require.Len(t, parts, 1)
+	assert.Equal(t, "hello", parts[0].(map[string]any)["text"])
+}
+
+func TestGeminiEmbedderEmbedMapsBatchRequestAndResponse(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/v1beta/models/gemini-embedding-001:batchEmbedContents", r.URL.Path)
+		assert.Equal(t, "test-key", r.Header.Get("x-goog-api-key"))
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&captured))
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"embeddings":[{"values":[0.1]},{"values":[0.2]}]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	e, err := NewGeminiEmbedder(NativeProviderConfig{
+		APIKey:  "test-key",
+		BaseURL: srv.URL + "/v1beta",
+	})
+	require.NoError(t, err)
+
+	resp, err := e.Embed(t.Context(), &EmbeddingRequest{Input: []string{"first", "second"}})
+	require.NoError(t, err)
+
+	require.Len(t, resp.Data, 2)
+	assert.Equal(t, 0, resp.Data[0].Index)
+	assert.Equal(t, 1, resp.Data[1].Index)
+	require.Len(t, resp.Data[0].Vector, 1)
+	require.Len(t, resp.Data[1].Vector, 1)
+	assert.InDelta(t, 0.1, resp.Data[0].Vector[0], 0.0001)
+	assert.InDelta(t, 0.2, resp.Data[1].Vector[0], 0.0001)
+
+	requests, ok := captured["requests"].([]any)
+	require.True(t, ok)
+	require.Len(t, requests, 2)
+	first, ok := requests[0].(map[string]any)
+	require.True(t, ok)
+	second, ok := requests[1].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "models/gemini-embedding-001", first["model"])
+	assert.Equal(t, "models/gemini-embedding-001", second["model"])
+	assert.Equal(t, "first", first["content"].(map[string]any)["parts"].([]any)[0].(map[string]any)["text"])
+	assert.Equal(t, "second", second["content"].(map[string]any)["parts"].([]any)[0].(map[string]any)["text"])
+}
+
+func TestGeminiEmbedderErrorHandling(t *testing.T) {
+	t.Parallel()
+
+	_, err := NewGeminiEmbedder(NativeProviderConfig{})
+	require.ErrorIs(t, err, ErrInvalidProviderConfig)
+
+	e, err := NewGeminiEmbedder(NativeProviderConfig{
+		APIKey: "test-key",
+	})
+	require.NoError(t, err)
+
+	_, err = e.Embed(t.Context(), nil)
+	require.ErrorIs(t, err, ErrNilEmbeddingRequest)
+
+	_, err = e.Embed(t.Context(), &EmbeddingRequest{})
+	require.ErrorIs(t, err, ErrEmptyEmbeddingInput)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"code":401,"message":"bad key","status":"UNAUTHENTICATED"}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	e, err = NewGeminiEmbedder(NativeProviderConfig{
+		APIKey:  "test-key",
+		BaseURL: srv.URL + "/v1beta",
+	})
+	require.NoError(t, err)
+
+	resp, err := e.Embed(t.Context(), &EmbeddingRequest{Input: []string{"hello"}})
+	require.Error(t, err)
+	assert.Nil(t, resp)
+
+	var providerErr *ProviderError
+	require.ErrorAs(t, err, &providerErr)
+	assert.Equal(t, ProviderGemini, providerErr.Provider)
+	assert.Equal(t, ErrorCodeAuth, providerErr.Code)
+	assert.Equal(t, "UNAUTHENTICATED", providerErr.RawType)
+	assert.ErrorIs(t, err, ErrAuth)
+}
+
 func TestNewProviderFromPresetCreatesNativeProvidersAndXAI(t *testing.T) {
 	t.Parallel()
 

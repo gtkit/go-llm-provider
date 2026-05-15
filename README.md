@@ -71,6 +71,22 @@ go get github.com/gtkit/go-llm-provider
 > 预设地址和默认模型可能随平台更新而变化，建议定期对照各平台官方文档确认。
 > Embedding 列显示"—"的平台表示官方暂无 embedding 接口，`NewEmbedderFromPreset` 会返回错误。
 
+### 能力矩阵
+
+| 平台 | Chat | Streaming | Tools | Structured Output | Vision | Embedding | 协议 |
+|------|------|-----------|-------|-------------------|--------|-----------|------|
+| DeepSeek | 是 | 是 | 是 | 是 | 否 | 否 | OpenAI 兼容 |
+| 通义千问（百炼） | 是 | 是 | 是 | 是 | 否 | 是 | OpenAI 兼容 |
+| 智谱 AI / GLM | 是 | 是 | 是 | 是 | 否 | 是 | OpenAI 兼容 |
+| 百度千帆 | 是 | 是 | 是 | 是 | 否 | 是 | OpenAI 兼容 |
+| 硅基流动 | 是 | 是 | 是 | 是 | 否 | 是 | OpenAI 兼容 |
+| Moonshot / Kimi | 是 | 是 | 是 | 是 | 否 | 否 | OpenAI 兼容 |
+| OpenAI | 是 | 是 | 是 | 是 | 否 | 是 | OpenAI 兼容 |
+| Anthropic / Claude | 是 | 是 | 是 | 否 | 否 | 否 | 原生 HTTP |
+| Google Gemini | 是 | 是 | 是 | 否 | 否 | 否 | 原生 HTTP |
+
+> 矩阵描述当前 v1 内置 preset 默认模型和已映射能力；Vision、Reasoning、Gemini Embedding 等能力请使用 v2。
+
 ### 关于 Claude / Google Gemini
 
 Claude 和 Gemini 不是 OpenAI 兼容协议，但主包不引入官方 SDK，而是通过标准库 `net/http` 直接实现各自的原生 HTTP API：

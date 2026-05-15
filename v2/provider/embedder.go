@@ -89,6 +89,15 @@ func NewEmbedder(cfg EmbedderConfig) (Embedder, error) {
 		return nil, err
 	}
 
+	if cfg.Name == ProviderGemini {
+		return NewGeminiEmbedder(NativeProviderConfig{
+			APIKey:     cfg.APIKey,
+			BaseURL:    cfg.BaseURL,
+			Model:      cfg.Model,
+			HTTPClient: cfg.HTTPClient,
+		})
+	}
+
 	ocfg := openai.DefaultConfig(cfg.APIKey)
 	if cfg.BaseURL != "" {
 		ocfg.BaseURL = cfg.BaseURL

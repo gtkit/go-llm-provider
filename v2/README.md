@@ -77,19 +77,38 @@ go get github.com/gtkit/go-llm-provider/v2
 | Moonshot / Kimi | `moonshot`（别名：`ProviderKimi`） | `https://api.moonshot.cn/v1` | `kimi-k2-turbo-preview` | — | [platform.moonshot.cn](https://platform.moonshot.cn/) |
 | OpenAI | `openai` | `https://api.openai.com/v1` | `gpt-5.4-mini` | `text-embedding-3-small` | [platform.openai.com](https://platform.openai.com/) |
 | Anthropic / Claude | `anthropic` | `https://api.anthropic.com` | `claude-sonnet-4-5` | — | [console.anthropic.com](https://console.anthropic.com/) |
-| Google Gemini | `gemini` | `https://generativelanguage.googleapis.com/v1beta` | `gemini-2.5-flash` | — | [aistudio.google.com](https://aistudio.google.com/) |
+| Google Gemini | `gemini` | `https://generativelanguage.googleapis.com/v1beta` | `gemini-2.5-flash` | `gemini-embedding-001` | [aistudio.google.com](https://aistudio.google.com/) |
 | Ollama | `ollama` | `http://localhost:11434` | 需调用方指定 | — | 本地服务 |
 | xAI / Grok | `xai` | `https://api.x.ai/v1` | `grok-4-1-fast-non-reasoning` | — | [console.x.ai](https://console.x.ai/) |
 
 > 预设地址和默认模型可能随平台更新而变化，建议定期对照各平台官方文档确认。
 > Embedding 列显示"—"的平台表示官方暂无 embedding 接口，`NewEmbedderFromPreset` 会返回错误。
 
+### 能力矩阵
+
+| 平台 | Chat | Streaming | Tools | Structured Output | Vision | Reasoning | Embedding | 协议 |
+|------|------|-----------|-------|-------------------|--------|-----------|-----------|------|
+| DeepSeek | 是 | 是 | 是 | 是 | 否 | 是 | 否 | OpenAI 兼容 |
+| 通义千问（百炼） | 是 | 是 | 是 | 是 | 否 | 否 | 是 | OpenAI 兼容 |
+| 智谱 AI / GLM | 是 | 是 | 是 | 是 | 否 | 否 | 是 | OpenAI 兼容 |
+| 百度千帆 | 是 | 是 | 是 | 是 | 否 | 否 | 是 | OpenAI 兼容 |
+| 硅基流动 | 是 | 是 | 是 | 是 | 否 | 否 | 是 | OpenAI 兼容 |
+| Moonshot / Kimi | 是 | 是 | 是 | 是 | 否 | 否 | 否 | OpenAI 兼容 |
+| OpenAI | 是 | 是 | 是 | 是 | 否 | 是 | 是 | OpenAI 兼容 |
+| Anthropic / Claude | 是 | 是 | 是 | 是 | 是 | 否 | 否 | 原生 HTTP |
+| Google Gemini | 是 | 是 | 是 | 是 | 是 | 否 | 是 | 原生 HTTP |
+| Ollama | 是 | 是 | 否 | 否 | 否 | 否 | 否 | 原生 HTTP |
+| xAI / Grok | 是 | 是 | 是 | 是 | 否 | 否 | 否 | OpenAI 兼容 |
+
+> 矩阵描述当前内置 preset 默认模型和本库已映射能力；如果覆盖 `Model`，请以具体模型官方文档为准。
+
 ### 关于 Claude / Google Gemini
 
 Claude 和 Gemini 不是 OpenAI 兼容协议，但本库不引入官方 SDK，而是用标准库 `net/http` 直接实现各自的原生 HTTP API：
 
 - `ProviderAnthropic` 走 Anthropic Messages API：`POST /v1/messages`
-- `ProviderGemini` 走 Gemini Generative Language API：`generateContent` / `streamGenerateContent`
+- `ProviderGemini` 走 Gemini Generative Language API：`generateContent` / `streamGenerateContent`；`NewGeminiEmbedder` 走 `embedContent` / `batchEmbedContents`
+- `NewGeminiEmbedder` 走 Gemini Embeddings API：`embedContent` / `batchEmbedContents`
 - 两者都复用统一的 `Provider`、`ChatRequest`、`ChatResponse`、`StreamReader`、`ProviderError`、`ResponseMetadata`
 - 当前 native 实现覆盖文本、多模态图片输入、非流式、基础 SSE 流式、错误分类；非流式 `Chat` 已映射 Tool Use / Function Calling 与结构化输出
 - 流式 Tool Use 暂未开放；包含 `Tools` / `ToolChoice` / `ParallelToolCalls` 的 native streaming 请求会返回明确的 `ErrInvalidRequest`
@@ -813,14 +832,15 @@ for _, a := range accum {
 
 除了 Chat，本库同时提供统一的 `Embedder` 接口，用于把文本转成向量，支撑 RAG、语义搜索、聚类、去重、推荐等场景。
 
-**关键设计**：与 Chat 共用同一套 `Registry` / `Preset` / `QuickRegistry`。`QuickRegistry` 会在注册 chat provider 时，自动为有 embedding 预设的平台（OpenAI / Qwen / 智谱 / 千帆 / 硅基流动）同时注册对应 embedder；DeepSeek 和 Moonshot 官方无 embedding 接口，静默跳过不报错。
+**关键设计**：与 Chat 共用同一套 `Registry` / `Preset` / `QuickRegistry`。`QuickRegistry` 会在注册 chat provider 时，自动为有 embedding 预设的平台（OpenAI / Qwen / 智谱 / 千帆 / 硅基流动 / Gemini）同时注册对应 embedder；DeepSeek、Moonshot、Anthropic、Ollama、xAI 暂未声明 embedding 预设，静默跳过不报错。
 
 ### 基础用法
 
 ```go
 reg := provider.QuickRegistry(map[provider.ProviderName]string{
-    provider.ProviderQwen:  os.Getenv("QWEN_API_KEY"),
-    provider.ProviderZhipu: os.Getenv("ZHIPU_API_KEY"),
+    provider.ProviderQwen:   os.Getenv("QWEN_API_KEY"),
+    provider.ProviderZhipu:  os.Getenv("ZHIPU_API_KEY"),
+    provider.ProviderGemini: os.Getenv("GEMINI_API_KEY"),
 })
 
 // 同一个 Registry 同时管 chat 和 embedding
@@ -904,6 +924,11 @@ emb, err := provider.NewEmbedderFromPreset(
     "", // 留空使用预设的 text-embedding-3-small
 )
 
+geminiEmb, err := provider.NewGeminiEmbedder(provider.NativeProviderConfig{
+    APIKey: os.Getenv("GEMINI_API_KEY"),
+    Model:  "gemini-embedding-001",
+})
+
 // 完全自定义（自部署或未预设的服务）
 emb, err = provider.NewEmbedder(provider.EmbedderConfig{
     Name:    "my-embedding-service",
@@ -957,15 +982,15 @@ p, err := provider.NewProvider(provider.ProviderConfig{
 })
 
 emb, err := provider.NewEmbedder(provider.EmbedderConfig{
-    Name:       provider.ProviderOpenAI,
-    BaseURL:    "https://api.openai.com/v1",
-    APIKey:     os.Getenv("OPENAI_API_KEY"),
-    Model:      "text-embedding-3-small",
+    Name:       provider.ProviderGemini,
+    BaseURL:    "https://generativelanguage.googleapis.com/v1beta",
+    APIKey:     os.Getenv("GEMINI_API_KEY"),
+    Model:      "gemini-embedding-001",
     HTTPClient: httpClient,
 })
 ```
 
-请求级超时仍推荐由调用方通过 `context.WithTimeout` 控制；自定义 `HTTPClient` 主要用于传输层策略复用。调用方传入自定义客户端后，本库不会覆盖它的超时设置。
+请求级超时仍推荐由调用方通过 `context.WithTimeout` 控制；自定义 `HTTPClient` 主要用于传输层策略复用。`NewEmbedder` 在 `Name` 为 `ProviderGemini` 时会自动使用原生 Gemini embedding 接口。调用方传入自定义客户端后，本库不会覆盖它的超时设置。
 
 ---
 
@@ -1466,6 +1491,12 @@ curl -X POST http://localhost:8080/chat \
 | `bge-large-zh` | 1024 | 中文效果强 |
 | `tao-8k` | 1024 | 长文本（8K 上下文） |
 
+**Google Gemini**
+
+| 模型名 | 维度 | 说明 |
+|--------|------|------|
+| `gemini-embedding-001` | 3072 | 默认推荐，原生 `embedContent` / `batchEmbedContents` 接口，支持 `outputDimensionality` 截断 |
+
 **硅基流动**
 
 | 模型名 | 维度 | 说明 |
@@ -1944,6 +1975,7 @@ make release-check
 DEEPSEEK_API_KEY="<DEEPSEEK_API_KEY>" go test ./provider -run 'TestDeepSeek.*Smoke' -count=1 -v
 ANTHROPIC_API_KEY="<ANTHROPIC_API_KEY>" go test ./provider -run TestAnthropicSmoke -count=1 -v
 GEMINI_API_KEY="<GEMINI_API_KEY>" go test ./provider -run TestGeminiSmoke -count=1 -v
+GEMINI_API_KEY="<GEMINI_API_KEY>" go test ./provider -run TestGeminiEmbeddingSmoke -count=1 -v
 OLLAMA_MODEL="llama3.2" OLLAMA_BASE_URL="http://localhost:11434" go test ./provider -run TestOllamaSmoke -count=1 -v
 ```
 

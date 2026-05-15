@@ -6,6 +6,10 @@
 
 ### Added
 
+- 新增 `NewGeminiEmbedder`，通过 Gemini 原生 `embedContent` / `batchEmbedContents` 接口支持 `gemini-embedding-001`
+- 新增 Gemini embedding 预设、能力元数据和真实接口 smoke test，`QuickRegistry` 会在提供 `GEMINI_API_KEY` 时注册 Gemini embedder
+- README 新增 v2 provider 能力矩阵，并补充 Gemini embedding 用法
+
 ### Changed
 
 ### Deprecated

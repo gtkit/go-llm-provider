@@ -17,14 +17,15 @@ import (
 var errSkipNativeStreamEvent = errors.New("skip native stream event")
 
 const (
-	defaultAnthropicBaseURL = "https://api.anthropic.com"
-	defaultAnthropicVersion = "2023-06-01"
-	defaultAnthropicModel   = "claude-sonnet-4-5"
-	defaultGeminiBaseURL    = "https://generativelanguage.googleapis.com/v1beta"
-	defaultGeminiModel      = "gemini-2.5-flash"
-	defaultNativeMaxTokens  = 4096
-	maxNativeErrorBody      = 1 << 20
-	maxSSETokenSize         = 1 << 20
+	defaultAnthropicBaseURL     = "https://api.anthropic.com"
+	defaultAnthropicVersion     = "2023-06-01"
+	defaultAnthropicModel       = "claude-sonnet-4-5"
+	defaultGeminiBaseURL        = "https://generativelanguage.googleapis.com/v1beta"
+	defaultGeminiModel          = "gemini-2.5-flash"
+	defaultGeminiEmbeddingModel = "gemini-embedding-001"
+	defaultNativeMaxTokens      = 4096
+	maxNativeErrorBody          = 1 << 20
+	maxSSETokenSize             = 1 << 20
 )
 
 // NativeProviderConfig configures native HTTP providers such as Anthropic and Gemini.

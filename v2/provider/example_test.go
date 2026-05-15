@@ -198,3 +198,12 @@ func ExampleNewGeminiProvider() {
 	fmt.Println(p != nil, err == nil)
 	// Output: true true
 }
+
+func ExampleNewGeminiEmbedder() {
+	e, err := provider.NewGeminiEmbedder(provider.NativeProviderConfig{
+		APIKey: "AIza-xxxxxxxx",
+		Model:  "gemini-embedding-001",
+	})
+	fmt.Println(e != nil, err == nil)
+	// Output: true true
+}

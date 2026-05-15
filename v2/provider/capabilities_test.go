@@ -52,6 +52,7 @@ func TestModelCapabilitiesByCapability(t *testing.T) {
 	embedders := ModelCapabilitiesByCapability(CapabilityEmbedding)
 	assert.Contains(t, embedders, ProviderOpenAI)
 	assert.Contains(t, embedders, ProviderQwen)
+	assert.Contains(t, embedders, ProviderGemini)
 	assert.NotContains(t, embedders, ProviderDeepSeek)
 
 	for name, caps := range embedders {

@@ -523,6 +523,18 @@ func TestNewEmbedderFromPreset(t *testing.T) {
 		assert.Equal(t, "BAAI/bge-m3", oe.model)
 	})
 
+	t.Run("gemini preset model uses native embedder", func(t *testing.T) {
+		t.Parallel()
+		e, err := NewEmbedderFromPreset(ProviderGemini, "test-key", "")
+		require.NoError(t, err)
+		require.NotNil(t, e)
+		assert.Equal(t, ProviderGemini, e.Name())
+
+		ge, ok := e.(*geminiEmbedder)
+		require.True(t, ok)
+		assert.Equal(t, defaultGeminiEmbeddingModel, ge.model)
+	})
+
 	t.Run("deepseek returns unsupported error", func(t *testing.T) {
 		t.Parallel()
 		_, err := NewEmbedderFromPreset(ProviderDeepSeek, "test-key", "")
@@ -696,13 +708,14 @@ func TestQuickRegistryEmbedder(t *testing.T) {
 		reg := QuickRegistry(map[ProviderName]string{
 			ProviderOpenAI: "sk-test",
 			ProviderQwen:   "qw-test",
+			ProviderGemini: "gm-test",
 		})
 
 		// 两边都有
 		providerNames := reg.Names()
 		embedderNames := reg.EmbedderNames()
-		assert.ElementsMatch(t, []ProviderName{ProviderOpenAI, ProviderQwen}, providerNames)
-		assert.ElementsMatch(t, []ProviderName{ProviderOpenAI, ProviderQwen}, embedderNames)
+		assert.ElementsMatch(t, []ProviderName{ProviderOpenAI, ProviderQwen, ProviderGemini}, providerNames)
+		assert.ElementsMatch(t, []ProviderName{ProviderOpenAI, ProviderQwen, ProviderGemini}, embedderNames)
 	})
 
 	t.Run("skips embedder for platforms without embedding support", func(t *testing.T) {
@@ -743,9 +756,10 @@ func TestQuickRegistryStrictEmbedder(t *testing.T) {
 		reg, err := QuickRegistryStrict(map[ProviderName]string{
 			ProviderOpenAI: "sk-test",
 			ProviderQwen:   "qw-test",
+			ProviderGemini: "gm-test",
 		})
 		require.NoError(t, err)
-		assert.ElementsMatch(t, []ProviderName{ProviderOpenAI, ProviderQwen}, reg.EmbedderNames())
+		assert.ElementsMatch(t, []ProviderName{ProviderOpenAI, ProviderQwen, ProviderGemini}, reg.EmbedderNames())
 	})
 
 	t.Run("platforms without embedding support do not produce errors", func(t *testing.T) {
@@ -1060,7 +1074,7 @@ func TestPresetsEmbeddingModelDefaults(t *testing.T) {
 		ProviderDeepSeek:    "", // 明确无 embedding 模型
 		ProviderMoonshot:    "", // 明确无 embedding 模型
 		ProviderAnthropic:   "", // 明确无 embedding 模型
-		ProviderGemini:      "", // 当前 native provider 暂未实现 embedding
+		ProviderGemini:      defaultGeminiEmbeddingModel,
 		ProviderXAI:         "", // 当前预设暂未声明 embedding 模型
 	}
 

@@ -66,6 +66,29 @@ func TestGeminiSmoke(t *testing.T) {
 	assert.Equal(t, ProviderGemini, resp.Metadata.Provider)
 }
 
+func TestGeminiEmbeddingSmoke(t *testing.T) {
+	apiKey := os.Getenv("GEMINI_API_KEY")
+	if apiKey == "" {
+		t.Skip("set GEMINI_API_KEY to run Gemini embedding smoke test")
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
+	defer cancel()
+
+	e, err := NewGeminiEmbedder(NativeProviderConfig{
+		APIKey: apiKey,
+		Model:  firstString(os.Getenv("GEMINI_EMBEDDING_MODEL"), defaultGeminiEmbeddingModel),
+	})
+	require.NoError(t, err)
+
+	resp, err := e.Embed(ctx, &EmbeddingRequest{Input: []string{"hello"}})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Len(t, resp.Data, 1)
+	assert.NotEmpty(t, resp.Data[0].Vector)
+	assert.Equal(t, ProviderGemini, resp.Metadata.Provider)
+}
+
 func TestOllamaSmoke(t *testing.T) {
 	model := os.Getenv("OLLAMA_MODEL")
 	if model == "" {

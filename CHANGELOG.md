@@ -6,6 +6,8 @@
 
 ### Added
 
+- README 新增 v1 provider 能力矩阵，明确 Chat、Streaming、Tools、Structured Output、Vision 与 Embedding 的当前覆盖范围
+
 ### Changed
 
 ### Deprecated

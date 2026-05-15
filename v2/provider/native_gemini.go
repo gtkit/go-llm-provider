@@ -62,6 +62,28 @@ type geminiUsage struct {
 	TotalTokenCount      int `json:"totalTokenCount"`
 }
 
+type geminiEmbeddingRequest struct {
+	Model                string        `json:"model,omitempty"`
+	Content              geminiContent `json:"content"`
+	OutputDimensionality *int          `json:"outputDimensionality,omitempty"`
+}
+
+type geminiBatchEmbeddingRequest struct {
+	Requests []geminiEmbeddingRequest `json:"requests"`
+}
+
+type geminiEmbeddingResponse struct {
+	Embedding geminiEmbedding `json:"embedding"`
+}
+
+type geminiBatchEmbeddingResponse struct {
+	Embeddings []geminiEmbedding `json:"embeddings"`
+}
+
+type geminiEmbedding struct {
+	Values []float32 `json:"values"`
+}
+
 type geminiTool struct {
 	FunctionDeclarations []geminiFunctionDeclaration `json:"functionDeclarations,omitempty"`
 }
