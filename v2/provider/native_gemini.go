@@ -35,6 +35,8 @@ type geminiInlineData struct {
 
 type geminiGenerationConfig struct {
 	MaxOutputTokens  int      `json:"maxOutputTokens,omitempty"`
+	CandidateCount   int      `json:"candidateCount,omitempty"`
+	Seed             *int     `json:"seed,omitempty"`
 	Temperature      *float32 `json:"temperature,omitempty"`
 	TopP             *float32 `json:"topP,omitempty"`
 	StopSequences    []string `json:"stopSequences,omitempty"`
@@ -82,6 +84,15 @@ type geminiBatchEmbeddingResponse struct {
 
 type geminiEmbedding struct {
 	Values []float32 `json:"values"`
+}
+
+type geminiCountTokensRequest struct {
+	Contents          []geminiContent `json:"contents,omitempty"`
+	SystemInstruction geminiContent   `json:"systemInstruction,omitempty"`
+}
+
+type geminiCountTokensResponse struct {
+	TotalTokens int `json:"totalTokens"`
 }
 
 type geminiTool struct {
@@ -140,6 +151,12 @@ func geminiParts(parts []ContentPart) ([]geminiPart, error) {
 				return nil, err
 			}
 			out = append(out, image)
+		case ContentTypeFile:
+			file, err := geminiFilePart(part)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, file)
 		default:
 			return nil, fmt.Errorf("%w: unsupported gemini content type %q", ErrInvalidRequest, part.Type)
 		}
@@ -226,6 +243,21 @@ func geminiImagePart(part ContentPart) (geminiPart, error) {
 	return geminiPart{}, fmt.Errorf("%w: gemini image URL parts require inline data", ErrInvalidRequest)
 }
 
+func geminiFilePart(part ContentPart) (geminiPart, error) {
+	if len(part.FileData) == 0 {
+		return geminiPart{}, fmt.Errorf("%w: gemini file parts require inline data", ErrInvalidRequest)
+	}
+	if part.MIMEType == "" {
+		return geminiPart{}, fmt.Errorf("%w: file MIME type is required", ErrInvalidRequest)
+	}
+	return geminiPart{
+		InlineData: &geminiInlineData{
+			MIMEType: part.MIMEType,
+			Data:     base64.StdEncoding.EncodeToString(part.FileData),
+		},
+	}, nil
+}
+
 func geminiRole(role Role) string {
 	switch role {
 	case RoleAssistant:
@@ -235,20 +267,24 @@ func geminiRole(role Role) string {
 	}
 }
 
-func validateGeminiRequest(req *ChatRequest, stream bool) error {
-	if stream && (len(req.Tools) > 0 || req.ToolChoice != nil || req.ParallelToolCalls != nil) {
-		return fmt.Errorf("%w: gemini native streaming tool use is not implemented", ErrInvalidRequest)
-	}
-	return nil
-}
-
 func geminiGeneration(req *ChatRequest) *geminiGenerationConfig {
-	if req.MaxTokens <= 0 && req.Temperature == nil && req.TopP == nil && len(req.Stop) == 0 {
+	if req.MaxTokens <= 0 &&
+		req.CandidateCount <= 0 &&
+		req.Seed == nil &&
+		req.Temperature == nil &&
+		req.TopP == nil &&
+		len(req.Stop) == 0 {
 		return nil
 	}
 	cfg := &geminiGenerationConfig{}
 	if req.MaxTokens > 0 {
 		cfg.MaxOutputTokens = req.MaxTokens
+	}
+	if req.CandidateCount > 0 {
+		cfg.CandidateCount = req.CandidateCount
+	}
+	if req.Seed != nil {
+		cfg.Seed = req.Seed
 	}
 	if req.Temperature != nil {
 		cfg.Temperature = req.Temperature

@@ -80,9 +80,13 @@ go get github.com/gtkit/go-llm-provider/v2
 | Google Gemini | `gemini` | `https://generativelanguage.googleapis.com/v1beta` | `gemini-2.5-flash` | `gemini-embedding-001` | [aistudio.google.com](https://aistudio.google.com/) |
 | Ollama | `ollama` | `http://localhost:11434` | 需调用方指定 | — | 本地服务 |
 | xAI / Grok | `xai` | `https://api.x.ai/v1` | `grok-4-1-fast-non-reasoning` | — | [console.x.ai](https://console.x.ai/) |
+| Groq | `groq` | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile` | — | [console.groq.com](https://console.groq.com/) |
+| Mistral AI | `mistral` | `https://api.mistral.ai/v1` | `mistral-large-latest` | `mistral-embed` | [console.mistral.ai](https://console.mistral.ai/) |
+| Cohere | `cohere` | `https://api.cohere.ai/compatibility/v1` | `command-a-03-2025` | `embed-v4.0` | [dashboard.cohere.com](https://dashboard.cohere.com/) |
 
 > 预设地址和默认模型可能随平台更新而变化，建议定期对照各平台官方文档确认。
 > Embedding 列显示"—"的平台表示官方暂无 embedding 接口，`NewEmbedderFromPreset` 会返回错误。
+> Azure OpenAI 与 Amazon Bedrock 需要资源名、region 或 deployment/model ARN 等运行时信息，请使用 `NewAzureOpenAIProvider` / `NewBedrockOpenAIProvider` 显式创建。
 
 ### 能力矩阵
 
@@ -99,6 +103,11 @@ go get github.com/gtkit/go-llm-provider/v2
 | Google Gemini | 是 | 是 | 是 | 是 | 是 | 否 | 是 | 原生 HTTP |
 | Ollama | 是 | 是 | 否 | 否 | 否 | 否 | 否 | 原生 HTTP |
 | xAI / Grok | 是 | 是 | 是 | 是 | 否 | 否 | 否 | OpenAI 兼容 |
+| Groq | 是 | 是 | 是 | 是 | 否 | 否 | 否 | OpenAI 兼容 |
+| Mistral AI | 是 | 是 | 是 | 是 | 否 | 否 | 是 | OpenAI 兼容 |
+| Cohere | 是 | 是 | 是 | 是 | 否 | 否 | 是 | OpenAI 兼容 |
+| Azure OpenAI | 是 | 是 | 是 | 是 | 取决于部署模型 | 取决于部署模型 | 可自定义 | Azure OpenAI |
+| Amazon Bedrock | 是 | 是 | 是 | 是 | 取决于模型 | 取决于模型 | 可自定义 | OpenAI 兼容 |
 
 > 矩阵描述当前内置 preset 默认模型和本库已映射能力；如果覆盖 `Model`，请以具体模型官方文档为准。
 
@@ -110,8 +119,9 @@ Claude 和 Gemini 不是 OpenAI 兼容协议，但本库不引入官方 SDK，�
 - `ProviderGemini` 走 Gemini Generative Language API：`generateContent` / `streamGenerateContent`；`NewGeminiEmbedder` 走 `embedContent` / `batchEmbedContents`
 - `NewGeminiEmbedder` 走 Gemini Embeddings API：`embedContent` / `batchEmbedContents`
 - 两者都复用统一的 `Provider`、`ChatRequest`、`ChatResponse`、`StreamReader`、`ProviderError`、`ResponseMetadata`
-- 当前 native 实现覆盖文本、多模态图片输入、非流式、基础 SSE 流式、错误分类；非流式 `Chat` 已映射 Tool Use / Function Calling 与结构化输出
-- 流式 Tool Use 暂未开放；包含 `Tools` / `ToolChoice` / `ParallelToolCalls` 的 native streaming 请求会返回明确的 `ErrInvalidRequest`
+- 当前 native 实现覆盖文本、图片、文件输入、非流式、SSE 流式、错误分类；`Chat` 已映射 Tool Use / Function Calling 与结构化输出
+- Claude / Gemini native streaming 已开放 Tool Use 增量输出，调用方可从 `StreamChunk.ToolCalls` 累积工具调用参数
+- Claude 支持内容片段级 `CacheControlEphemeral()`，用于 Anthropic prompt caching；不支持的平台会忽略该 hint
 
 ## 快速开始
 
@@ -179,10 +189,15 @@ go run main.go
 | Module Path | `github.com/gtkit/go-llm-provider` | `github.com/gtkit/go-llm-provider/v2` |
 | `Message.Content` | `string` | `[]ContentPart` |
 | 文本消息构造 | `Message{Role: ..., Content: "..."}` | `UserText(...)` / `SystemText(...)` / `AssistantText(...)` |
-| 多模态输入 | 不支持 | 支持 `TextPart` / `ImageURLPart` / `ImageDataPart` |
+| 多模态输入 | 不支持 | 支持 `TextPart` / `ImageURLPart` / `ImageDataPart` / `FileDataPart` / `FileURLPart` / `FileIDPart` |
 | Thinking 请求字段 | `EnableThinking bool` | `Thinking *Thinking` |
 | Structured Output | 不支持 | `ResponseFormat *ResponseFormat` |
 | 推理输出 | 只暴露最终 `Content` | 新增 `ChatResponse.Reasoning`、`StreamChunk.ReasoningDelta`、`Usage.ReasoningTokens` |
+| 确定性与多候选 | 不支持 | `Seed` / `CandidateCount` |
+| Prompt caching | 不支持 | `WithCacheControl(..., CacheControlEphemeral())`，当前映射 Anthropic |
+| Token counting | 不支持 | `TokenCounter` / `CountTokens`，当前 Gemini 原生支持 |
+| 本地推理 | 不支持 | `ProviderOllama` |
+| 企业入口 | 不支持 | `NewAzureOpenAIProvider` / `NewBedrockOpenAIProvider` |
 | 典型升级动作 | 原样继续用即可 | 需要改 import 路径、消息构造方式、thinking 配置方式 |
 
 ### 方式一：QuickRegistry（推荐日常使用）
@@ -200,6 +215,9 @@ reg := provider.QuickRegistry(map[provider.ProviderName]string{
     provider.ProviderAnthropic:   os.Getenv("ANTHROPIC_API_KEY"),
     provider.ProviderGemini:      os.Getenv("GEMINI_API_KEY"),
     provider.ProviderXAI:         os.Getenv("XAI_API_KEY"),
+    provider.ProviderGroq:        os.Getenv("GROQ_API_KEY"),
+    provider.ProviderMistral:     os.Getenv("MISTRAL_API_KEY"),
+    provider.ProviderCohere:      os.Getenv("COHERE_API_KEY"),
 })
 
 // 默认 provider 按成功注册的 ProviderName 排序后取第一个
@@ -288,7 +306,25 @@ gemini, err := provider.NewGeminiProvider(provider.NativeProviderConfig{
 })
 ```
 
-当前原生实现支持文本、多模态图片输入、非流式、基础 SSE 流式、request id 元数据与错误分类。非流式 `Chat` 已支持 Tool Use / Function Calling 和结构化输出；流式 Tool Use 暂未开放，会返回 `ErrInvalidRequest`。
+当前原生实现支持文本、图片、文件输入、非流式、SSE 流式、request id 元数据与错误分类。`Chat` 已支持 Tool Use / Function Calling 和结构化输出；流式 Tool Use 会通过 `StreamChunk.ToolCalls` 暴露增量工具调用。
+
+### Azure OpenAI / Amazon Bedrock
+
+Azure OpenAI 和 Amazon Bedrock 都需要运行时资源信息，不适合放进固定 preset。请使用专用构造函数：
+
+```go
+azure, err := provider.NewAzureOpenAIProvider(provider.AzureOpenAIConfig{
+    APIKey:     os.Getenv("AZURE_OPENAI_API_KEY"),
+    Endpoint:   "https://example.openai.azure.com",
+    Deployment: "gpt-4o-mini",
+})
+
+bedrock, err := provider.NewBedrockOpenAIProvider(provider.BedrockOpenAIConfig{
+    APIKey: os.Getenv("BEDROCK_API_KEY"),
+    Region: "us-east-1",
+    Model:  "anthropic.claude-sonnet-4-5-20250929-v1:0",
+})
+```
 
 ### Ollama 本地 Provider
 
@@ -338,11 +374,22 @@ resp, err := p.Chat(ctx, &provider.ChatRequest{
     },
     MaxTokens:   1024,
     Temperature: &temp,
+    CandidateCount: 2, // 请求多个候选，provider 不支持时可能忽略或返回错误
 })
 
 fmt.Println("回复:", resp.Content)
 fmt.Printf("Token: prompt=%d, completion=%d, total=%d\n",
     resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.TotalTokens)
+```
+
+需要确定性采样时设置 `Seed`：
+
+```go
+seed := 42
+resp, err := p.Chat(ctx, &provider.ChatRequest{
+    Messages: []provider.Message{provider.UserText("给我一个测试用标题")},
+    Seed:     &seed,
+})
 ```
 
 ### 流式对话
@@ -470,7 +517,7 @@ provider.ParamSchema{
 }
 ```
 
-### 多模态输入（图像）
+### 多模态输入（图像 / 文件）
 
 当模型支持视觉输入时，可以把文本和图片组合成同一条消息。纯文本场景仍然推荐用 `UserText` / `SystemText` 保持最简心智。
 
@@ -500,6 +547,37 @@ resp, err := p.Chat(ctx, &provider.ChatRequest{
         provider.UserMessage(
             provider.TextPart("识别这张图里的文字"),
             provider.ImageDataPart(imgBytes, "image/png"),
+        ),
+    },
+})
+```
+
+如果模型支持文件输入，可以使用文件 part。Claude 原生 provider 会把 `FileDataPart` 映射为 document block；Gemini 原生 provider 会把 inline file 映射为 `inline_data`。OpenAI 兼容 Chat Completions 路径目前会对 file part 返回 `ErrInvalidRequest`，避免发送未定义格式。
+
+```go
+pdfBytes, _ := os.ReadFile("brief.pdf")
+
+resp, err := p.Chat(ctx, &provider.ChatRequest{
+    Messages: []provider.Message{
+        provider.UserMessage(
+            provider.TextPart("总结这份 PDF"),
+            provider.FileDataPart(pdfBytes, "application/pdf", "brief.pdf"),
+        ),
+    },
+})
+```
+
+Anthropic prompt caching 使用内容片段级 hint：
+
+```go
+resp, err := claude.Chat(ctx, &provider.ChatRequest{
+    Messages: []provider.Message{
+        provider.UserMessage(
+            provider.WithCacheControl(
+                provider.TextPart("这里是很长的系统资料或文档上下文"),
+                provider.CacheControlEphemeral(),
+            ),
+            provider.TextPart("基于上面的资料回答问题"),
         ),
     },
 })
@@ -599,6 +677,28 @@ if err != nil {
 }
 
 fmt.Println(result.City, resp.Usage.TotalTokens)
+```
+
+### Token counting
+
+支持原生 token counting 的 provider 会实现 `TokenCounter`。当前 Gemini 原生 provider 支持 `CountTokens`；其他 provider 会返回 `ErrUnsupportedCapability`。
+
+```go
+count, err := provider.CountTokens(ctx, gemini, &provider.ChatRequest{
+    Messages: []provider.Message{
+        provider.SystemText("be concise"),
+        provider.UserText("hello"),
+    },
+})
+if err != nil {
+    if errors.Is(err, provider.ErrUnsupportedCapability) {
+        fmt.Println("当前 provider 不支持 token counting")
+        return
+    }
+    log.Fatal(err)
+}
+
+fmt.Println(count.TotalTokens)
 ```
 
 ### 方式一：RunToolLoop（推荐）
@@ -1536,6 +1636,10 @@ type ChatRequest struct {
     ToolChoice        ToolChoiceOption // ToolChoiceAuto / ToolChoiceNone / ToolChoiceRequired / ToolChoiceFunction{}
     ParallelToolCalls *bool            // 是否允许并行 tool calls
 
+    // Sampling
+    Seed           *int // 确定性采样
+    CandidateCount int  // 多候选生成
+
     // Reasoning / Structured Output
     Thinking       *Thinking
     ResponseFormat *ResponseFormat
@@ -1573,23 +1677,33 @@ type Message struct {
 
 ```go
 type ContentPart struct {
-    Type        ContentType
-    Text        string
-    ImageURL    string
-    ImageData   []byte
-    MIMEType    string
-    ImageDetail ImageDetail
+	Type        ContentType
+	Text        string
+	ImageURL    string
+	ImageData   []byte
+	FileURL     string
+	FileData    []byte
+	FileID      string
+	Filename    string
+	MIMEType    string
+	ImageDetail ImageDetail
+	CacheControl *CacheControl
 }
 
 const (
-    ContentTypeText     ContentType = "text"
-    ContentTypeImageURL ContentType = "image_url"
+	ContentTypeText     ContentType = "text"
+	ContentTypeImageURL ContentType = "image_url"
+	ContentTypeFile     ContentType = "file"
 )
 
 // 便捷构造器
 provider.TextPart("hello")
 provider.ImageURLPart("https://example.com/cat.png")
 provider.ImageDataPart(bytes, "image/png")
+provider.FileDataPart(bytes, "application/pdf", "brief.pdf")
+provider.FileURLPart("https://example.com/brief.pdf", "application/pdf")
+provider.FileIDPart("file_123")
+provider.WithCacheControl(provider.TextPart("cache me"), provider.CacheControlEphemeral())
 provider.UserText("hello")
 provider.UserMessage(provider.TextPart("describe"), provider.ImageURLPart("https://..."))
 ```
@@ -1646,6 +1760,20 @@ type ToolCallDelta struct {
 type FunctionCallDelta struct {
     Name      string // 首个 chunk 中非空
     Arguments string // 每个 chunk 追加的参数片段
+}
+```
+
+### TokenCounter
+
+```go
+type TokenCounter interface {
+    CountTokens(ctx context.Context, req *ChatRequest) (*TokenCountResponse, error)
+}
+
+type TokenCountResponse struct {
+    Model       string
+    TotalTokens int
+    Metadata    ResponseMetadata
 }
 ```
 

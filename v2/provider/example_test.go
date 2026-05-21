@@ -12,6 +12,10 @@ import (
 
 type exampleProvider struct{}
 
+type exampleTokenCounter struct {
+	exampleProvider
+}
+
 func (exampleProvider) Name() provider.ProviderName {
 	return provider.ProviderOpenAI
 }
@@ -34,6 +38,49 @@ func (exampleProvider) ChatStream(context.Context, *provider.ChatRequest) (*prov
 	return provider.NewStreamReader(func() (*provider.StreamChunk, error) {
 		return nil, io.EOF
 	}, nil), nil
+}
+
+func (exampleTokenCounter) CountTokens(context.Context, *provider.ChatRequest) (*provider.TokenCountResponse, error) {
+	return &provider.TokenCountResponse{
+		Model:       "example-model",
+		TotalTokens: 12,
+	}, nil
+}
+
+func ExampleFileDataPart() {
+	part := provider.FileDataPart([]byte("%PDF-1.7"), "application/pdf", "brief.pdf")
+	fmt.Println(part.Type)
+	fmt.Println(part.MIMEType)
+	fmt.Println(part.Filename)
+	// Output:
+	// file
+	// application/pdf
+	// brief.pdf
+}
+
+func ExampleWithCacheControl() {
+	part := provider.WithCacheControl(
+		provider.TextPart("高成本上下文"),
+		provider.CacheControlEphemeral(),
+	)
+	fmt.Println(part.Text)
+	fmt.Println(part.CacheControl.Type)
+	// Output:
+	// 高成本上下文
+	// ephemeral
+}
+
+func ExampleCountTokens() {
+	resp, err := provider.CountTokens(context.Background(), exampleTokenCounter{}, &provider.ChatRequest{
+		Messages: []provider.Message{provider.UserText("hello")},
+	})
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+
+	fmt.Println(resp.Model, resp.TotalTokens)
+	// Output: example-model 12
 }
 
 func ExampleModelCapabilitiesFromPreset() {
@@ -205,5 +252,25 @@ func ExampleNewGeminiEmbedder() {
 		Model:  "gemini-embedding-001",
 	})
 	fmt.Println(e != nil, err == nil)
+	// Output: true true
+}
+
+func ExampleNewAzureOpenAIProvider() {
+	p, err := provider.NewAzureOpenAIProvider(provider.AzureOpenAIConfig{
+		APIKey:     "azure-key",
+		Endpoint:   "https://example.openai.azure.com",
+		Deployment: "gpt-4o-mini",
+	})
+	fmt.Println(p != nil, err == nil)
+	// Output: true true
+}
+
+func ExampleNewBedrockOpenAIProvider() {
+	p, err := provider.NewBedrockOpenAIProvider(provider.BedrockOpenAIConfig{
+		APIKey: "bedrock-key",
+		Region: "us-east-1",
+		Model:  "anthropic.claude-sonnet-4-5-20250929-v1:0",
+	})
+	fmt.Println(p != nil, err == nil)
 	// Output: true true
 }

@@ -58,6 +58,8 @@ var (
 	ErrZeroEmbeddingVector = errors.New("embedding vector magnitude is zero")
 	// ErrEmbeddingDimensionMismatch indicates that vector dimensions differ.
 	ErrEmbeddingDimensionMismatch = errors.New("embedding vector dimensions mismatch")
+	// ErrUnsupportedCapability 表示所选供应商不支持请求的能力。
+	ErrUnsupportedCapability = errors.New("unsupported provider capability")
 
 	// ErrAuth 表示鉴权失败。
 	// 与 *ProviderError 互认：errors.Is(err, ErrAuth) 在 Code == ErrorCodeAuth 时返回 true。
@@ -139,6 +141,11 @@ const (
 	ProviderGemini      ProviderName = "gemini"    // Google Gemini native Generative Language API
 	ProviderOllama      ProviderName = "ollama"    // Local Ollama native API
 	ProviderXAI         ProviderName = "xai"       // xAI Grok，OpenAI 兼容
+	ProviderGroq        ProviderName = "groq"      // Groq，OpenAI 兼容
+	ProviderMistral     ProviderName = "mistral"   // Mistral AI，OpenAI 兼容
+	ProviderCohere      ProviderName = "cohere"    // Cohere 兼容 API
+	ProviderAzureOpenAI ProviderName = "azure"     // Azure OpenAI
+	ProviderBedrock     ProviderName = "bedrock"   // Amazon Bedrock OpenAI 兼容 API
 )
 
 // ProviderConfig 描述一个供应商的连接配置。
@@ -196,6 +203,12 @@ type ChatRequest struct {
 	ParallelToolCalls *bool
 
 	// ---------- 其他 ----------
+
+	// Seed 在供应商支持时请求确定性采样。
+	Seed *int
+
+	// CandidateCount 在供应商支持时请求返回多个候选回复。
+	CandidateCount int
 
 	// Thinking controls provider-specific reasoning behavior.
 	Thinking *Thinking
@@ -665,7 +678,11 @@ func (p *openaiProvider) buildRequest(req *ChatRequest) (openai.ChatCompletionRe
 
 	msgs := make([]openai.ChatCompletionMessage, 0, len(req.Messages))
 	for _, m := range req.Messages {
-		msgs = append(msgs, buildOpenAIMessage(m))
+		msg, err := buildOpenAIMessage(m)
+		if err != nil {
+			return openai.ChatCompletionRequest{}, err
+		}
+		msgs = append(msgs, msg)
 	}
 
 	oReq := openai.ChatCompletionRequest{
@@ -684,6 +701,12 @@ func (p *openaiProvider) buildRequest(req *ChatRequest) (openai.ChatCompletionRe
 	}
 	if len(req.Stop) > 0 {
 		oReq.Stop = req.Stop
+	}
+	if req.Seed != nil {
+		oReq.Seed = req.Seed
+	}
+	if req.CandidateCount > 0 {
+		oReq.N = req.CandidateCount
 	}
 
 	// 构建 tools
@@ -784,9 +807,15 @@ func applyResponseFormat(req *openai.ChatCompletionRequest, format *ResponseForm
 	return nil
 }
 
-func buildOpenAIMessage(m Message) openai.ChatCompletionMessage {
+func buildOpenAIMessage(m Message) (openai.ChatCompletionMessage, error) {
 	om := openai.ChatCompletionMessage{
 		Role: string(m.Role),
+	}
+
+	for _, part := range m.Content {
+		if part.Type == ContentTypeFile {
+			return openai.ChatCompletionMessage{}, fmt.Errorf("%w: openai compatible chat completions do not support file parts", ErrInvalidRequest)
+		}
 	}
 
 	switch {
@@ -813,6 +842,8 @@ func buildOpenAIMessage(m Message) openai.ChatCompletionMessage {
 						Detail: openai.ImageURLDetail(part.ImageDetail),
 					},
 				})
+			case ContentTypeFile:
+				continue
 			}
 		}
 	default:
@@ -837,7 +868,7 @@ func buildOpenAIMessage(m Message) openai.ChatCompletionMessage {
 		om.ToolCallID = m.ToolCallID
 	}
 
-	return om
+	return om, nil
 }
 
 // ============================================================

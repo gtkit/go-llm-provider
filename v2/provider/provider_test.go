@@ -66,6 +66,10 @@ func TestNewProviderFromPresetUsesApprovedDefaultModels(t *testing.T) {
 		{name: "siliconflow", providerName: ProviderSiliconFlow, expectedModel: "deepseek-ai/DeepSeek-V3"},
 		{name: "moonshot", providerName: ProviderMoonshot, expectedModel: "kimi-k2-turbo-preview"},
 		{name: "openai", providerName: ProviderOpenAI, expectedModel: "gpt-5.4-mini"},
+		{name: "xai", providerName: ProviderXAI, expectedModel: "grok-4-1-fast-non-reasoning"},
+		{name: "groq", providerName: ProviderGroq, expectedModel: "llama-3.3-70b-versatile"},
+		{name: "mistral", providerName: ProviderMistral, expectedModel: "mistral-large-latest"},
+		{name: "cohere", providerName: ProviderCohere, expectedModel: "command-a-03-2025"},
 	}
 
 	for _, tc := range testCases {
@@ -358,6 +362,33 @@ func TestBuildRequest(t *testing.T) {
 		require.NotNil(t, req.Messages[0].MultiContent[0].ImageURL)
 		assert.Equal(t, "data:image/png;base64,cmF3LWltYWdl", req.Messages[0].MultiContent[0].ImageURL.URL)
 		assert.Equal(t, openai.ImageURLDetailAuto, req.Messages[0].MultiContent[0].ImageURL.Detail)
+	})
+
+	t.Run("rejects file parts for openai compatible chat completions", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := p.buildRequest(&ChatRequest{
+			Messages: []Message{
+				UserMessage(FileDataPart([]byte("%PDF-1.7"), "application/pdf", "brief.pdf")),
+			},
+		})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrInvalidRequest)
+	})
+
+	t.Run("maps seed and candidate count", func(t *testing.T) {
+		t.Parallel()
+
+		seed := 42
+		req, err := p.buildRequest(&ChatRequest{
+			Messages:       []Message{UserText("hello")},
+			Seed:           &seed,
+			CandidateCount: 3,
+		})
+		require.NoError(t, err)
+		require.NotNil(t, req.Seed)
+		assert.Equal(t, 42, *req.Seed)
+		assert.Equal(t, 3, req.N)
 	})
 
 	t.Run("uses empty string content for zero parts", func(t *testing.T) {

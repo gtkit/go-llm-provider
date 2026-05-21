@@ -8,6 +8,8 @@
 
 ### Changed
 
+- README 补充 v2 相比 v1 的新增能力说明，明确多模态、结构化输出、本地推理、token counting 等新能力只在 v2 增加
+
 ### Deprecated
 
 ### Removed

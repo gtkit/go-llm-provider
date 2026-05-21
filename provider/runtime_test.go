@@ -333,6 +333,8 @@ func TestRunToolLoopParallelToolCallsPreserveMessageOrder(t *testing.T) {
 
 	var active atomic.Int32
 	var maxActive atomic.Int32
+	slowStarted := make(chan struct{})
+	fastStarted := make(chan struct{})
 
 	resp, err := RunToolLoopWithOptions(
 		t.Context(),
@@ -349,10 +351,22 @@ func TestRunToolLoopParallelToolCallsPreserveMessageOrder(t *testing.T) {
 			defer active.Add(-1)
 
 			if name == "slow" {
+				close(slowStarted)
+				select {
+				case <-fastStarted:
+				case <-time.After(time.Second):
+					return "", errors.New("fast tool did not start in parallel")
+				}
 				time.Sleep(40 * time.Millisecond)
 				return "slow-result", nil
 			}
 
+			close(fastStarted)
+			select {
+			case <-slowStarted:
+			case <-time.After(time.Second):
+				return "", errors.New("slow tool did not start in parallel")
+			}
 			time.Sleep(5 * time.Millisecond)
 			return "fast-result", nil
 		},

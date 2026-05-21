@@ -101,6 +101,69 @@ func TestAnthropicProviderChatMapsRequestAndResponse(t *testing.T) {
 	assert.NotContains(t, source, "data")
 }
 
+func TestAnthropicProviderChatMapsFileAndCacheControl(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&captured))
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id": "msg_1",
+			"type": "message",
+			"role": "assistant",
+			"model": "claude-sonnet-4-5",
+			"stop_reason": "end_turn",
+			"content": [{"type":"text","text":"read"}],
+			"usage": {"input_tokens": 11, "output_tokens": 7}
+		}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	p, err := NewAnthropicProvider(NativeProviderConfig{
+		APIKey:  "test-key",
+		BaseURL: srv.URL,
+		Model:   "claude-sonnet-4-5",
+	})
+	require.NoError(t, err)
+
+	_, err = p.Chat(t.Context(), &ChatRequest{
+		Messages: []Message{
+			UserMessage(
+				WithCacheControl(TextPart("read this document"), CacheControlEphemeral()),
+				FileDataPart([]byte("%PDF-1.7"), "application/pdf", "brief.pdf"),
+			),
+		},
+	})
+	require.NoError(t, err)
+
+	messages, ok := captured["messages"].([]any)
+	require.True(t, ok)
+	require.Len(t, messages, 1)
+	first, ok := messages[0].(map[string]any)
+	require.True(t, ok)
+	content, ok := first["content"].([]any)
+	require.True(t, ok)
+	require.Len(t, content, 2)
+
+	textPart, ok := content[0].(map[string]any)
+	require.True(t, ok)
+	cacheControl, ok := textPart["cache_control"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "ephemeral", cacheControl["type"])
+
+	docPart, ok := content[1].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "document", docPart["type"])
+	assert.Equal(t, "brief.pdf", docPart["title"])
+	source, ok := docPart["source"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "base64", source["type"])
+	assert.Equal(t, "application/pdf", source["media_type"])
+	assert.Equal(t, "JVBERi0xLjc=", source["data"])
+}
+
 func TestAnthropicProviderChatMapsToolsAndToolCalls(t *testing.T) {
 	t.Parallel()
 
@@ -273,6 +336,66 @@ func TestAnthropicProviderChatStreamMapsEvents(t *testing.T) {
 	require.ErrorIs(t, err, io.EOF)
 }
 
+func TestAnthropicProviderChatStreamMapsToolUseDeltas(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&captured))
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "event: content_block_start\n")
+		_, _ = fmt.Fprint(w, "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"get_weather\",\"input\":{}}}\n\n")
+		_, _ = fmt.Fprint(w, "event: content_block_delta\n")
+		_, _ = fmt.Fprint(w, "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"city\\\":\"}}\n\n")
+		_, _ = fmt.Fprint(w, "event: content_block_delta\n")
+		_, _ = fmt.Fprint(w, "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"Paris\\\"}\"}}\n\n")
+		_, _ = fmt.Fprint(w, "event: message_delta\n")
+		_, _ = fmt.Fprint(w, "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"}}\n\n")
+		_, _ = fmt.Fprint(w, "event: message_stop\n")
+		_, _ = fmt.Fprint(w, "data: {\"type\":\"message_stop\"}\n\n")
+	}))
+	t.Cleanup(srv.Close)
+
+	p, err := NewAnthropicProvider(NativeProviderConfig{
+		APIKey:  "test-key",
+		BaseURL: srv.URL,
+		Model:   "claude-sonnet-4-5",
+	})
+	require.NoError(t, err)
+
+	stream, err := p.ChatStream(t.Context(), &ChatRequest{
+		Messages: []Message{UserText("hi")},
+		Tools: []Tool{{
+			Function: FunctionDef{Name: "get_weather"},
+		}},
+	})
+	require.NoError(t, err)
+	defer func() { assert.NoError(t, stream.Close()) }()
+
+	first, err := stream.Recv()
+	require.NoError(t, err)
+	require.Len(t, first.ToolCalls, 1)
+	assert.Equal(t, 0, first.ToolCalls[0].Index)
+	assert.Equal(t, "toolu_1", first.ToolCalls[0].ID)
+	assert.Equal(t, "get_weather", first.ToolCalls[0].Function.Name)
+
+	second, err := stream.Recv()
+	require.NoError(t, err)
+	require.Len(t, second.ToolCalls, 1)
+	assert.Equal(t, "{\"city\":", second.ToolCalls[0].Function.Arguments)
+
+	third, err := stream.Recv()
+	require.NoError(t, err)
+	require.Len(t, third.ToolCalls, 1)
+	assert.Equal(t, "\"Paris\"}", third.ToolCalls[0].Function.Arguments)
+
+	fourth, err := stream.Recv()
+	require.NoError(t, err)
+	assert.Equal(t, "tool_calls", fourth.FinishReason)
+
+	assert.Contains(t, captured, "tools")
+}
+
 func TestAnthropicProviderErrorClassification(t *testing.T) {
 	t.Parallel()
 
@@ -374,6 +497,68 @@ func TestGeminiProviderChatMapsRequestAndResponse(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "image/png", inlineData["mime_type"])
 	assert.NotEmpty(t, inlineData["data"])
+}
+
+func TestGeminiProviderChatMapsFileAndCandidateCount(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&captured))
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"candidates": [{
+				"content": {"role":"model","parts":[{"text":"read"}]},
+				"finishReason": "STOP"
+			}],
+			"usageMetadata": {
+				"promptTokenCount": 5,
+				"candidatesTokenCount": 6,
+				"totalTokenCount": 11
+			},
+			"modelVersion": "gemini-2.5-flash"
+		}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	p, err := NewGeminiProvider(NativeProviderConfig{
+		APIKey:  "test-key",
+		BaseURL: srv.URL + "/v1beta",
+		Model:   "gemini-2.5-flash",
+	})
+	require.NoError(t, err)
+
+	seed := 7
+	_, err = p.Chat(t.Context(), &ChatRequest{
+		Messages: []Message{
+			UserMessage(
+				TextPart("read this"),
+				FileDataPart([]byte("%PDF-1.7"), "application/pdf", "brief.pdf"),
+			),
+		},
+		Seed:           &seed,
+		CandidateCount: 2,
+	})
+	require.NoError(t, err)
+
+	generation, ok := captured["generationConfig"].(map[string]any)
+	require.True(t, ok)
+	assert.InDelta(t, 2, generation["candidateCount"], 0.0001)
+	assert.InDelta(t, 7, generation["seed"], 0.0001)
+
+	contents, ok := captured["contents"].([]any)
+	require.True(t, ok)
+	require.Len(t, contents, 1)
+	first, ok := contents[0].(map[string]any)
+	require.True(t, ok)
+	parts, ok := first["parts"].([]any)
+	require.True(t, ok)
+	require.Len(t, parts, 2)
+	inlineData, ok := parts[1].(map[string]any)["inline_data"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "application/pdf", inlineData["mime_type"])
+	assert.Equal(t, "JVBERi0xLjc=", inlineData["data"])
 }
 
 func TestGeminiProviderChatMapsToolsAndToolCalls(t *testing.T) {
@@ -535,6 +720,44 @@ func TestGeminiProviderChatStreamMapsSSE(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, " world", second.Delta)
 	assert.Equal(t, "STOP", second.FinishReason)
+
+	_, err = stream.Recv()
+	require.ErrorIs(t, err, io.EOF)
+}
+
+func TestGeminiProviderChatStreamMapsToolCalls(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/v1beta/models/gemini-2.5-flash:streamGenerateContent", r.URL.Path)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"id\":\"call_1\",\"name\":\"get_weather\",\"args\":{\"city\":\"Paris\"}}}]},\"finishReason\":\"STOP\"}]}\n\n")
+	}))
+	t.Cleanup(srv.Close)
+
+	p, err := NewGeminiProvider(NativeProviderConfig{
+		APIKey:  "test-key",
+		BaseURL: srv.URL + "/v1beta",
+		Model:   "gemini-2.5-flash",
+	})
+	require.NoError(t, err)
+
+	stream, err := p.ChatStream(t.Context(), &ChatRequest{
+		Messages: []Message{UserText("hi")},
+		Tools: []Tool{{
+			Function: FunctionDef{Name: "get_weather"},
+		}},
+	})
+	require.NoError(t, err)
+	defer func() { assert.NoError(t, stream.Close()) }()
+
+	chunk, err := stream.Recv()
+	require.NoError(t, err)
+	require.Len(t, chunk.ToolCalls, 1)
+	assert.Equal(t, "call_1", chunk.ToolCalls[0].ID)
+	assert.Equal(t, "get_weather", chunk.ToolCalls[0].Function.Name)
+	assert.JSONEq(t, `{"city":"Paris"}`, chunk.ToolCalls[0].Function.Arguments)
+	assert.Equal(t, "tool_calls", chunk.FinishReason)
 
 	_, err = stream.Recv()
 	require.ErrorIs(t, err, io.EOF)

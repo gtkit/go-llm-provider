@@ -13,6 +13,8 @@ const (
 	ContentTypeText ContentType = "text"
 	// ContentTypeImageURL represents image content referenced by URL or inline data URL.
 	ContentTypeImageURL ContentType = "image_url"
+	// ContentTypeFile 表示通过 ID、URL 或内联字节引用的文件内容。
+	ContentTypeFile ContentType = "file"
 )
 
 // ImageDetail controls provider-side image fidelity hints.
@@ -29,12 +31,30 @@ const (
 
 // ContentPart is one multimodal content fragment inside a message.
 type ContentPart struct {
-	Type        ContentType
-	Text        string
-	ImageURL    string
-	ImageData   []byte
-	MIMEType    string
-	ImageDetail ImageDetail
+	Type         ContentType
+	Text         string
+	ImageURL     string
+	ImageData    []byte
+	FileURL      string
+	FileData     []byte
+	FileID       string
+	Filename     string
+	MIMEType     string
+	ImageDetail  ImageDetail
+	CacheControl *CacheControl
+}
+
+// CacheControlType 标识供应商侧的提示词缓存行为。
+type CacheControlType string
+
+const (
+	// CacheControlTypeEphemeral 请求供应商侧启用临时提示词缓存。
+	CacheControlTypeEphemeral CacheControlType = "ephemeral"
+)
+
+// CacheControl 描述内容片段的供应商侧提示词缓存提示。
+type CacheControl struct {
+	Type CacheControlType
 }
 
 // TextPart creates a text content part.
@@ -71,6 +91,44 @@ func ImageDataPart(data []byte, mimeType string) ContentPart {
 		MIMEType:    mimeType,
 		ImageDetail: ImageDetailAuto,
 	}
+}
+
+// FileDataPart 创建一个内联文件内容片段。
+func FileDataPart(data []byte, mimeType, filename string) ContentPart {
+	return ContentPart{
+		Type:     ContentTypeFile,
+		FileData: data,
+		MIMEType: mimeType,
+		Filename: filename,
+	}
+}
+
+// FileURLPart 创建一个通过 URL 引用的文件内容片段。
+func FileURLPart(url, mimeType string) ContentPart {
+	return ContentPart{
+		Type:     ContentTypeFile,
+		FileURL:  url,
+		MIMEType: mimeType,
+	}
+}
+
+// FileIDPart 创建一个通过供应商文件 ID 引用的文件内容片段。
+func FileIDPart(id string) ContentPart {
+	return ContentPart{
+		Type:   ContentTypeFile,
+		FileID: id,
+	}
+}
+
+// CacheControlEphemeral 创建一个临时提示词缓存控制提示。
+func CacheControlEphemeral() *CacheControl {
+	return &CacheControl{Type: CacheControlTypeEphemeral}
+}
+
+// WithCacheControl 返回附加了供应商侧提示词缓存控制的内容片段。
+func WithCacheControl(part ContentPart, control *CacheControl) ContentPart {
+	part.CacheControl = control
+	return part
 }
 
 // UserText creates a user message with a single text part.

@@ -6,7 +6,16 @@
 
 ### Added
 
+- 新增 `FileDataPart` / `FileURLPart` / `FileIDPart` 与 `CacheControlEphemeral`，支持文件类多模态内容与 Anthropic prompt caching
+- 新增 `ChatRequest.Seed` / `ChatRequest.CandidateCount`，支持确定性采样与多候选生成
+- 新增 Claude / Gemini 原生流式 Tool Use 增量映射，调用方可通过 `StreamChunk.ToolCalls` 读取工具调用片段
+- 新增 `TokenCounter` / `CountTokens` / `TokenCountResponse` 与 Gemini 原生 token counting 支持
+- 新增 Groq / Mistral / Cohere OpenAI 兼容预设
+- 新增 `NewAzureOpenAIProvider` 与 `NewBedrockOpenAIProvider`，用于需要资源或 region 信息的企业平台入口
+
 ### Changed
+
+- README 补充 v2 相比 v1 的新增能力说明，并更新平台矩阵、多模态文件、prompt caching、token counting、Azure OpenAI 与 Bedrock 用法
 
 ### Deprecated
 

@@ -28,14 +28,16 @@ type anthropicMessage struct {
 }
 
 type anthropicContentPart struct {
-	Type      string                `json:"type"`
-	Text      string                `json:"text,omitempty"`
-	Source    *anthropicImageSource `json:"source,omitempty"`
-	ID        string                `json:"id,omitempty"`
-	Name      string                `json:"name,omitempty"`
-	Input     any                   `json:"input,omitempty"`
-	ToolUseID string                `json:"tool_use_id,omitempty"`
-	Content   any                   `json:"content,omitempty"`
+	Type         string                 `json:"type"`
+	Text         string                 `json:"text,omitempty"`
+	Title        string                 `json:"title,omitempty"`
+	Source       *anthropicImageSource  `json:"source,omitempty"`
+	ID           string                 `json:"id,omitempty"`
+	Name         string                 `json:"name,omitempty"`
+	Input        any                    `json:"input,omitempty"`
+	ToolUseID    string                 `json:"tool_use_id,omitempty"`
+	Content      any                    `json:"content,omitempty"`
+	CacheControl *anthropicCacheControl `json:"cache_control,omitempty"`
 }
 
 type anthropicImageSource struct {
@@ -43,6 +45,11 @@ type anthropicImageSource struct {
 	MediaType string `json:"media_type,omitempty"`
 	Data      string `json:"data,omitempty"`
 	URL       string `json:"url,omitempty"`
+	FileID    string `json:"file_id,omitempty"`
+}
+
+type anthropicCacheControl struct {
+	Type string `json:"type"`
 }
 
 type anthropicResponse struct {
@@ -73,16 +80,19 @@ type anthropicToolChoice struct {
 }
 
 type anthropicStreamEvent struct {
-	Type    string                 `json:"type"`
-	Delta   anthropicStreamDelta   `json:"delta"`
-	Message anthropicStreamMessage `json:"message"`
-	Error   anthropicErrorBody     `json:"error"`
+	Type         string                 `json:"type"`
+	Index        int                    `json:"index"`
+	ContentBlock anthropicContentPart   `json:"content_block"`
+	Delta        anthropicStreamDelta   `json:"delta"`
+	Message      anthropicStreamMessage `json:"message"`
+	Error        anthropicErrorBody     `json:"error"`
 }
 
 type anthropicStreamDelta struct {
-	Type       string `json:"type"`
-	Text       string `json:"text"`
-	StopReason string `json:"stop_reason"`
+	Type        string `json:"type"`
+	Text        string `json:"text"`
+	PartialJSON string `json:"partial_json"`
+	StopReason  string `json:"stop_reason"`
 }
 
 type anthropicStreamMessage struct {
@@ -108,13 +118,19 @@ func anthropicContentParts(parts []ContentPart) ([]anthropicContentPart, error) 
 	for _, part := range parts {
 		switch part.Type {
 		case ContentTypeText:
-			out = append(out, anthropicContentPart{Type: "text", Text: part.Text})
+			out = append(out, withAnthropicCacheControl(anthropicContentPart{Type: "text", Text: part.Text}, part.CacheControl))
 		case ContentTypeImageURL:
 			image, err := anthropicImagePart(part)
 			if err != nil {
 				return nil, err
 			}
-			out = append(out, image)
+			out = append(out, withAnthropicCacheControl(image, part.CacheControl))
+		case ContentTypeFile:
+			file, err := anthropicFilePart(part)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, withAnthropicCacheControl(file, part.CacheControl))
 		default:
 			return nil, fmt.Errorf("%w: unsupported anthropic content type %q", ErrInvalidRequest, part.Type)
 		}
@@ -191,6 +207,53 @@ func anthropicImagePart(part ContentPart) (anthropicContentPart, error) {
 			URL:  part.ImageURL,
 		},
 	}, nil
+}
+
+func anthropicFilePart(part ContentPart) (anthropicContentPart, error) {
+	switch {
+	case len(part.FileData) > 0:
+		if part.MIMEType == "" {
+			return anthropicContentPart{}, fmt.Errorf("%w: file MIME type is required", ErrInvalidRequest)
+		}
+		return anthropicContentPart{
+			Type:  "document",
+			Title: part.Filename,
+			Source: &anthropicImageSource{
+				Type:      "base64",
+				MediaType: part.MIMEType,
+				Data:      base64.StdEncoding.EncodeToString(part.FileData),
+			},
+		}, nil
+	case part.FileURL != "":
+		return anthropicContentPart{
+			Type:  "document",
+			Title: part.Filename,
+			Source: &anthropicImageSource{
+				Type:      "url",
+				URL:       part.FileURL,
+				MediaType: part.MIMEType,
+			},
+		}, nil
+	case part.FileID != "":
+		return anthropicContentPart{
+			Type:  "document",
+			Title: part.Filename,
+			Source: &anthropicImageSource{
+				Type:   "file",
+				FileID: part.FileID,
+			},
+		}, nil
+	default:
+		return anthropicContentPart{}, fmt.Errorf("%w: file source is required", ErrInvalidRequest)
+	}
+}
+
+func withAnthropicCacheControl(part anthropicContentPart, control *CacheControl) anthropicContentPart {
+	if control == nil {
+		return part
+	}
+	part.CacheControl = &anthropicCacheControl{Type: string(control.Type)}
+	return part
 }
 
 func anthropicRole(role Role) string {

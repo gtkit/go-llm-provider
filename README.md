@@ -4,6 +4,22 @@ Go 语言统一多模型 LLM 调用库。一套代码接入 OpenAI 以及 DeepSe
 
 > 版本说明：仓库根目录当前维护 `v1` 代码线；破坏性升级后的 `v2` 子模块位于 [`./v2/`](/Users/xiaozhaofu/go/src/my-gtkit-package/go-llm-provider/v2/README.md)。
 
+## v2 比 v1 多了什么
+
+新项目建议直接使用 `github.com/gtkit/go-llm-provider/v2`。相比 v1，v2 额外提供：
+
+- 多模态消息：`Message.Content` 升级为 `[]ContentPart`，支持文本、图片 URL、图片 bytes、文件 bytes/URL/ID。
+- Thinking / Reasoning：`ChatRequest.Thinking`、`ChatResponse.Reasoning`、`StreamChunk.ReasoningDelta`、`Usage.ReasoningTokens`。
+- Structured Output：`ResponseFormat`、`JSONObjectFormat`、`JSONSchemaFormatStrict` 与 `GenerateJSON` 类型化解码助手。
+- 确定性与多候选：`Seed`、`CandidateCount`。
+- Anthropic prompt caching：`WithCacheControl(..., CacheControlEphemeral())`。
+- Gemini 原生 token counting：`TokenCounter` / `CountTokens`。
+- 本地与企业入口：`ProviderOllama`、`NewAzureOpenAIProvider`、`NewBedrockOpenAIProvider`。
+- 更多 OpenAI 兼容 preset：xAI、Groq、Mistral、Cohere。
+- 更完整的横切能力：`ResponseMetadata`、`WithRetry`、`NewFallbackProvider`、`WithObservability`。
+
+v1 继续保留兼容维护；多模态、结构化输出、本地推理、token counting 等新能力只在 v2 增加。
+
 ## 为什么做这个
 
 国内主流大模型平台现在都兼容了 OpenAI Chat Completions 协议，本质上只是 BaseURL 和 APIKey 的差异。但每次接入新平台还是要翻文档查地址、记模型名、写一堆重复的初始化代码。

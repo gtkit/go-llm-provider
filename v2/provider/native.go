@@ -192,9 +192,6 @@ func (p *anthropicProvider) buildRequest(req *ChatRequest, stream bool) (anthrop
 	if len(req.Messages) == 0 {
 		return anthropicRequest{}, "", fmt.Errorf("%w: messages are required", ErrInvalidRequest)
 	}
-	if stream && (len(req.Tools) > 0 || req.ToolChoice != nil || req.ParallelToolCalls != nil) {
-		return anthropicRequest{}, "", fmt.Errorf("%w: anthropic native streaming tool use is not implemented", ErrInvalidRequest)
-	}
 	toolChoice, err := buildAnthropicToolChoice(req)
 	if err != nil {
 		return anthropicRequest{}, "", err
@@ -227,6 +224,12 @@ func (p *anthropicProvider) buildRequest(req *ChatRequest, stream bool) (anthrop
 	}
 	if len(req.Stop) > 0 {
 		out.StopSequences = append([]string(nil), req.Stop...)
+	}
+	if req.Seed != nil {
+		return anthropicRequest{}, "", fmt.Errorf("%w: anthropic does not support seed", ErrInvalidRequest)
+	}
+	if req.CandidateCount > 0 {
+		return anthropicRequest{}, "", fmt.Errorf("%w: anthropic does not support candidate count", ErrInvalidRequest)
 	}
 
 	for _, msg := range req.Messages {
@@ -301,7 +304,7 @@ func (p *geminiProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRespo
 		return nil, ErrNilChatRequest
 	}
 
-	nativeReq, model, err := p.buildRequest(req, false)
+	nativeReq, model, err := p.buildRequest(req)
 	if err != nil {
 		return nil, err
 	}
@@ -347,7 +350,7 @@ func (p *geminiProvider) ChatStream(ctx context.Context, req *ChatRequest) (*Str
 		return nil, ErrNilChatRequest
 	}
 
-	nativeReq, model, err := p.buildRequest(req, true)
+	nativeReq, model, err := p.buildRequest(req)
 	if err != nil {
 		return nil, err
 	}
@@ -377,6 +380,46 @@ func (p *geminiProvider) ChatStream(ctx context.Context, req *ChatRequest) (*Str
 	}, reader.Close), nil
 }
 
+func (p *geminiProvider) CountTokens(ctx context.Context, req *ChatRequest) (*TokenCountResponse, error) {
+	if p == nil {
+		return nil, ErrNilProvider
+	}
+	if req == nil {
+		return nil, ErrNilChatRequest
+	}
+	if len(req.Messages) == 0 {
+		return nil, fmt.Errorf("%w: messages are required", ErrInvalidRequest)
+	}
+
+	model := firstString(req.Model, p.model)
+	out := geminiRequest{}
+	if err := fillGeminiContents(&out, req.Messages); err != nil {
+		return nil, err
+	}
+	nativeReq := geminiCountTokensRequest{
+		Contents:          out.Contents,
+		SystemInstruction: out.SystemInstruction,
+	}
+
+	resp, metadata, err := doNativeJSON[geminiCountTokensResponse](ctx, p.httpClient, nativeHTTPRequest{
+		Method:      http.MethodPost,
+		URL:         p.modelURL(model, "countTokens"),
+		Body:        nativeReq,
+		Provider:    ProviderGemini,
+		Model:       model,
+		SetHeaders:  p.setHeaders,
+		DecodeError: decodeGeminiError,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &TokenCountResponse{
+		Model:       model,
+		TotalTokens: resp.TotalTokens,
+		Metadata:    metadata,
+	}, nil
+}
+
 func (p *geminiProvider) setHeaders(req *http.Request) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-goog-api-key", p.apiKey)
@@ -386,12 +429,9 @@ func (p *geminiProvider) modelURL(model, action string) string {
 	return p.baseURL + "/models/" + url.PathEscape(model) + ":" + action
 }
 
-func (p *geminiProvider) buildRequest(req *ChatRequest, stream bool) (geminiRequest, string, error) {
+func (p *geminiProvider) buildRequest(req *ChatRequest) (geminiRequest, string, error) {
 	if len(req.Messages) == 0 {
 		return geminiRequest{}, "", fmt.Errorf("%w: messages are required", ErrInvalidRequest)
-	}
-	if err := validateGeminiRequest(req, stream); err != nil {
-		return geminiRequest{}, "", err
 	}
 	generation, err := applyGeminiResponseFormat(geminiGeneration(req), req.ResponseFormat)
 	if err != nil {
@@ -632,12 +672,16 @@ func geminiStreamChunk(data []byte) (*StreamChunk, bool, error) {
 		return nil, false, err
 	}
 	if len(toolCalls) > 0 {
-		return nil, false, fmt.Errorf("%w: gemini native streaming tool use is not implemented", ErrInvalidRequest)
+		finishReason = "tool_calls"
 	}
 	if content == "" && finishReason == "" {
 		return nil, false, errSkipNativeStreamEvent
 	}
-	return &StreamChunk{Delta: content, FinishReason: finishReason}, true, nil
+	return &StreamChunk{
+		Delta:        content,
+		FinishReason: finishReason,
+		ToolCalls:    toolCallDeltas(toolCalls),
+	}, true, nil
 }
 
 func anthropicStreamChunk(data []byte) (*StreamChunk, bool, error) {
@@ -648,13 +692,35 @@ func anthropicStreamChunk(data []byte) (*StreamChunk, bool, error) {
 	switch event.Type {
 	case "message_start":
 		return &StreamChunk{}, true, nil
+	case "content_block_start":
+		if event.ContentBlock.Type == "tool_use" {
+			return &StreamChunk{ToolCalls: []ToolCallDelta{{
+				Index: event.Index,
+				ID:    event.ContentBlock.ID,
+				Function: FunctionCallDelta{
+					Name: event.ContentBlock.Name,
+				},
+			}}}, true, nil
+		}
 	case "content_block_delta":
 		if event.Delta.Type == "text_delta" && event.Delta.Text != "" {
 			return &StreamChunk{Delta: event.Delta.Text}, true, nil
 		}
+		if event.Delta.Type == "input_json_delta" && event.Delta.PartialJSON != "" {
+			return &StreamChunk{ToolCalls: []ToolCallDelta{{
+				Index: event.Index,
+				Function: FunctionCallDelta{
+					Arguments: event.Delta.PartialJSON,
+				},
+			}}}, true, nil
+		}
 	case "message_delta":
 		if event.Delta.StopReason != "" {
-			return &StreamChunk{FinishReason: event.Delta.StopReason}, true, nil
+			finishReason := event.Delta.StopReason
+			if finishReason == "tool_use" {
+				finishReason = "tool_calls"
+			}
+			return &StreamChunk{FinishReason: finishReason}, true, nil
 		}
 	case "message_stop":
 		return nil, false, io.EOF
@@ -662,4 +728,22 @@ func anthropicStreamChunk(data []byte) (*StreamChunk, bool, error) {
 		return nil, false, anthropicStreamProviderError(event)
 	}
 	return nil, false, nil
+}
+
+func toolCallDeltas(calls []ToolCall) []ToolCallDelta {
+	if len(calls) == 0 {
+		return nil
+	}
+	out := make([]ToolCallDelta, 0, len(calls))
+	for i, call := range calls {
+		out = append(out, ToolCallDelta{
+			Index: i,
+			ID:    call.ID,
+			Function: FunctionCallDelta{
+				Name:      call.Function.Name,
+				Arguments: call.Function.Arguments,
+			},
+		})
+	}
+	return out
 }

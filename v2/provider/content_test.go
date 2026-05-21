@@ -55,6 +55,53 @@ func TestImageDataPart(t *testing.T) {
 	assert.Equal(t, ImageDetailAuto, part.ImageDetail)
 }
 
+func TestFileDataPart(t *testing.T) {
+	t.Parallel()
+
+	data := []byte("%PDF-1.7")
+	part := FileDataPart(data, "application/pdf", "brief.pdf")
+
+	assert.Equal(t, ContentTypeFile, part.Type)
+	assert.Equal(t, data, part.FileData)
+	assert.Equal(t, "application/pdf", part.MIMEType)
+	assert.Equal(t, "brief.pdf", part.Filename)
+	assert.Empty(t, part.FileURL)
+	assert.Empty(t, part.FileID)
+}
+
+func TestFileURLPart(t *testing.T) {
+	t.Parallel()
+
+	part := FileURLPart("gs://bucket/brief.pdf", "application/pdf")
+
+	assert.Equal(t, ContentTypeFile, part.Type)
+	assert.Equal(t, "gs://bucket/brief.pdf", part.FileURL)
+	assert.Equal(t, "application/pdf", part.MIMEType)
+	assert.Nil(t, part.FileData)
+	assert.Empty(t, part.FileID)
+}
+
+func TestFileIDPart(t *testing.T) {
+	t.Parallel()
+
+	part := FileIDPart("file_123")
+
+	assert.Equal(t, ContentTypeFile, part.Type)
+	assert.Equal(t, "file_123", part.FileID)
+	assert.Empty(t, part.FileURL)
+	assert.Nil(t, part.FileData)
+}
+
+func TestWithCacheControl(t *testing.T) {
+	t.Parallel()
+
+	part := WithCacheControl(TextPart("expensive context"), CacheControlEphemeral())
+
+	assert.Equal(t, ContentTypeText, part.Type)
+	require.NotNil(t, part.CacheControl)
+	assert.Equal(t, CacheControlTypeEphemeral, part.CacheControl.Type)
+}
+
 func TestContentPartPreferredImageSource(t *testing.T) {
 	t.Parallel()
 

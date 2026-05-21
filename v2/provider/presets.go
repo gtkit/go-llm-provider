@@ -198,6 +198,54 @@ var presetCatalog = map[ProviderName]Preset{
 			},
 		},
 	},
+	ProviderGroq: {
+		BaseURL:      "https://api.groq.com/openai/v1",
+		DefaultModel: "llama-3.3-70b-versatile",
+		Capabilities: ModelCapabilities{
+			Provider:  ProviderGroq,
+			ChatModel: "llama-3.3-70b-versatile",
+			Capabilities: []Capability{
+				CapabilityChat,
+				CapabilityStreaming,
+				CapabilityTools,
+				CapabilityStructuredOutput,
+			},
+		},
+	},
+	ProviderMistral: {
+		BaseURL:        "https://api.mistral.ai/v1",
+		DefaultModel:   "mistral-large-latest",
+		EmbeddingModel: "mistral-embed",
+		Capabilities: ModelCapabilities{
+			Provider:       ProviderMistral,
+			ChatModel:      "mistral-large-latest",
+			EmbeddingModel: "mistral-embed",
+			Capabilities: []Capability{
+				CapabilityChat,
+				CapabilityStreaming,
+				CapabilityTools,
+				CapabilityStructuredOutput,
+				CapabilityEmbedding,
+			},
+		},
+	},
+	ProviderCohere: {
+		BaseURL:        "https://api.cohere.ai/compatibility/v1",
+		DefaultModel:   "command-a-03-2025",
+		EmbeddingModel: "embed-v4.0",
+		Capabilities: ModelCapabilities{
+			Provider:       ProviderCohere,
+			ChatModel:      "command-a-03-2025",
+			EmbeddingModel: "embed-v4.0",
+			Capabilities: []Capability{
+				CapabilityChat,
+				CapabilityStreaming,
+				CapabilityTools,
+				CapabilityStructuredOutput,
+				CapabilityEmbedding,
+			},
+		},
+	},
 }
 
 // Presets 保留旧版导出变量以兼容既有调用方。
