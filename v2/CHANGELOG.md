@@ -6,6 +6,20 @@
 
 ### Added
 
+### Changed
+
+### Deprecated
+
+### Removed
+
+### Fixed
+
+### Security
+
+## [2.4.0] - 2026-05-21
+
+### Added
+
 - 新增 `FileDataPart` / `FileURLPart` / `FileIDPart` 与 `CacheControlEphemeral`，支持文件类多模态内容与 Anthropic prompt caching
 - 新增 `ChatRequest.Seed` / `ChatRequest.CandidateCount`，支持确定性采样与多候选生成
 - 新增 Claude / Gemini 原生流式 Tool Use 增量映射，调用方可通过 `StreamChunk.ToolCalls` 读取工具调用片段
@@ -16,14 +30,6 @@
 ### Changed
 
 - README 补充 v2 相比 v1 的新增能力说明，并更新平台矩阵、多模态文件、prompt caching、token counting、Azure OpenAI 与 Bedrock 用法
-
-### Deprecated
-
-### Removed
-
-### Fixed
-
-### Security
 
 ## [2.3.0] - 2026-05-15
 
