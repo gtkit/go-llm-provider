@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gtkit/json"
+	"github.com/gtkit/json/v2"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

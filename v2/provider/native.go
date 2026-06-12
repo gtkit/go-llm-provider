@@ -11,7 +11,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/gtkit/json"
+	"github.com/gtkit/json/v2"
 )
 
 var errSkipNativeStreamEvent = errors.New("skip native stream event")
@@ -591,7 +591,7 @@ func (r *sseReader) Next() ([]byte, error) {
 			if raw == "" || raw == "[DONE]" {
 				return nil, io.EOF
 			}
-			var valid json.RawMessage
+			var valid any
 			if err := json.Unmarshal([]byte(raw), &valid); err != nil {
 				data.Reset()
 				continue

@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/gtkit/json"
+	"github.com/gtkit/json/v2"
 
 	"github.com/gtkit/go-llm-provider/provider"
 )

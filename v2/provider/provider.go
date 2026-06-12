@@ -19,7 +19,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gtkit/json"
+	"github.com/gtkit/json/v2"
 
 	openai "github.com/sashabaranov/go-openai"
 )

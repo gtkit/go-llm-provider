@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/gtkit/json"
+	"github.com/gtkit/json/v2"
 )
 
 // StructuredValidator validates decoded structured output.

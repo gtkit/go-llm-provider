@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/gtkit/go-llm-provider/v2/provider"
-	"github.com/gtkit/json"
+	"github.com/gtkit/json/v2"
 )
 
 type citySummary struct {

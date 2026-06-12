@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/gtkit/json"
+	"github.com/gtkit/json/v2"
 )
 
 const (

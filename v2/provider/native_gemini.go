@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/gtkit/json"
+	"github.com/gtkit/json/v2"
 )
 
 type geminiRequest struct {

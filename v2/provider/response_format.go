@@ -3,7 +3,7 @@ package provider
 import (
 	"fmt"
 
-	"github.com/gtkit/json"
+	"github.com/gtkit/json/v2"
 )
 
 // ResponseFormatType selects the chat completion output format.
