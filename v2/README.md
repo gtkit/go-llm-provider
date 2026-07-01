@@ -339,6 +339,166 @@ ollama, err := provider.NewOllamaProvider(provider.OllamaProviderConfig{
 
 `NewProviderFromPreset(provider.ProviderOllama, "", "llama3.2")` 也可以创建本地 provider；`QuickRegistry` 仍按 API key 注册云平台，空 key 会跳过 Ollama。
 
+### 本地 LLM 接入（Ollama / vLLM / LM Studio / LocalAI / llama.cpp）
+
+本地模型有两条接入路径，按你跑的本地服务**暴露的协议**选择即可，业务代码拿到的都是统一的 `provider.Provider`：
+
+| 本地服务 | 暴露协议 | 推荐接入方式 | BaseURL（默认） |
+|---------|---------|-------------|----------------|
+| Ollama | 原生 `/api/chat` | `NewOllamaProvider` / `ProviderOllama` 预设 | `http://localhost:11434` |
+| Ollama | OpenAI 兼容 `/v1` | `NewProvider`（自定义 BaseURL） | `http://localhost:11434/v1` |
+| vLLM | OpenAI 兼容 `/v1` | `NewProvider` | `http://localhost:8000/v1` |
+| LM Studio | OpenAI 兼容 `/v1` | `NewProvider` | `http://localhost:1234/v1` |
+| LocalAI | OpenAI 兼容 `/v1` | `NewProvider` | `http://localhost:8080/v1` |
+| llama.cpp（`llama-server`） | OpenAI 兼容 `/v1` | `NewProvider` | `http://localhost:8080/v1` |
+
+> 经验法则：服务文档里出现 `/v1/chat/completions` 就走**路径 B**（OpenAI 兼容）；只有 Ollama 的原生 `/api/chat` 走**路径 A**。两条路径功能等价，原生路径少一层兼容层，OpenAI 兼容路径覆盖面更广。
+
+#### 路径 A：原生 Ollama
+
+```go
+// Ollama 原生 /api/chat，无需 API key；Model 必须显式指定（取决于你 ollama pull 了哪些模型）。
+ollama, err := provider.NewOllamaProvider(provider.OllamaProviderConfig{
+    BaseURL: "http://localhost:11434", // 可省略，默认即此值
+    Model:   "llama3.2",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+// 本地推理可能较慢，超时交给 context 控制（本库刻意不设 http.Client.Timeout）。
+ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+defer cancel()
+
+answer, err := provider.SimpleChat(ctx, ollama, "用一句话解释什么是向量数据库")
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(answer)
+```
+
+#### 路径 B：OpenAI 兼容服务（vLLM / LM Studio / LocalAI / llama.cpp / Ollama 的 /v1）
+
+任何兼容 OpenAI Chat Completions 协议的本地服务，都用 `NewProvider` + 自定义 `BaseURL` 接入，**不需要为它单独写 preset**：
+
+```go
+p, err := provider.NewProvider(provider.ProviderConfig{
+    Name:    "local-vllm",                    // 自定义名称，仅用于 Registry 区分与日志，不影响请求
+    BaseURL: "http://localhost:8000/v1",      // 指向本地服务的 OpenAI 兼容端点，注意通常要带 /v1
+    APIKey:  "not-needed",                    // 多数本地服务不校验 key，但本库要求非空，随便填一个占位即可
+    Model:   "Qwen2.5-72B-Instruct",          // 你实际部署/加载的模型名，必须和服务端一致
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+defer cancel()
+
+resp, err := p.Chat(ctx, &provider.ChatRequest{
+    Messages: []provider.Message{
+        provider.SystemText("你是一个简洁的中文助手"),
+        provider.UserText("用一句话介绍 Go 的 goroutine"),
+    },
+})
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(resp.Content)
+fmt.Println(resp.Usage.TotalTokens) // 本地服务若不返回 usage，这里可能为 0
+```
+
+各服务的差异只在 `BaseURL`、`APIKey`、`Model` 三个字段：
+
+```go
+// LM Studio：本地加载模型后开启 "Local Server"，端点默认 1234
+lmStudio := provider.ProviderConfig{
+    Name:    "lmstudio",
+    BaseURL: "http://localhost:1234/v1",
+    APIKey:  "lm-studio",                     // 占位即可
+    Model:   "qwen2.5-7b-instruct",           // 用 LM Studio 里显示的模型标识
+}
+
+// LocalAI：端点默认 8080
+localAI := provider.ProviderConfig{
+    Name:    "localai",
+    BaseURL: "http://localhost:8080/v1",
+    APIKey:  "localai",
+    Model:   "gpt-4",                         // LocalAI 用别名映射到本地模型文件
+}
+
+// llama.cpp 自带的 llama-server：端点默认 8080
+llamaCpp := provider.ProviderConfig{
+    Name:    "llamacpp",
+    BaseURL: "http://localhost:8080/v1",
+    APIKey:  "no-key",
+    Model:   "default",                       // llama-server 只加载一个模型，名称随意
+}
+
+// Ollama 也可以走它的 OpenAI 兼容端点（注意比原生多了 /v1）
+ollamaCompat := provider.ProviderConfig{
+    Name:    "ollama-openai",
+    BaseURL: "http://localhost:11434/v1",
+    APIKey:  "ollama",
+    Model:   "llama3.2",
+}
+```
+
+#### 流式与自定义 HTTP client
+
+本地服务同样支持流式；超时仍由 `context` 控制：
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+defer cancel()
+
+stream, err := p.ChatStream(ctx, &provider.ChatRequest{
+    Messages: []provider.Message{provider.UserText("写一首关于秋天的短诗")},
+})
+if err != nil {
+    log.Fatal(err)
+}
+defer func() { _ = stream.Close() }()
+
+for {
+    chunk, err := stream.Recv()
+    if errors.Is(err, io.EOF) {
+        break // 流正常结束
+    }
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Print(chunk.Delta) // 增量文本，逐段打印
+}
+```
+
+需要为局域网内的远程主机调长拨号超时、配置代理或复用连接池时，注入自定义 `HTTPClient`（实现 `provider.HTTPDoer` 接口，`*http.Client` 即满足）：
+
+```go
+p, err := provider.NewProvider(provider.ProviderConfig{
+    Name:    "remote-vllm",
+    BaseURL: "http://192.168.1.100:8000/v1", // 局域网内另一台推理机
+    APIKey:  "no-key",
+    Model:   "Qwen2.5-72B-Instruct",
+    HTTPClient: &http.Client{
+        // 注意：不要在这里设 Timeout（会截断长响应），整体超时用 context 控制；
+        // 这里只调传输层参数。
+        Transport: &http.Transport{
+            MaxIdleConnsPerHost: 4,
+        },
+    },
+})
+```
+
+#### 注意事项
+
+- **`Model` 必须和服务端一致**：本地服务不会像云平台那样有"默认模型"，填错模型名通常直接报 404 / model not found。
+- **`APIKey` 不能留空**：本库构造时要求非空，本地服务多数不校验，填任意占位字符串即可。
+- **超时用 `context`**：本库刻意不设 `http.Client.Timeout`，避免截断本地大模型的慢响应；请求级超时一律用 `context.WithTimeout`。
+- **能力差异**：本地模型对 Tool Use、结构化输出、Vision 的支持取决于模型与服务实现，不要假设和云平台一致；不支持时可能返回错误或忽略相关字段。
+- **`Usage` 可能为 0**：部分本地服务不回传 token 统计，`resp.Usage` 为空属正常。
+- **横切能力照常可用**：`WithRetry`、`NewFallbackProvider`、`WithObservability` 对本地 provider 一视同仁，可把本地模型作为云模型的 fallback，或反之。
+
 ## 调用方式
 
 ### 非流式对话
@@ -679,6 +839,35 @@ if err != nil {
 fmt.Println(result.City, resp.Usage.TotalTokens)
 ```
 
+#### 从 Go 类型自动生成 schema
+
+不想手写 `ParamSchema` 时，可让库通过反射从目标类型派生 json_schema，避免 schema 与结构体不一致：
+
+```go
+type CitySummary struct {
+    City    string `json:"city"`
+    Summary string `json:"summary"`
+    Temp    int    `json:"temp,omitempty"` // omitempty / 指针字段不进 required
+    Color   string `json:"color" jsonschema:"enum=red|green|blue"`
+}
+
+// 直接调用并解码（请求未设置 ResponseFormat 时自动注入派生 schema）
+result, resp, err := provider.GenerateJSONWithSchema[CitySummary](ctx, p, &provider.ChatRequest{
+    Messages: []provider.Message{provider.UserText("描述一个城市")},
+})
+
+// 或只生成 schema / ResponseFormat 自行使用
+schema, err := provider.SchemaFromType[CitySummary]()        // 返回 ParamSchema
+format, err := provider.JSONSchemaFormatFor[CitySummary]("") // 返回 *ResponseFormat
+```
+
+覆盖范围为 OpenAI 兼容结构化输出的常用子集：结构体、string / bool / 整型 / 浮点、切片数组、`map[string]T`、`time.Time`、匿名嵌入字段扁平化；读取 `json` tag 决定字段名与可选性，`jsonschema:"enum=..."` 为 string 字段生成枚举。`interface{}`/`any`、channel、函数、非 string 键的 map、自引用类型会返回错误而非静默降级，需在构造请求前显式处理。`GenerateJSONWithSchema` 也有 `...WithSchemaValidator` 变体，在解码后运行业务校验。
+
+两点取舍需注意：
+
+- **`map[string]T` 不展开值类型**：受限于 `ParamSchema.AdditionalProperties` 为 `*bool`，map 仅生成 `{"type":"object","additionalProperties":true}`，值类型 `T` 不写入 schema；但 `T` 仍会走统一的受支持校验，`map[string]chan int`、`map[string]any` 这类仍会返回错误，不会被绕过。
+- **默认非 strict**：`JSONSchemaFormatFor` / `GenerateJSONWithSchema` 生成的是非 strict 的 `json_schema`。OpenAI strict 模式要求每个属性都进 `required` 并以 nullable union 表达可选字段，而 `ParamSchema.Type` 为单一字符串无法表达 union，故默认非 strict。若你的类型所有字段都必填且需要 strict，用 `provider.JSONSchemaFormatStrict(name, schema)` 组合 `SchemaFromType[T]()` 的结果。
+
 ### Token counting
 
 支持原生 token counting 的 provider 会实现 `TokenCounter`。当前 Gemini 原生 provider 支持 `CountTokens`；其他 provider 会返回 `ErrUnsupportedCapability`。
@@ -730,7 +919,7 @@ fmt.Println(resp.Content) // "北京现在 28°C，天气晴朗。"
 
 参数说明：
 
-- `maxRounds`：最大循环次数（推荐 5-10），防止模型无限调用工具
+- `maxRounds`：最大循环次数（推荐显式设为 5-10；`<=0` 时使用 20 轮安全上限），防止模型无限调用工具
 - `handler`：工具执行函数，接收函数名和 JSON 参数，返回结果字符串
 - 如果 handler 返回 error，`RunToolLoop` 默认会把**脱敏后的** JSON 错误结果回传给模型，让模型有机会纠正，但不会默认暴露原始内部错误细节
 
@@ -751,6 +940,11 @@ resp, err := provider.RunToolLoopWithOptions(
                 "mode":  "custom",
             })
         },
+        // 工具 handler 出错时按策略重试，仍区分 context 取消（不重试、直接上抛）
+        ToolRetry: provider.ToolRetryOptions{
+            MaxAttempts: 3,
+            Backoff:     provider.ExponentialBackoff(100*time.Millisecond, time.Second),
+        },
     },
 )
 ```
@@ -760,6 +954,8 @@ resp, err := provider.RunToolLoopWithOptions(
 - `RunToolLoop` 等价于使用兼容默认 options 调用 `RunToolLoopWithOptions`
 - `ParallelToolCalls` 默认关闭
 - `ToolErrorEncoder` 默认使用安全脱敏编码器
+- `ToolRetry` 零值表示不重试（仅执行一次），保持既有行为；`MaxAttempts > 1` 时按 `Backoff` 等待并重试，`ShouldRetry` 默认重试所有非 context 取消错误
+- `AccumulateUsage` 默认关闭，返回最后一轮的 `Usage`（既有行为）；设为 `true` 后，返回响应的 `Usage` 为**所有轮次**的 token 消耗累加值，便于多轮工具循环的成本统计（某轮 provider 未返回 usage 则按 0 计入）
 
 ### 方式二：手动管理多轮对话
 
@@ -1199,6 +1395,16 @@ resp, err := retrying.Chat(ctx, req)
 
 `WithRetry` 会同时装饰 `Chat` 与 `ChatStream` 创建阶段，默认只重试 `ProviderError.Retryable == true` 的错误。需要自定义策略时设置 `RetryOptions.ShouldRetry`。
 
+退避策略：
+
+- `ConstantBackoff(d)`：固定间隔。
+- `ExponentialBackoff(base, max)`：指数退避，封顶 `max`。
+- `ExponentialBackoffWithJitter(base, max)`：在上界内做**全抖动**（结果均匀分布于 `[0, 上界]`），避免大量并发请求同步重试造成惊群，生产环境推荐。
+
+`Retry-After`：当供应商在 429 / 503 响应里返回 `Retry-After` 头时，重试会**优先采用它建议的等待时长**，否则回退到上面的退避函数。该值通过 `ProviderError.RetryAfter` 暴露。
+
+> 限制：`Retry-After` 仅对**原生 HTTP provider**（Claude / Gemini / Ollama）生效。OpenAI 兼容路径复用 `sashabaranov/go-openai`，其错误类型不暴露响应头，无法读取 `Retry-After`，这类 provider 会回退到退避策略（建议配 `ExponentialBackoffWithJitter`）。
+
 ### 观测 Hook（日志 / 指标 / Trace）
 
 `WithObservability` 提供零外部依赖的观测 hook，不绑定 `slog`、Prometheus 或 OpenTelemetry。每次 `Chat`、`ChatStream` 创建、`Embed` 完成后，库会向 `OnEvent` 发送一个 `ObserveEvent`，其中包含 operation、provider、model、duration、usage、metadata、request id 和错误分类。
@@ -1237,6 +1443,8 @@ observedEmb := provider.WithEmbedderObservability(emb, provider.ObserveOptions{
 ```
 
 `OnEvent` 在调用 goroutine 内同步执行，生产环境里应保持快速、非阻塞；记录日志或指标时不要输出 API Key、prompt 原文、响应正文等敏感内容。`ChatStream` 当前只观测流创建结果，不跟踪每个 chunk 的生命周期。
+
+本库自身不会向调用方回显 API Key（响应头按白名单过滤、请求不含密钥）。如需在自己的日志中保留密钥的可追溯性又不暴露完整值，可用 `provider.MaskSecret`（如 `MaskSecret("sk-1234...wxyz")` -> `"sk-1****wxyz"`）。
 
 ### Fallback Provider
 

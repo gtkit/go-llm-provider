@@ -9,7 +9,9 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gtkit/json/v2"
 )
@@ -526,9 +528,10 @@ func buildNativeHTTPRequest(ctx context.Context, cfg nativeHTTPRequest) (*http.R
 }
 
 func decodeNativeHTTPError(provider ProviderName, resp *http.Response, decode func(ProviderName, int, string, []byte) error) error {
+	retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"))
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxNativeErrorBody))
 	if err != nil {
-		return &ProviderError{
+		return withRetryAfter(&ProviderError{
 			Provider:   provider,
 			Code:       CodeFromHTTPStatus(resp.StatusCode),
 			StatusCode: resp.StatusCode,
@@ -536,20 +539,52 @@ func decodeNativeHTTPError(provider ProviderName, resp *http.Response, decode fu
 			Retryable:  RetryableByCode(CodeFromHTTPStatus(resp.StatusCode)),
 			Message:    "read error response failed",
 			Cause:      err,
-		}
+		}, retryAfter)
 	}
 	if decode != nil {
-		return decode(provider, resp.StatusCode, resp.Status, body)
+		return withRetryAfter(decode(provider, resp.StatusCode, resp.Status, body), retryAfter)
 	}
 	code := CodeFromHTTPStatus(resp.StatusCode)
-	return &ProviderError{
+	return withRetryAfter(&ProviderError{
 		Provider:   provider,
 		Code:       code,
 		StatusCode: resp.StatusCode,
 		Status:     resp.Status,
 		Retryable:  RetryableByCode(code),
 		Message:    string(body),
+	}, retryAfter)
+}
+
+// parseRetryAfter 解析 Retry-After 头，支持「秒数」与「HTTP 日期」两种格式；
+// 缺失、非法或已过期一律返回 0。
+func parseRetryAfter(v string) time.Duration {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0
 	}
+	if secs, err := strconv.Atoi(v); err == nil {
+		if secs <= 0 {
+			return 0
+		}
+		return time.Duration(secs) * time.Second
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		if d := time.Until(t); d > 0 {
+			return d
+		}
+	}
+	return 0
+}
+
+// withRetryAfter 在 err 链中存在 *ProviderError 时填充其 RetryAfter；d<=0 时原样返回。
+func withRetryAfter(err error, d time.Duration) error {
+	if d <= 0 {
+		return err
+	}
+	if pe, ok := errors.AsType[*ProviderError](err); ok {
+		pe.RetryAfter = d
+	}
+	return err
 }
 
 func wrapNativeTransportError(provider ProviderName, err error) error {

@@ -138,6 +138,74 @@ func ExampleGenerateJSONWithValidator() {
 	// Output: 杭州 27
 }
 
+func ExampleSchemaFromType() {
+	type weather struct {
+		City        string `json:"city"`
+		Temperature int    `json:"temperature"`
+		Note        string `json:"note,omitempty"` // omitempty 字段不进 required
+	}
+
+	schema, err := provider.SchemaFromType[weather]()
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+
+	fmt.Println(schema.Type)
+	fmt.Println(schema.Properties["city"].Type)
+	fmt.Println(schema.Properties["temperature"].Type)
+	fmt.Println(schema.Required)
+	// Output:
+	// object
+	// string
+	// integer
+	// [city temperature]
+}
+
+func ExampleJSONSchemaFormatFor() {
+	type weather struct {
+		City string `json:"city"`
+	}
+
+	format, err := provider.JSONSchemaFormatFor[weather]("")
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+
+	fmt.Println(format.Type)
+	fmt.Println(format.Name)
+	// Output:
+	// json_schema
+	// weather
+}
+
+func ExampleGenerateJSONWithSchema() {
+	type weather struct {
+		City        string `json:"city"`
+		Temperature int    `json:"temperature"`
+	}
+
+	result, _, err := provider.GenerateJSONWithSchema[weather](context.Background(), exampleProvider{}, &provider.ChatRequest{
+		Messages: []provider.Message{provider.UserText("杭州天气")},
+	})
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+
+	fmt.Println(result.City, result.Temperature)
+	// Output: 杭州 27
+}
+
+func ExampleMaskSecret() {
+	fmt.Println(provider.MaskSecret("sk-1234567890wxyz"))
+	fmt.Println(provider.MaskSecret("short"))
+	// Output:
+	// sk-1****wxyz
+	// ****
+}
+
 func ExampleCosineSimilarity() {
 	score, err := provider.CosineSimilarity([]float32{1, 0}, []float32{0.5, 0.5})
 	if err != nil {

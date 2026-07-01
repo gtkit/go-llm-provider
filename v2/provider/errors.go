@@ -7,6 +7,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"time"
 
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -51,6 +52,10 @@ type ProviderError struct {
 	RawType    string
 	RawParam   string
 	Retryable  bool
+	// RetryAfter 是供应商通过 Retry-After 响应头建议的重试等待时长，0 表示未提供。
+	// 仅原生 HTTP provider（Claude / Gemini / Ollama）会填充；OpenAI 兼容路径受限于
+	// go-openai 不暴露响应头，无法获取，保持为 0 并回退到退避策略。
+	RetryAfter time.Duration
 	Message    string
 	Cause      error
 }

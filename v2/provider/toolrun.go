@@ -31,6 +31,41 @@ type RunToolLoopOptions struct {
 	// ToolErrorEncoder customizes how tool handler errors are sent back to the model.
 	// If nil, DefaultToolErrorEncoder is used.
 	ToolErrorEncoder ToolErrorEncoder
+
+	// ToolRetry 配置单个工具调用在 handler 返回错误时的重试。
+	// 零值表示不重试（仅执行一次），保持既有行为。
+	ToolRetry ToolRetryOptions
+
+	// AccumulateUsage 为 true 时，返回响应的 Usage 为所有轮次 token 消耗的累加值；
+	// 默认 false，保持返回最后一轮 Usage 的既有行为。
+	AccumulateUsage bool
+}
+
+// ToolRetryOptions 配置工具调用的重试行为。
+type ToolRetryOptions struct {
+	// MaxAttempts 是单个工具调用的最大尝试次数（含首次）。
+	// <= 1 表示不重试。
+	MaxAttempts int
+
+	// Backoff 返回每次重试前的等待时长。nil 时不等待。
+	Backoff BackoffFunc
+
+	// ShouldRetry 判定某个 handler 错误是否值得重试。
+	// nil 时默认重试所有非 context 取消错误。
+	ShouldRetry func(err error) bool
+}
+
+func normalizeToolRetry(opts ToolRetryOptions) ToolRetryOptions {
+	if opts.MaxAttempts <= 0 {
+		opts.MaxAttempts = 1
+	}
+	if opts.Backoff == nil {
+		opts.Backoff = ConstantBackoff(0)
+	}
+	if opts.ShouldRetry == nil {
+		opts.ShouldRetry = func(error) bool { return true }
+	}
+	return opts
 }
 
 // DefaultToolErrorEncoder returns a sanitized JSON tool result message.
@@ -46,7 +81,10 @@ func DefaultToolErrorEncoder(_ context.Context, call ToolCall, _ error) (Message
 //  4. 重复步骤 2-3，直到模型返回文本回复（FinishReason != "tool_calls"）
 //
 // maxRounds 限制最大循环次数，防止模型无限调用工具。
-// 推荐值为 5-10，设为 0 表示不限制（不推荐）。
+// maxRounds <= 0 时使用 20 轮安全上限；推荐显式设为 5-10。
+//
+// 返回的最终响应默认携带最后一轮的 Usage；如需所有轮次的累加值，
+// 改用 RunToolLoopWithOptions 并设置 AccumulateUsage。
 //
 // 用法示例：
 //
@@ -83,8 +121,11 @@ func RunToolLoopWithOptions(ctx context.Context, p Provider, req *ChatRequest, h
 	if encoder == nil {
 		encoder = DefaultToolErrorEncoder
 	}
+	retry := normalizeToolRetry(opts.ToolRetry)
 
-	for round := range maxIterations(opts.MaxRounds) {
+	var totalUsage Usage
+	rounds := maxIterations(opts.MaxRounds)
+	for round := range rounds {
 		// 浅拷贝基础字段，再为可变 slice 建立独立 header，避免未来实现误修改调用方请求。
 		// 注意：这里只隔离了 slice 本身，不会深拷贝 Tool.Function.Parameters 等引用类型字段。
 		roundReq := *req
@@ -96,23 +137,27 @@ func RunToolLoopWithOptions(ctx context.Context, p Provider, req *ChatRequest, h
 		if err != nil {
 			return nil, fmt.Errorf("round %d: %w", round+1, err)
 		}
+		totalUsage = addUsage(totalUsage, resp.Usage)
 
-		// 模型没有请求 tool call，返回最终结果
+		// 模型没有请求 tool call，返回最终结果。
 		if !resp.HasToolCalls() {
+			if opts.AccumulateUsage {
+				resp.Usage = totalUsage
+			}
 			return resp, nil
 		}
 
 		// 将模型的 tool_calls 响应追加到对话历史
 		messages = append(messages, resp.AssistantMessage())
 
-		toolMessages, err := executeToolCalls(ctx, resp.ToolCalls, handler, encoder, opts.ParallelToolCalls)
+		toolMessages, err := executeToolCalls(ctx, resp.ToolCalls, handler, encoder, opts.ParallelToolCalls, retry)
 		if err != nil {
 			return nil, err
 		}
 		messages = append(messages, toolMessages...)
 	}
 
-	return nil, fmt.Errorf("tool loop exceeded max rounds (%d)", opts.MaxRounds)
+	return nil, fmt.Errorf("tool loop exceeded max rounds (%d)", rounds)
 }
 
 // maxIterations 返回一个用于 for range 的迭代次数。
@@ -124,17 +169,28 @@ func maxIterations(n int) int {
 	return n
 }
 
+// addUsage 逐字段累加两个 Usage。
+func addUsage(a, b Usage) Usage {
+	return Usage{
+		PromptTokens:     a.PromptTokens + b.PromptTokens,
+		CompletionTokens: a.CompletionTokens + b.CompletionTokens,
+		ReasoningTokens:  a.ReasoningTokens + b.ReasoningTokens,
+		TotalTokens:      a.TotalTokens + b.TotalTokens,
+	}
+}
+
 func executeToolCalls(
 	ctx context.Context,
 	toolCalls []ToolCall,
 	handler ToolHandler,
 	encoder ToolErrorEncoder,
 	parallel bool,
+	retry ToolRetryOptions,
 ) ([]Message, error) {
 	if !parallel || len(toolCalls) <= 1 {
 		messages := make([]Message, 0, len(toolCalls))
 		for _, call := range toolCalls {
-			msg, err := executeToolCall(ctx, call, handler, encoder)
+			msg, err := executeToolCall(ctx, call, handler, encoder, retry)
 			if err != nil {
 				return nil, err
 			}
@@ -151,7 +207,7 @@ func executeToolCalls(
 	for i, call := range toolCalls {
 		go func(index int, toolCall ToolCall) {
 			defer wg.Done()
-			msg, err := executeToolCall(ctx, toolCall, handler, encoder)
+			msg, err := executeToolCall(ctx, toolCall, handler, encoder, retry)
 			if err != nil {
 				errCh <- err
 				return
@@ -172,20 +228,34 @@ func executeToolCalls(
 	return results, nil
 }
 
-func executeToolCall(ctx context.Context, call ToolCall, handler ToolHandler, encoder ToolErrorEncoder) (Message, error) {
-	result, err := handler(ctx, call.Function.Name, call.Function.Arguments)
-	if err == nil {
-		return ToolResultMessage(call.ID, result), nil
+func executeToolCall(ctx context.Context, call ToolCall, handler ToolHandler, encoder ToolErrorEncoder, retry ToolRetryOptions) (Message, error) {
+	var lastErr error
+	for attempt := 1; attempt <= retry.MaxAttempts; attempt++ {
+		result, err := handler(ctx, call.Function.Name, call.Function.Arguments)
+		if err == nil {
+			return ToolResultMessage(call.ID, result), nil
+		}
+
+		// context 取消：立即上抛，不重试、不编码回模型。
+		if ctxErr := context.Cause(ctx); ctxErr != nil {
+			return Message{}, fmt.Errorf("tool execution canceled: %w", ctxErr)
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return Message{}, err
+		}
+
+		lastErr = err
+		if attempt < retry.MaxAttempts && retry.ShouldRetry(err) {
+			if werr := waitBackoff(ctx, retry.Backoff(attempt)); werr != nil {
+				return Message{}, werr
+			}
+			continue
+		}
+		break
 	}
 
-	if ctxErr := context.Cause(ctx); ctxErr != nil {
-		return Message{}, fmt.Errorf("tool execution canceled: %w", ctxErr)
-	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return Message{}, err
-	}
-
-	msg, encodeErr := encoder(ctx, call, err)
+	// 重试耗尽或不可重试：按既有行为将错误编码为 tool 结果回传模型。
+	msg, encodeErr := encoder(ctx, call, lastErr)
 	if encodeErr != nil {
 		return Message{}, fmt.Errorf("encode tool error result: %w", encodeErr)
 	}

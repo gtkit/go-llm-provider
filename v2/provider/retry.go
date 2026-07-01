@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"time"
 )
 
@@ -24,6 +25,19 @@ type RetryOptions struct {
 func ConstantBackoff(d time.Duration) BackoffFunc {
 	return func(int) time.Duration {
 		return d
+	}
+}
+
+// ExponentialBackoffWithJitter 在 ExponentialBackoff 的上界内做全抖动（结果均匀分布于
+// [0, 上界]），避免大量并发请求同步重试造成的惊群效应。
+func ExponentialBackoffWithJitter(base, maximum time.Duration) BackoffFunc {
+	inner := ExponentialBackoff(base, maximum)
+	return func(attempt int) time.Duration {
+		d := inner(attempt)
+		if d <= 0 {
+			return 0
+		}
+		return time.Duration(rand.Int64N(int64(d) + 1))
 	}
 }
 
@@ -91,13 +105,29 @@ func RetryMiddleware(opts RetryOptions) Middleware {
 				if attempt == normalized.MaxAttempts || !normalized.ShouldRetry(err) {
 					return nil, err
 				}
-				if err := waitBackoff(ctx, normalized.Backoff(attempt)); err != nil {
+				if err := waitBackoff(ctx, retryDelay(normalized, attempt, err)); err != nil {
 					return nil, err
 				}
 			}
 			return nil, lastErr
 		}
 	}
+}
+
+// retryDelay 返回本次重试前的等待时长：供应商通过 Retry-After 给出建议时优先采用，
+// 否则回退到配置的退避函数。
+func retryDelay(opts RetryOptions, attempt int, err error) time.Duration {
+	if ra := retryAfterFromError(err); ra > 0 {
+		return ra
+	}
+	return opts.Backoff(attempt)
+}
+
+func retryAfterFromError(err error) time.Duration {
+	if pe, ok := errors.AsType[*ProviderError](err); ok {
+		return pe.RetryAfter
+	}
+	return 0
 }
 
 // RetryStreamMiddleware retries ChatStream creation according to opts.
@@ -115,7 +145,7 @@ func RetryStreamMiddleware(opts RetryOptions) StreamMiddleware {
 				if attempt == normalized.MaxAttempts || !normalized.ShouldRetry(err) {
 					return nil, err
 				}
-				if err := waitBackoff(ctx, normalized.Backoff(attempt)); err != nil {
+				if err := waitBackoff(ctx, retryDelay(normalized, attempt, err)); err != nil {
 					return nil, err
 				}
 			}
