@@ -3,6 +3,8 @@ package provider
 import (
 	"context"
 	"errors"
+	"io"
+	"sync"
 	"time"
 )
 
@@ -14,8 +16,25 @@ const (
 	ObserveOperationChat ObserveOperation = "chat"
 	// ObserveOperationStream identifies a streaming chat creation call.
 	ObserveOperationStream ObserveOperation = "stream"
+	// ObserveOperationStreamComplete identifies the termination of a streaming chat call.
+	// The event carries the final Usage observed on the stream; if the stream is
+	// closed before reaching io.EOF, Usage may be zero.
+	ObserveOperationStreamComplete ObserveOperation = "stream_complete"
 	// ObserveOperationEmbed identifies an embedding call.
 	ObserveOperationEmbed ObserveOperation = "embed"
+)
+
+// StreamFinishReason describes how a streaming call terminated.
+type StreamFinishReason string
+
+const (
+	// StreamFinishEOF indicates the stream was fully consumed to io.EOF.
+	StreamFinishEOF StreamFinishReason = "eof"
+	// StreamFinishError indicates the stream terminated with a receive error.
+	StreamFinishError StreamFinishReason = "error"
+	// StreamFinishClosed indicates the stream was closed before reaching io.EOF;
+	// Usage may be zero even though the provider incurred consumption.
+	StreamFinishClosed StreamFinishReason = "closed"
 )
 
 // ObserveEvent describes a completed provider operation for logs, metrics, or traces.
@@ -32,6 +51,10 @@ type ObserveEvent struct {
 	ErrorCode  ErrorCode
 	StatusCode int
 	Retryable  bool
+
+	// StreamFinish 仅在 Operation == ObserveOperationStreamComplete 时非空，
+	// 标识流的终止方式；计费方可据此区分"正常结束但无 usage"与"提前关闭漏单"。
+	StreamFinish StreamFinishReason
 }
 
 // ObserveHook receives an ObserveEvent after an operation completes.
@@ -104,7 +127,10 @@ func ObserveMiddleware(provider ProviderName, opts ObserveOptions) Middleware {
 	}
 }
 
-// ObserveStreamMiddleware reports ChatStream creation outcomes to opts.OnEvent.
+// ObserveStreamMiddleware reports ChatStream outcomes to opts.OnEvent.
+// It emits an ObserveOperationStream event when the stream is created, and an
+// ObserveOperationStreamComplete event carrying the final Usage when the stream
+// terminates (io.EOF, a receive error, or an early Close).
 func ObserveStreamMiddleware(provider ProviderName, opts ObserveOptions) StreamMiddleware {
 	return func(next StreamHandler) StreamHandler {
 		return func(ctx context.Context, req *ChatRequest) (*StreamReader, error) {
@@ -116,9 +142,82 @@ func ObserveStreamMiddleware(provider ProviderName, opts ObserveOptions) StreamM
 			}
 			stream, err := next(ctx, req)
 			emitObserveEvent(ctx, opts.OnEvent, streamObserveEvent(provider, req, err, time.Since(start)))
-			return stream, err
+			if err != nil || stream == nil || opts.OnEvent == nil {
+				return stream, err
+			}
+			obs := &observedStream{
+				inner:    stream,
+				hook:     opts.OnEvent,
+				provider: provider,
+				model:    requestChatModel(req),
+				start:    start,
+			}
+			return NewStreamReader(
+				func() (*StreamChunk, error) { return obs.recv(ctx) },
+				func() error { return obs.close(ctx) },
+			), nil
 		}
 	}
+}
+
+// observedStream 包装流读取过程，在流终止时上报一次 stream_complete 事件。
+type observedStream struct {
+	inner    *StreamReader
+	hook     ObserveHook
+	provider ProviderName
+	model    string
+	start    time.Time
+
+	mu      sync.Mutex
+	usage   Usage
+	emitted bool
+}
+
+func (s *observedStream) recv(ctx context.Context) (*StreamChunk, error) {
+	chunk, err := s.inner.Recv()
+	if chunk != nil && chunk.Usage != (Usage{}) {
+		s.mu.Lock()
+		s.usage = chunk.Usage
+		s.mu.Unlock()
+	}
+	switch {
+	case errors.Is(err, io.EOF):
+		s.emit(ctx, nil, StreamFinishEOF)
+	case err != nil:
+		s.emit(ctx, err, StreamFinishError)
+	}
+	return chunk, err
+}
+
+func (s *observedStream) close(ctx context.Context) error {
+	err := s.inner.Close()
+	// 未读到流尾就 Close 时也上报，Usage 以已读到的为准（可能为零值）。
+	s.emit(ctx, nil, StreamFinishClosed)
+	return err
+}
+
+// emit 上报 stream_complete 事件，整个流生命周期内至多一次。
+func (s *observedStream) emit(ctx context.Context, streamErr error, finish StreamFinishReason) {
+	s.mu.Lock()
+	if s.emitted {
+		s.mu.Unlock()
+		return
+	}
+	s.emitted = true
+	usage := s.usage
+	s.mu.Unlock()
+
+	event := ObserveEvent{
+		Operation:    ObserveOperationStreamComplete,
+		Provider:     s.provider,
+		Model:        s.model,
+		Usage:        usage,
+		Duration:     time.Since(s.start),
+		Err:          streamErr,
+		StreamFinish: finish,
+	}
+	applyErrorToObserveEvent(&event, streamErr)
+	s.hook(ctx, event)
 }
 
 // ObserveEmbedMiddleware reports Embed outcomes to opts.OnEvent.

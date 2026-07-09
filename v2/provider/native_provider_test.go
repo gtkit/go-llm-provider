@@ -331,9 +331,97 @@ func TestAnthropicProviderChatStreamMapsEvents(t *testing.T) {
 	third, err := stream.Recv()
 	require.NoError(t, err)
 	assert.Equal(t, "end_turn", third.FinishReason)
+	// input_tokens 来自 message_start，output_tokens 来自 message_delta，随最终 chunk 给出。
+	assert.Equal(t, Usage{PromptTokens: 3, CompletionTokens: 4, TotalTokens: 7}, third.Usage)
 
 	_, err = stream.Recv()
 	require.ErrorIs(t, err, io.EOF)
+}
+
+func TestAnthropicProviderChatStreamReportsCacheUsage(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "event: message_start\n")
+		_, _ = fmt.Fprint(w, "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-4-5\",\"usage\":{\"input_tokens\":10,\"output_tokens\":0,\"cache_creation_input_tokens\":20,\"cache_read_input_tokens\":30}}}\n\n")
+		_, _ = fmt.Fprint(w, "event: content_block_delta\n")
+		_, _ = fmt.Fprint(w, "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n")
+		_, _ = fmt.Fprint(w, "event: message_delta\n")
+		_, _ = fmt.Fprint(w, "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n\n")
+		_, _ = fmt.Fprint(w, "event: message_stop\n")
+		_, _ = fmt.Fprint(w, "data: {\"type\":\"message_stop\"}\n\n")
+	}))
+	t.Cleanup(srv.Close)
+
+	p, err := NewAnthropicProvider(NativeProviderConfig{
+		APIKey:  "test-key",
+		BaseURL: srv.URL,
+		Model:   "claude-sonnet-4-5",
+	})
+	require.NoError(t, err)
+
+	stream, err := p.ChatStream(t.Context(), &ChatRequest{Messages: []Message{UserText("hi")}})
+	require.NoError(t, err)
+	defer func() { assert.NoError(t, stream.Close()) }()
+
+	var final *StreamChunk
+	for {
+		chunk, err := stream.Recv()
+		if err != nil {
+			require.ErrorIs(t, err, io.EOF)
+			break
+		}
+		if chunk.FinishReason != "" {
+			final = chunk
+		}
+	}
+	require.NotNil(t, final)
+	// PromptTokens 归一化为 input + cache_read + cache_write。
+	assert.Equal(t, Usage{
+		PromptTokens:     60,
+		CompletionTokens: 5,
+		CacheReadTokens:  30,
+		CacheWriteTokens: 20,
+		TotalTokens:      65,
+	}, final.Usage)
+}
+
+func TestAnthropicProviderChatMapsCacheUsage(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id": "msg_1",
+			"type": "message",
+			"role": "assistant",
+			"model": "claude-sonnet-4-5",
+			"stop_reason": "end_turn",
+			"content": [{"type":"text","text":"cached"}],
+			"usage": {"input_tokens": 10, "output_tokens": 7, "cache_creation_input_tokens": 20, "cache_read_input_tokens": 30}
+		}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	p, err := NewAnthropicProvider(NativeProviderConfig{
+		APIKey:  "test-key",
+		BaseURL: srv.URL,
+		Model:   "claude-sonnet-4-5",
+	})
+	require.NoError(t, err)
+
+	resp, err := p.Chat(t.Context(), &ChatRequest{Messages: []Message{UserText("hi")}})
+	require.NoError(t, err)
+
+	// PromptTokens 归一化为 input + cache_read + cache_write。
+	assert.Equal(t, Usage{
+		PromptTokens:     60,
+		CompletionTokens: 7,
+		CacheReadTokens:  30,
+		CacheWriteTokens: 20,
+		TotalTokens:      67,
+	}, resp.Usage)
 }
 
 func TestAnthropicProviderChatStreamMapsToolUseDeltas(t *testing.T) {
@@ -696,8 +784,8 @@ func TestGeminiProviderChatStreamMapsSSE(t *testing.T) {
 		assert.Equal(t, "/v1beta/models/gemini-2.5-flash:streamGenerateContent", r.URL.Path)
 		assert.Equal(t, "sse", r.URL.Query().Get("alt"))
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = fmt.Fprint(w, "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hello\"}]}}]}\n\n")
-		_, _ = fmt.Fprint(w, "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\" world\"}]},\"finishReason\":\"STOP\"}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hello\"}]}}],\"usageMetadata\":{\"promptTokenCount\":5,\"candidatesTokenCount\":1,\"totalTokenCount\":6}}\n\n")
+		_, _ = fmt.Fprint(w, "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\" world\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":5,\"candidatesTokenCount\":4,\"thoughtsTokenCount\":2,\"cachedContentTokenCount\":3,\"totalTokenCount\":11}}\n\n")
 	}))
 	t.Cleanup(srv.Close)
 
@@ -720,9 +808,60 @@ func TestGeminiProviderChatStreamMapsSSE(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, " world", second.Delta)
 	assert.Equal(t, "STOP", second.FinishReason)
+	// 中间 chunk 不携带 usage，最终 chunk 给出归一化后的完整统计：
+	// CompletionTokens 含 thoughtsTokenCount，CacheReadTokens 取 cachedContentTokenCount。
+	assert.Equal(t, Usage{}, first.Usage)
+	assert.Equal(t, Usage{
+		PromptTokens:     5,
+		CompletionTokens: 6,
+		ReasoningTokens:  2,
+		CacheReadTokens:  3,
+		TotalTokens:      11,
+	}, second.Usage)
 
 	_, err = stream.Recv()
 	require.ErrorIs(t, err, io.EOF)
+}
+
+func TestGeminiProviderChatMapsThoughtsAndCacheUsage(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"candidates": [{
+				"content": {"role":"model","parts":[{"text":"thought out"}]},
+				"finishReason": "STOP"
+			}],
+			"usageMetadata": {
+				"promptTokenCount": 10,
+				"candidatesTokenCount": 4,
+				"thoughtsTokenCount": 6,
+				"cachedContentTokenCount": 3,
+				"totalTokenCount": 20
+			}
+		}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	p, err := NewGeminiProvider(NativeProviderConfig{
+		APIKey:  "test-key",
+		BaseURL: srv.URL + "/v1beta",
+		Model:   "gemini-2.5-flash",
+	})
+	require.NoError(t, err)
+
+	resp, err := p.Chat(t.Context(), &ChatRequest{Messages: []Message{UserText("hi")}})
+	require.NoError(t, err)
+
+	// CompletionTokens 归一化为 candidates + thoughts，与其他 provider 语义一致。
+	assert.Equal(t, Usage{
+		PromptTokens:     10,
+		CompletionTokens: 10,
+		ReasoningTokens:  6,
+		CacheReadTokens:  3,
+		TotalTokens:      20,
+	}, resp.Usage)
 }
 
 func TestGeminiProviderChatStreamMapsToolCalls(t *testing.T) {

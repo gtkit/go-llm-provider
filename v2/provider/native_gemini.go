@@ -59,9 +59,30 @@ type geminiCandidate struct {
 }
 
 type geminiUsage struct {
-	PromptTokenCount     int `json:"promptTokenCount"`
-	CandidatesTokenCount int `json:"candidatesTokenCount"`
-	TotalTokenCount      int `json:"totalTokenCount"`
+	PromptTokenCount        int `json:"promptTokenCount"`
+	CandidatesTokenCount    int `json:"candidatesTokenCount"`
+	ThoughtsTokenCount      int `json:"thoughtsTokenCount"`
+	CachedContentTokenCount int `json:"cachedContentTokenCount"`
+	TotalTokenCount         int `json:"totalTokenCount"`
+}
+
+// usageFromGemini 将 geminiUsage 归一化为统一 Usage。
+// Gemini 的 promptTokenCount 已含 cachedContentTokenCount，而 candidatesTokenCount
+// 不含 thoughtsTokenCount，这里归一化为 CompletionTokens 包含推理部分，
+// 与其他 provider 语义对齐。
+func usageFromGemini(usage geminiUsage) Usage {
+	completion := usage.CandidatesTokenCount + usage.ThoughtsTokenCount
+	total := usage.TotalTokenCount
+	if total == 0 {
+		total = usage.PromptTokenCount + completion
+	}
+	return Usage{
+		PromptTokens:     usage.PromptTokenCount,
+		CompletionTokens: completion,
+		ReasoningTokens:  usage.ThoughtsTokenCount,
+		CacheReadTokens:  usage.CachedContentTokenCount,
+		TotalTokens:      total,
+	}
 }
 
 type geminiEmbeddingRequest struct {

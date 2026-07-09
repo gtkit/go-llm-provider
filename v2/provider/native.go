@@ -144,13 +144,9 @@ func (p *anthropicProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRe
 	return &ChatResponse{
 		Content:      content,
 		FinishReason: finishReason,
-		Usage: Usage{
-			PromptTokens:     resp.Usage.InputTokens,
-			CompletionTokens: resp.Usage.OutputTokens,
-			TotalTokens:      resp.Usage.InputTokens + resp.Usage.OutputTokens,
-		},
-		Metadata:  metadata,
-		ToolCalls: toolCalls,
+		Usage:        usageFromAnthropic(resp.Usage),
+		Metadata:     metadata,
+		ToolCalls:    toolCalls,
 	}, nil
 }
 
@@ -179,8 +175,11 @@ func (p *anthropicProvider) ChatStream(ctx context.Context, req *ChatRequest) (*
 	if err != nil {
 		return nil, err
 	}
+	// usage 分散在 message_start（输入侧）与 message_delta（输出侧）事件中，
+	// 在读取过程中累积，最终随 FinishReason 非空的 chunk 一次性给出。
+	var usageAcc anthropicUsage
 	return NewStreamReader(func() (*StreamChunk, error) {
-		return recvAnthropicStreamChunk(reader)
+		return recvAnthropicStreamChunk(reader, &usageAcc)
 	}, reader.Close), nil
 }
 
@@ -334,13 +333,9 @@ func (p *geminiProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRespo
 	return &ChatResponse{
 		Content:      content,
 		FinishReason: finishReason,
-		Usage: Usage{
-			PromptTokens:     resp.UsageMetadata.PromptTokenCount,
-			CompletionTokens: resp.UsageMetadata.CandidatesTokenCount,
-			TotalTokens:      resp.UsageMetadata.TotalTokenCount,
-		},
-		Metadata:  metadata,
-		ToolCalls: toolCalls,
+		Usage:        usageFromGemini(resp.UsageMetadata),
+		Metadata:     metadata,
+		ToolCalls:    toolCalls,
 	}, nil
 }
 
@@ -377,8 +372,9 @@ func (p *geminiProvider) ChatStream(ctx context.Context, req *ChatRequest) (*Str
 	if err != nil {
 		return nil, err
 	}
+	var usageAcc geminiUsage
 	return NewStreamReader(func() (*StreamChunk, error) {
-		return recvGeminiStreamChunk(reader)
+		return recvGeminiStreamChunk(reader, &usageAcc)
 	}, reader.Close), nil
 }
 
@@ -659,7 +655,7 @@ func (r *sseReader) Close() error {
 	return nil
 }
 
-func recvAnthropicStreamChunk(reader *sseReader) (*StreamChunk, error) {
+func recvAnthropicStreamChunk(reader *sseReader, usageAcc *anthropicUsage) (*StreamChunk, error) {
 	for {
 		data, err := reader.Next()
 		if err != nil {
@@ -668,7 +664,7 @@ func recvAnthropicStreamChunk(reader *sseReader) (*StreamChunk, error) {
 			}
 			return nil, err
 		}
-		chunk, ok, err := anthropicStreamChunk(data)
+		chunk, ok, err := anthropicStreamChunk(data, usageAcc)
 		if err != nil {
 			return nil, err
 		}
@@ -678,13 +674,13 @@ func recvAnthropicStreamChunk(reader *sseReader) (*StreamChunk, error) {
 	}
 }
 
-func recvGeminiStreamChunk(reader *sseReader) (*StreamChunk, error) {
+func recvGeminiStreamChunk(reader *sseReader, usageAcc *geminiUsage) (*StreamChunk, error) {
 	for {
 		data, err := reader.Next()
 		if err != nil {
 			return nil, err
 		}
-		chunk, ok, err := geminiStreamChunk(data)
+		chunk, ok, err := geminiStreamChunk(data, usageAcc)
 		if errors.Is(err, errSkipNativeStreamEvent) {
 			continue
 		}
@@ -697,10 +693,14 @@ func recvGeminiStreamChunk(reader *sseReader) (*StreamChunk, error) {
 	}
 }
 
-func geminiStreamChunk(data []byte) (*StreamChunk, bool, error) {
+func geminiStreamChunk(data []byte, usageAcc *geminiUsage) (*StreamChunk, bool, error) {
 	var event geminiResponse
 	if err := json.Unmarshal(data, &event); err != nil {
 		return nil, false, errSkipNativeStreamEvent
+	}
+	// usageMetadata 随流累计更新，最终值随 FinishReason 非空的 chunk 给出。
+	if event.UsageMetadata != (geminiUsage{}) {
+		*usageAcc = event.UsageMetadata
 	}
 	content, finishReason, toolCalls, err := geminiResponseContent(event)
 	if err != nil {
@@ -712,20 +712,25 @@ func geminiStreamChunk(data []byte) (*StreamChunk, bool, error) {
 	if content == "" && finishReason == "" {
 		return nil, false, errSkipNativeStreamEvent
 	}
-	return &StreamChunk{
+	chunk := &StreamChunk{
 		Delta:        content,
 		FinishReason: finishReason,
 		ToolCalls:    toolCallDeltas(toolCalls),
-	}, true, nil
+	}
+	if finishReason != "" {
+		chunk.Usage = usageFromGemini(*usageAcc)
+	}
+	return chunk, true, nil
 }
 
-func anthropicStreamChunk(data []byte) (*StreamChunk, bool, error) {
+func anthropicStreamChunk(data []byte, usageAcc *anthropicUsage) (*StreamChunk, bool, error) {
 	var event anthropicStreamEvent
 	if err := json.Unmarshal(data, &event); err != nil {
 		return nil, false, errSkipNativeStreamEvent
 	}
 	switch event.Type {
 	case "message_start":
+		mergeAnthropicStreamUsage(usageAcc, event.Message.Usage)
 		return &StreamChunk{}, true, nil
 	case "content_block_start":
 		if event.ContentBlock.Type == "tool_use" {
@@ -750,12 +755,16 @@ func anthropicStreamChunk(data []byte) (*StreamChunk, bool, error) {
 			}}}, true, nil
 		}
 	case "message_delta":
+		mergeAnthropicStreamUsage(usageAcc, event.Usage)
 		if event.Delta.StopReason != "" {
 			finishReason := event.Delta.StopReason
 			if finishReason == "tool_use" {
 				finishReason = "tool_calls"
 			}
-			return &StreamChunk{FinishReason: finishReason}, true, nil
+			return &StreamChunk{
+				FinishReason: finishReason,
+				Usage:        usageFromAnthropic(*usageAcc),
+			}, true, nil
 		}
 	case "message_stop":
 		return nil, false, io.EOF

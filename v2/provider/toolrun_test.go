@@ -148,12 +148,12 @@ func TestRunToolLoopAccumulatesUsage(t *testing.T) {
 			if calls == 1 {
 				return &ChatResponse{
 					ToolCalls: []ToolCall{{ID: "c1", Function: FunctionCall{Name: "f", Arguments: "{}"}}},
-					Usage:     Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+					Usage:     Usage{PromptTokens: 10, CompletionTokens: 5, CacheReadTokens: 2, TotalTokens: 15},
 				}, nil
 			}
 			return &ChatResponse{
 				Content: "done",
-				Usage:   Usage{PromptTokens: 20, CompletionTokens: 8, TotalTokens: 28},
+				Usage:   Usage{PromptTokens: 20, CompletionTokens: 8, CacheReadTokens: 3, TotalTokens: 28},
 			}, nil
 		},
 	}
@@ -164,9 +164,10 @@ func TestRunToolLoopAccumulatesUsage(t *testing.T) {
 	}, handler, RunToolLoopOptions{MaxRounds: 5, AccumulateUsage: true})
 	require.NoError(t, err)
 	assert.Equal(t, "done", resp.Content)
-	// 开启 AccumulateUsage：Usage 为两轮累加。
+	// 开启 AccumulateUsage：Usage 为两轮累加（含缓存 token 字段）。
 	assert.Equal(t, 30, resp.Usage.PromptTokens)
 	assert.Equal(t, 13, resp.Usage.CompletionTokens)
+	assert.Equal(t, 5, resp.Usage.CacheReadTokens)
 	assert.Equal(t, 43, resp.Usage.TotalTokens)
 }
 

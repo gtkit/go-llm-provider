@@ -123,6 +123,125 @@ func TestObserveStreamMiddlewareReportsStreamCreation(t *testing.T) {
 	assert.Equal(t, "stream-model", event.Model)
 }
 
+func TestObserveStreamMiddlewareReportsStreamCompletion(t *testing.T) {
+	t.Parallel()
+
+	chunks := []*StreamChunk{
+		{Delta: "hel"},
+		{Delta: "lo", FinishReason: "stop", Usage: Usage{PromptTokens: 3, CompletionTokens: 2, TotalTokens: 5}},
+	}
+	var next int
+	p := &stubProvider{
+		name: ProviderOpenAI,
+		chatStream: func(context.Context, *ChatRequest) (*StreamReader, error) {
+			return NewStreamReader(func() (*StreamChunk, error) {
+				if next >= len(chunks) {
+					return nil, io.EOF
+				}
+				chunk := chunks[next]
+				next++
+				return chunk, nil
+			}, nil), nil
+		},
+	}
+
+	var events []ObserveEvent
+	wrapped := WithObservability(p, ObserveOptions{
+		OnEvent: func(_ context.Context, got ObserveEvent) {
+			events = append(events, got)
+		},
+	})
+
+	stream, err := wrapped.ChatStream(context.Background(), &ChatRequest{Model: "stream-model"})
+	require.NoError(t, err)
+	for {
+		if _, err := stream.Recv(); err != nil {
+			require.ErrorIs(t, err, io.EOF)
+			break
+		}
+	}
+	require.NoError(t, stream.Close())
+
+	// 创建事件 + 终止事件各一次；Close 不应重复上报。
+	require.Len(t, events, 2)
+	assert.Equal(t, ObserveOperationStream, events[0].Operation)
+	complete := events[1]
+	assert.Equal(t, ObserveOperationStreamComplete, complete.Operation)
+	assert.Equal(t, ProviderOpenAI, complete.Provider)
+	assert.Equal(t, "stream-model", complete.Model)
+	assert.Equal(t, Usage{PromptTokens: 3, CompletionTokens: 2, TotalTokens: 5}, complete.Usage)
+	require.NoError(t, complete.Err)
+	assert.Equal(t, StreamFinishEOF, complete.StreamFinish)
+}
+
+func TestObserveStreamMiddlewareReportsStreamRecvError(t *testing.T) {
+	t.Parallel()
+
+	recvErr := &ProviderError{Provider: ProviderOpenAI, Code: ErrorCodeServerError, Retryable: true}
+	p := &stubProvider{
+		name: ProviderOpenAI,
+		chatStream: func(context.Context, *ChatRequest) (*StreamReader, error) {
+			return NewStreamReader(func() (*StreamChunk, error) {
+				return nil, recvErr
+			}, nil), nil
+		},
+	}
+
+	var events []ObserveEvent
+	wrapped := WithObservability(p, ObserveOptions{
+		OnEvent: func(_ context.Context, got ObserveEvent) {
+			events = append(events, got)
+		},
+	})
+
+	stream, err := wrapped.ChatStream(context.Background(), &ChatRequest{Model: "stream-model"})
+	require.NoError(t, err)
+	_, err = stream.Recv()
+	require.Error(t, err)
+
+	require.Len(t, events, 2)
+	complete := events[1]
+	assert.Equal(t, ObserveOperationStreamComplete, complete.Operation)
+	assert.Equal(t, ErrorCodeServerError, complete.ErrorCode)
+	assert.True(t, complete.Retryable)
+	require.ErrorIs(t, complete.Err, recvErr)
+	assert.Equal(t, StreamFinishError, complete.StreamFinish)
+}
+
+func TestObserveStreamMiddlewareReportsCompletionOnEarlyClose(t *testing.T) {
+	t.Parallel()
+
+	p := &stubProvider{
+		name: ProviderOpenAI,
+		chatStream: func(context.Context, *ChatRequest) (*StreamReader, error) {
+			return NewStreamReader(func() (*StreamChunk, error) {
+				return &StreamChunk{Delta: "partial"}, nil
+			}, nil), nil
+		},
+	}
+
+	var events []ObserveEvent
+	wrapped := WithObservability(p, ObserveOptions{
+		OnEvent: func(_ context.Context, got ObserveEvent) {
+			events = append(events, got)
+		},
+	})
+
+	stream, err := wrapped.ChatStream(context.Background(), &ChatRequest{Model: "stream-model"})
+	require.NoError(t, err)
+	_, err = stream.Recv()
+	require.NoError(t, err)
+	require.NoError(t, stream.Close())
+
+	// 未读到流尾即 Close：终止事件仍上报，Usage 为零值，供计费方识别漏单。
+	require.Len(t, events, 2)
+	complete := events[1]
+	assert.Equal(t, ObserveOperationStreamComplete, complete.Operation)
+	assert.Equal(t, Usage{}, complete.Usage)
+	require.NoError(t, complete.Err)
+	assert.Equal(t, StreamFinishClosed, complete.StreamFinish)
+}
+
 func TestObserveEmbedMiddlewareReportsEmbedSuccess(t *testing.T) {
 	t.Parallel()
 

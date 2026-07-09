@@ -6,13 +6,35 @@
 
 ### Added
 
+- `Usage` 新增 `CacheReadTokens` / `CacheWriteTokens` 字段，暴露提示词缓存的读/写 token 数（Anthropic `cache_read_input_tokens` / `cache_creation_input_tokens`、OpenAI `prompt_tokens_details.cached_tokens`、Gemini `cachedContentTokenCount`），便于按缓存价格分档计费；`RunToolLoopWithOptions` 的 `AccumulateUsage` 同步累加新字段
+- 观测 Hook 新增 `stream_complete` 事件（`ObserveOperationStreamComplete`）：流终止时（读到 `io.EOF`、`Recv` 出错或提前 `Close`）上报一次，携带流上观测到的最终 `Usage` 与整个流的持续时长，流式调用的用量记账可统一接入
+- `ObserveEvent` 新增 `StreamFinish` 字段（`eof` / `error` / `closed`），区分流的终止方式，计费方可识别"提前关闭导致 usage 缺失"的漏单场景
+- 新增按用户计费能力：`WithUserID` / `WithConversationID` ctx 传递工具、`UsageRecorder` 接口与 `RecordEntry` 计量记录、`NewBillingHook` 观测适配器（一处挂载全局归账）、`CombineObserveHooks` 组合器、`MemoryUsageStore` 进程内存储（含 `UserTotals` / `ConversationTotals` 按用户与会话查询累计用量）
+- 新增费用计算：`ModelRate` / `PricingTable` / `Cost`（金额为 int64 微元，费率可注入不硬编码，缓存与推理分档计价、未配置自动回落）与 `FormatMicros` 展示工具
+- 新增配额拦截：`QuotaChecker` 接口（支持按用户与模型限额）、`QuotaMiddleware` / `QuotaStreamMiddleware` 请求前预检，超限返回新增 sentinel `ErrQuotaExceeded`，不产生真实调用
+- 新增剩余额度硬限：`WithTokenBudget` 传入用户剩余 token 数，`TokenBudgetMiddleware` / `TokenBudgetStreamMiddleware` 预检输入估算并收缩 `MaxTokens`，从输出侧保证单次调用不超出剩余额度
+- 新增 `RunToolLoopStream` / `RunToolLoopStreamWithOptions` 流式工具循环：每轮流式输出实时回调、工具调用增量由库内拼装、工具执行自动衔接，选项语义与 `RunToolLoopWithOptions` 一致
+- 新增上下文管理工具：`EstimateTokens` 启发式 token 估算、`TrimMessagesToTokenBudget` 组感知历史裁剪（不拆散 tool_calls 与其结果）、`CompactMessages` 对话摘要压缩（可指定低价模型，摘要 usage 正常计费）
+- 新增 `CollectStreamResult`：流式收集完整文本、推理内容与最终 `Usage`（`StreamResult`）
+- `ChatRequest` 新增 `StreamUsage` 开关：默认对 OpenAI 兼容路径下发 `stream_options.include_usage`，可显式关闭以兼容不认识该参数的老网关
+- 新增 DeepSeek 缓存字段预检 smoke 用例（env 门禁）；已实测确认 DeepSeek 回传标准 `cached_tokens` 字段（第二次同 prompt 调用 `CacheReadTokens=384`），现有映射直接可用
+- 新增 `example/billingstore/` 计费存储参考实现（独立 go.mod，reference 级）：Redis 原子累计（总量 + 当日 TTL key）、流水异步批量刷入 GORM、`user_quota` 表支持 token/金额上限与 total/daily 口径、Redis 故障 fail-open，测试基于 miniredis 与纯 Go sqlite
+- README 新增 `Usage` 统一语义说明与流式 token 用量统计用法，含流中断时 usage 缺失的漏单处理建议
+
 ### Changed
+
+- `Usage` 各字段跨 provider 统一语义：`PromptTokens` 包含缓存读/写部分（Anthropic 原始 `input_tokens` 不含，已归一化），`CompletionTokens` 包含推理部分（Gemini 原始 `candidatesTokenCount` 不含 `thoughtsTokenCount`，已归一化）；使用了 prompt caching 或 Gemini 思考模式的调用方会观察到相应字段数值变化
 
 ### Deprecated
 
 ### Removed
 
 ### Fixed
+
+- 修复 OpenAI 兼容平台流式调用拿不到 token 统计的问题：请求自动开启 `stream_options.include_usage`，统计随 `io.EOF` 前的收尾 chunk 给出
+- 修复 Anthropic 原生流式调用丢弃 usage 的问题：`message_start` / `message_delta` 事件的统计现随 `FinishReason` 非空的 chunk 完整给出
+- 修复 Gemini 原生流式调用丢弃 `usageMetadata` 的问题：统计随 `FinishReason` 非空的 chunk 完整给出
+- 修复 Gemini 思考模式下 `Usage.ReasoningTokens` 恒为 0、分项相加与 `TotalTokens` 不一致的问题（解析 `thoughtsTokenCount`）
 
 ### Security
 

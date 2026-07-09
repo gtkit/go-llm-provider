@@ -63,8 +63,42 @@ type anthropicResponse struct {
 }
 
 type anthropicUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+}
+
+// usageFromAnthropic 将 anthropicUsage 归一化为统一 Usage。
+// Anthropic 的 input_tokens 不含缓存读写部分，这里归一化为
+// PromptTokens = input + cache_read + cache_write，与其他 provider 语义对齐。
+func usageFromAnthropic(usage anthropicUsage) Usage {
+	prompt := usage.InputTokens + usage.CacheReadInputTokens + usage.CacheCreationInputTokens
+	return Usage{
+		PromptTokens:     prompt,
+		CompletionTokens: usage.OutputTokens,
+		CacheReadTokens:  usage.CacheReadInputTokens,
+		CacheWriteTokens: usage.CacheCreationInputTokens,
+		TotalTokens:      prompt + usage.OutputTokens,
+	}
+}
+
+// mergeAnthropicStreamUsage 将流事件携带的 usage 合并进累积值。
+// message_start 提供输入侧统计，message_delta 提供累计的 output_tokens，
+// 各字段仅在事件携带非零值时覆盖。
+func mergeAnthropicStreamUsage(acc *anthropicUsage, event anthropicUsage) {
+	if event.InputTokens > 0 {
+		acc.InputTokens = event.InputTokens
+	}
+	if event.OutputTokens > 0 {
+		acc.OutputTokens = event.OutputTokens
+	}
+	if event.CacheCreationInputTokens > 0 {
+		acc.CacheCreationInputTokens = event.CacheCreationInputTokens
+	}
+	if event.CacheReadInputTokens > 0 {
+		acc.CacheReadInputTokens = event.CacheReadInputTokens
+	}
 }
 
 type anthropicTool struct {
@@ -85,6 +119,7 @@ type anthropicStreamEvent struct {
 	ContentBlock anthropicContentPart   `json:"content_block"`
 	Delta        anthropicStreamDelta   `json:"delta"`
 	Message      anthropicStreamMessage `json:"message"`
+	Usage        anthropicUsage         `json:"usage"`
 	Error        anthropicErrorBody     `json:"error"`
 }
 
@@ -96,8 +131,9 @@ type anthropicStreamDelta struct {
 }
 
 type anthropicStreamMessage struct {
-	ID    string `json:"id"`
-	Model string `json:"model"`
+	ID    string         `json:"id"`
+	Model string         `json:"model"`
+	Usage anthropicUsage `json:"usage"`
 }
 
 type anthropicErrorEnvelope struct {

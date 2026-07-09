@@ -84,3 +84,63 @@ func CollectStream(ctx context.Context, p Provider, req *ChatRequest, onChunk fu
 	}
 	return sb.String(), nil
 }
+
+// StreamResult 是 CollectStreamResult 收集完一条流后的完整结果。
+type StreamResult struct {
+	Content      string // 累积的回复文本
+	Reasoning    string // 累积的推理文本（模型支持时）
+	FinishReason string // 最后一个非空 FinishReason
+	Usage        Usage  // 流尾部给出的完整 token 统计；provider 未回传时为零值
+}
+
+// CollectStreamResult 与 CollectStream 类似，但消费到流尾后返回完整的
+// StreamResult（含 Usage 与推理文本），适合需要按 token 计费或展示用量的场景。
+// onChunk 为 nil 时只做收集。
+func CollectStreamResult(ctx context.Context, p Provider, req *ChatRequest, onChunk func(delta string)) (result *StreamResult, err error) {
+	if providerIsNil(p) {
+		return nil, ErrNilProvider
+	}
+	if req == nil {
+		return nil, ErrNilChatRequest
+	}
+
+	stream, err := p.ChatStream(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("collect stream result: %w", err)
+	}
+	defer func() {
+		err = errors.Join(err, stream.Close())
+	}()
+
+	var content, reasoning strings.Builder
+	out := &StreamResult{}
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("collect stream result: %w", context.Cause(ctx))
+		default:
+		}
+
+		chunk, err := stream.Recv()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return nil, fmt.Errorf("collect stream result recv: %w", err)
+		}
+		content.WriteString(chunk.Delta)
+		reasoning.WriteString(chunk.ReasoningDelta)
+		if chunk.FinishReason != "" {
+			out.FinishReason = chunk.FinishReason
+		}
+		if chunk.Usage != (Usage{}) {
+			out.Usage = chunk.Usage
+		}
+		if onChunk != nil && chunk.Delta != "" {
+			onChunk(chunk.Delta)
+		}
+	}
+	out.Content = content.String()
+	out.Reasoning = reasoning.String()
+	return out, nil
+}

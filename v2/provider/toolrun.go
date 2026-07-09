@@ -175,6 +175,8 @@ func addUsage(a, b Usage) Usage {
 		PromptTokens:     a.PromptTokens + b.PromptTokens,
 		CompletionTokens: a.CompletionTokens + b.CompletionTokens,
 		ReasoningTokens:  a.ReasoningTokens + b.ReasoningTokens,
+		CacheReadTokens:  a.CacheReadTokens + b.CacheReadTokens,
+		CacheWriteTokens: a.CacheWriteTokens + b.CacheWriteTokens,
 		TotalTokens:      a.TotalTokens + b.TotalTokens,
 	}
 }

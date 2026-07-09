@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -894,4 +895,95 @@ func TestOpenAIProviderChatStream_MapsReasoningDelta(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "final answer", second.Delta)
 	assert.Equal(t, "stop", second.FinishReason)
+}
+
+func TestOpenAIProviderChatStreamReportsUsage(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&captured))
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"id\":\"chunk_1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: {\"id\":\"chunk_2\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt-4o\",\"choices\":[],\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":4,\"total_tokens\":13,\"prompt_tokens_details\":{\"cached_tokens\":6}}}\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(srv.Close)
+
+	p, err := NewProvider(ProviderConfig{
+		Name:    ProviderOpenAI,
+		BaseURL: srv.URL,
+		APIKey:  "sk-test",
+		Model:   "gpt-4o",
+	})
+	require.NoError(t, err)
+
+	stream, err := p.ChatStream(t.Context(), &ChatRequest{
+		Messages: []Message{UserText("hello")},
+	})
+	require.NoError(t, err)
+	defer func() { _ = stream.Close() }()
+
+	first, err := stream.Recv()
+	require.NoError(t, err)
+	assert.Equal(t, "hi", first.Delta)
+	assert.Equal(t, "stop", first.FinishReason)
+	assert.Equal(t, Usage{}, first.Usage)
+
+	// usage 位于 FinishReason 之后、[DONE] 之前的收尾 chunk。
+	second, err := stream.Recv()
+	require.NoError(t, err)
+	assert.Equal(t, Usage{
+		PromptTokens:     9,
+		CompletionTokens: 4,
+		CacheReadTokens:  6,
+		TotalTokens:      13,
+	}, second.Usage)
+
+	_, err = stream.Recv()
+	require.ErrorIs(t, err, io.EOF)
+
+	// 流式请求必须显式开启 include_usage，服务端才会回传 token 统计。
+	streamOptions, ok := captured["stream_options"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, true, streamOptions["include_usage"])
+}
+
+func TestOpenAIProviderChatStreamUsageOptOut(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&captured))
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"id\":\"chunk_1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(srv.Close)
+
+	p, err := NewProvider(ProviderConfig{
+		Name:    ProviderOpenAI,
+		BaseURL: srv.URL,
+		APIKey:  "sk-test",
+		Model:   "gpt-4o",
+	})
+	require.NoError(t, err)
+
+	off := false
+	stream, err := p.ChatStream(t.Context(), &ChatRequest{
+		Messages:    []Message{UserText("hello")},
+		StreamUsage: &off,
+	})
+	require.NoError(t, err)
+	defer func() { _ = stream.Close() }()
+
+	first, err := stream.Recv()
+	require.NoError(t, err)
+	assert.Equal(t, "hi", first.Delta)
+	_, err = stream.Recv()
+	require.ErrorIs(t, err, io.EOF)
+
+	// StreamUsage=false：请求体不携带 stream_options（兼容老网关）。
+	_, ok := captured["stream_options"]
+	assert.False(t, ok)
 }

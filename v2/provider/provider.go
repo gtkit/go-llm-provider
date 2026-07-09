@@ -92,6 +92,12 @@ var (
 	// ErrNetwork 表示发起请求时遇到网络层错误。
 	// 与 *ProviderError 互认：errors.Is(err, ErrNetwork) 在 Code == ErrorCodeNetwork 时返回 true。
 	ErrNetwork = errors.New("provider network error")
+
+	// ErrModelNotPriced 表示 PricingTable 中没有该模型的费率条目。
+	ErrModelNotPriced = errors.New("model not found in pricing table")
+
+	// ErrQuotaExceeded 表示调用方配额已用尽，请求未发往平台。
+	ErrQuotaExceeded = errors.New("user quota exceeded")
 )
 
 func providerIsNil(p Provider) bool {
@@ -215,6 +221,13 @@ type ChatRequest struct {
 
 	// ResponseFormat requests structured output when supported by the provider.
 	ResponseFormat *ResponseFormat
+
+	// StreamUsage 控制流式调用是否请求 token 统计。
+	// 仅影响 OpenAI 兼容路径的 stream_options.include_usage 下发：
+	// nil 或 true 时下发（默认），false 时不下发（兼容不认识该参数的老网关/代理，
+	// 此时 StreamChunk.Usage 恒为零值）。原生路径（Anthropic/Gemini/Ollama）的
+	// usage 由响应自带，忽略本字段。
+	StreamUsage *bool
 }
 
 // Role 定义消息角色。
@@ -272,11 +285,28 @@ func (r *ChatResponse) AssistantMessage() Message {
 }
 
 // Usage 记录 token 消耗。
+//
+// 各字段遵循统一的包含关系，便于跨 provider 按 token 计费：
+//   - PromptTokens 为全部输入 token，已包含 CacheReadTokens 与 CacheWriteTokens
+//     （Anthropic 原始 input_tokens 不含缓存部分，本库已归一化）；
+//   - CompletionTokens 为全部输出 token，已包含 ReasoningTokens；
+//   - TotalTokens 通常等于 PromptTokens + CompletionTokens；
+//     provider 返回了总量时以其返回值为准。
 type Usage struct {
 	PromptTokens     int
 	CompletionTokens int
 	ReasoningTokens  int
-	TotalTokens      int
+
+	// CacheReadTokens 是命中提示词缓存的输入 token 数。
+	// 对应 Anthropic cache_read_input_tokens、OpenAI prompt_tokens_details.cached_tokens、
+	// Gemini cachedContentTokenCount；缓存计价通常低于常规输入。
+	CacheReadTokens int
+
+	// CacheWriteTokens 是写入提示词缓存的输入 token 数，
+	// 对应 Anthropic cache_creation_input_tokens；缓存写入计价通常高于常规输入。
+	CacheWriteTokens int
+
+	TotalTokens int
 }
 
 // ============================================================
@@ -440,7 +470,12 @@ type StreamChunk struct {
 	Delta          string // 增量文本
 	ReasoningDelta string // 增量推理文本
 	FinishReason   string // 非空时表示流结束
-	Usage          Usage  // 部分 provider 仅在最终 chunk 提供 token 统计
+
+	// Usage 是本次请求的 token 统计，仅在流尾部的 chunk 上非零：
+	// 可能与 FinishReason 同 chunk（Anthropic/Gemini/Ollama），
+	// 也可能出现在其后、io.EOF 之前的收尾 chunk（OpenAI 兼容端点）。
+	// 需要统计用量时应读取至 io.EOF，并采用最后一个非零 Usage。
+	Usage Usage
 
 	// ToolCalls 流式模式下的增量 tool call 数据。
 	// 每个 chunk 可能只包含部分 tool call 信息（如部分 arguments），
@@ -583,12 +618,7 @@ func (p *openaiProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRespo
 		Reasoning:    choice.Message.ReasoningContent,
 		FinishReason: string(choice.FinishReason),
 		Metadata:     metadataFromHeader(p.name, resp.Model, resp.Header()),
-		Usage: Usage{
-			PromptTokens:     resp.Usage.PromptTokens,
-			CompletionTokens: resp.Usage.CompletionTokens,
-			ReasoningTokens:  reasoningTokens(resp.Usage),
-			TotalTokens:      resp.Usage.TotalTokens,
-		},
+		Usage:        usageFromOpenAI(resp.Usage),
 	}
 
 	// 映射 tool calls
@@ -621,6 +651,11 @@ func (p *openaiProvider) ChatStream(ctx context.Context, req *ChatRequest) (*Str
 		return nil, err
 	}
 	oReq.Stream = true
+	// 让服务端在最终 chunk 返回整次请求的 token 统计（OpenAI 兼容端点普遍支持）；
+	// 遇到不认识 stream_options 的老网关，可通过 StreamUsage=false 关闭。
+	if req.StreamUsage == nil || *req.StreamUsage {
+		oReq.StreamOptions = &openai.StreamOptions{IncludeUsage: true}
+	}
 
 	stream, err := p.client.CreateChatCompletionStream(ctx, oReq)
 	if err != nil {
@@ -635,35 +670,43 @@ func (p *openaiProvider) ChatStream(ctx context.Context, req *ChatRequest) (*Str
 		if err != nil {
 			return nil, WrapProviderError(p.name, err)
 		}
-
-		chunk := &StreamChunk{}
-		if len(resp.Choices) > 0 {
-			delta := resp.Choices[0].Delta
-			chunk.Delta = delta.Content
-			chunk.ReasoningDelta = delta.ReasoningContent
-			chunk.FinishReason = string(resp.Choices[0].FinishReason)
-
-			// 映射流式 tool call delta
-			if len(delta.ToolCalls) > 0 {
-				chunk.ToolCalls = make([]ToolCallDelta, 0, len(delta.ToolCalls))
-				for _, tc := range delta.ToolCalls {
-					d := ToolCallDelta{
-						ID: tc.ID,
-						Function: FunctionCallDelta{
-							Name:      tc.Function.Name,
-							Arguments: tc.Function.Arguments,
-						},
-					}
-					if tc.Index != nil {
-						d.Index = *tc.Index
-					}
-					chunk.ToolCalls = append(chunk.ToolCalls, d)
-				}
-			}
-		}
-
-		return chunk, nil
+		return openaiStreamChunk(resp), nil
 	}, stream.Close), nil
+}
+
+// openaiStreamChunk 将 go-openai 的流式响应帧映射为统一 StreamChunk。
+func openaiStreamChunk(resp openai.ChatCompletionStreamResponse) *StreamChunk {
+	chunk := &StreamChunk{}
+	if resp.Usage != nil {
+		chunk.Usage = usageFromOpenAI(*resp.Usage)
+	}
+	if len(resp.Choices) == 0 {
+		return chunk
+	}
+
+	delta := resp.Choices[0].Delta
+	chunk.Delta = delta.Content
+	chunk.ReasoningDelta = delta.ReasoningContent
+	chunk.FinishReason = string(resp.Choices[0].FinishReason)
+
+	// 映射流式 tool call delta
+	if len(delta.ToolCalls) > 0 {
+		chunk.ToolCalls = make([]ToolCallDelta, 0, len(delta.ToolCalls))
+		for _, tc := range delta.ToolCalls {
+			d := ToolCallDelta{
+				ID: tc.ID,
+				Function: FunctionCallDelta{
+					Name:      tc.Function.Name,
+					Arguments: tc.Function.Arguments,
+				},
+			}
+			if tc.Index != nil {
+				d.Index = *tc.Index
+			}
+			chunk.ToolCalls = append(chunk.ToolCalls, d)
+		}
+	}
+	return chunk
 }
 
 func (p *openaiProvider) buildRequest(req *ChatRequest) (openai.ChatCompletionRequest, error) {
@@ -748,6 +791,26 @@ func reasoningTokens(usage openai.Usage) int {
 		return 0
 	}
 	return usage.CompletionTokensDetails.ReasoningTokens
+}
+
+func cachedTokens(usage openai.Usage) int {
+	if usage.PromptTokensDetails == nil {
+		return 0
+	}
+	return usage.PromptTokensDetails.CachedTokens
+}
+
+// usageFromOpenAI 将 openai.Usage 映射为统一 Usage。
+// OpenAI 的 prompt_tokens 已包含 cached_tokens，completion_tokens 已包含 reasoning_tokens，
+// 与统一语义一致，直接映射。
+func usageFromOpenAI(usage openai.Usage) Usage {
+	return Usage{
+		PromptTokens:     usage.PromptTokens,
+		CompletionTokens: usage.CompletionTokens,
+		ReasoningTokens:  reasoningTokens(usage),
+		CacheReadTokens:  cachedTokens(usage),
+		TotalTokens:      usage.TotalTokens,
+	}
 }
 
 func applyThinking(req *openai.ChatCompletionRequest, providerName ProviderName, thinking *Thinking) {

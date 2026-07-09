@@ -589,6 +589,36 @@ if err := stream.Close(); err != nil {
 }
 ```
 
+#### 流式 token 用量统计
+
+流式调用的完整 token 统计通过流尾部 chunk 的 `Usage` 字段给出：
+
+- **Anthropic / Gemini / Ollama**：随 `FinishReason` 非空的 chunk 一并给出；
+- **OpenAI 兼容**：本库自动开启 `stream_options.include_usage`，统计位于 `FinishReason` 之后、`io.EOF` 之前的收尾 chunk（该 chunk 无文本增量）。
+
+因此需要统计用量（如按 token 计费）时，**必须读取至 `io.EOF`**，并采用最后一个非零 `Usage`：
+
+```go
+var usage provider.Usage
+for {
+    chunk, err := stream.Recv()
+    if err != nil {
+        if err == io.EOF {
+            break
+        }
+        log.Fatal(err)
+    }
+    if chunk.Usage != (provider.Usage{}) {
+        usage = chunk.Usage
+    }
+    fmt.Print(chunk.Delta)
+}
+fmt.Printf("prompt=%d completion=%d total=%d\n",
+    usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens)
+```
+
+注意：若流被提前 `Close` 或因网络中断/上下文取消未读到流尾，`Usage` 将拿不到（provider 侧仍可能已产生消耗）。计费场景应把"流异常终止且 usage 为零"当作漏单信号单独处理（如按已收文本估算或标记对账），配合下文观测 Hook 的 `stream_complete` 事件可统一捕获这类情况。
+
 #### CollectStream — 流式收集 + 实时回调
 
 边流式接收边回调，最终返回完整文本。
@@ -604,6 +634,17 @@ fullText, err := provider.CollectStream(ctx, p, req, func(delta string) {
 
 ```go
 fullText, err := provider.CollectStream(ctx, p, req, nil)
+```
+
+#### CollectStreamResult — 收集完整结果（含 Usage）
+
+需要 token 计费或展示用量时，用 `CollectStreamResult` 一次拿到完整文本、推理内容与最终统计：
+
+```go
+result, err := provider.CollectStreamResult(ctx, p, req, func(delta string) {
+    fmt.Print(delta)
+})
+// result.Content / result.Reasoning / result.FinishReason / result.Usage
 ```
 
 ## Tool Use / Function Calling
@@ -956,6 +997,21 @@ resp, err := provider.RunToolLoopWithOptions(
 - `ToolErrorEncoder` 默认使用安全脱敏编码器
 - `ToolRetry` 零值表示不重试（仅执行一次），保持既有行为；`MaxAttempts > 1` 时按 `Backoff` 等待并重试，`ShouldRetry` 默认重试所有非 context 取消错误
 - `AccumulateUsage` 默认关闭，返回最后一轮的 `Usage`（既有行为）；设为 `true` 后，返回响应的 `Usage` 为**所有轮次**的 token 消耗累加值，便于多轮工具循环的成本统计（某轮 provider 未返回 usage 则按 0 计入）
+
+### RunToolLoopStream（流式工具循环）
+
+对话产品的标配路径：智能体一边流式输出（打字机效果），一边自动执行工具进入下一轮。
+工具调用的增量片段由库内拼装，无需手写 delta 累积：
+
+```go
+resp, err := provider.RunToolLoopStream(ctx, p, req, 10, toolHandler, func(chunk provider.StreamChunk) {
+    fmt.Print(chunk.Delta) // 实时透传给前端（SSE 等）
+})
+// resp 语义与 RunToolLoop 一致；需要跨轮累计 usage 时用
+// RunToolLoopStreamWithOptions + AccumulateUsage
+```
+
+onChunk 会收到所有轮次的全部 chunk（含工具调用轮的空文本帧），按需过滤 `chunk.Delta != ""` 即可。
 
 ### 方式二：手动管理多轮对话
 
@@ -1407,7 +1463,12 @@ resp, err := retrying.Chat(ctx, req)
 
 ### 观测 Hook（日志 / 指标 / Trace）
 
-`WithObservability` 提供零外部依赖的观测 hook，不绑定 `slog`、Prometheus 或 OpenTelemetry。每次 `Chat`、`ChatStream` 创建、`Embed` 完成后，库会向 `OnEvent` 发送一个 `ObserveEvent`，其中包含 operation、provider、model、duration、usage、metadata、request id 和错误分类。
+`WithObservability` 提供零外部依赖的观测 hook，不绑定 `slog`、Prometheus 或 OpenTelemetry。每次 `Chat`、`ChatStream`、`Embed` 完成后，库会向 `OnEvent` 发送一个 `ObserveEvent`，其中包含 operation、provider、model、duration、usage、metadata、request id 和错误分类。
+
+流式调用会产生两个事件：
+
+- `stream`：流创建完成时发出，反映建连结果，不含 usage；
+- `stream_complete`：流终止时发出（读到 `io.EOF`、`Recv` 出错或提前 `Close` 均会触发，至多一次），携带流上观测到的最终 `Usage` 与整个流的持续时长。若流未读到尾部就终止，`Usage` 可能为零值——按 token 计费时可据此识别漏单。
 
 ```go
 observed := provider.WithObservability(base, provider.ObserveOptions{
@@ -1442,9 +1503,95 @@ observedEmb := provider.WithEmbedderObservability(emb, provider.ObserveOptions{
 })
 ```
 
-`OnEvent` 在调用 goroutine 内同步执行，生产环境里应保持快速、非阻塞；记录日志或指标时不要输出 API Key、prompt 原文、响应正文等敏感内容。`ChatStream` 当前只观测流创建结果，不跟踪每个 chunk 的生命周期。
+`OnEvent` 在调用 goroutine 内同步执行，生产环境里应保持快速、非阻塞；记录日志或指标时不要输出 API Key、prompt 原文、响应正文等敏感内容。`ChatStream` 观测流创建与流终止两个节点，不跟踪中间每个 chunk。
 
 本库自身不会向调用方回显 API Key（响应头按白名单过滤、请求不含密钥）。如需在自己的日志中保留密钥的可追溯性又不暴露完整值，可用 `provider.MaskSecret`（如 `MaskSecret("sk-1234...wxyz")` -> `"sk-1****wxyz"`）。
+
+### 按用户计费与配额
+
+计费能力构建在观测 Hook 之上：一处挂载，所有 `Chat` / `ChatStream` / `Embed` 调用自动按
+ctx 中的用户与会话归账，业务调用点零统计代码。
+
+```go
+store := provider.NewMemoryUsageStore() // 或自行实现 UsageRecorder 接 Redis/DB
+
+billed := provider.WithObservability(base, provider.ObserveOptions{
+    OnEvent: provider.CombineObserveHooks(
+        provider.NewBillingHook(store), // 计费归账
+        myLoggingHook,                  // 日志观测可并存
+    ),
+})
+
+// 请求入口注入身份（如 Gin 鉴权中间件里）：
+ctx = provider.WithUserID(ctx, userID)
+ctx = provider.WithConversationID(ctx, conversationID)
+
+// 业务正常调用，无需任何统计代码
+resp, err := billed.Chat(ctx, req)
+
+// 随时查询累计用量（按用户 / 按会话）：
+userTotals, _ := store.UserTotals(userID)
+convTotals, _ := store.ConversationTotals(userID, conversationID)
+fmt.Println(userTotals.Usage.TotalTokens, convTotals.Calls, convTotals.TerminatedCalls)
+```
+
+`RecordEntry` 携带 UserID、ConversationID、RequestID（对账）、Usage、终止方式等；
+流式调用异常终止（网络中断 / 提前 Close）时仍会发出记录（`Terminated=true`、Usage 可能为零值），
+漏账可观测——收不收钱由 Recorder 策略决定。`MemoryUsageStore` 为单实例场景设计，
+多实例部署换用共享存储实现 `UsageRecorder` 即可，接口不变——
+`example/billingstore/` 提供 Redis + GORM 的参考实现（独立 go.mod，reference 级），
+含 Redis 原子累计、流水异步落库与 `QuotaChecker` 限额，可直接抄改。
+
+#### 费用计算（PricingTable）
+
+金额一律 int64 微元（1e-6 货币单位），杜绝 float64 精度问题；费率由调用方注入，库不硬编码任何价格：
+
+```go
+table := provider.PricingTable{
+    "deepseek-chat": {
+        InputPer1M:     2_000_000, // 2 元 / 1M tokens
+        OutputPer1M:    8_000_000,
+        CacheReadPer1M: 200_000,   // 未配置时回落到 InputPer1M
+        Currency:       "CNY",
+    },
+}
+micros, currency, err := table.Cost("deepseek-chat", resp.Usage)
+fmt.Println(provider.FormatMicros(micros), currency) // 如 "0.0123 CNY"
+```
+
+计费公式先减子集再分档乘价（`ReasoningTokens ⊆ CompletionTokens`、缓存 ⊆ `PromptTokens`），
+不会重复计费；未配价模型返回 `ErrModelNotPriced`。仅支持线性单价，分时折扣、阶梯定价请在业务层处理。
+底层成本价与对用户售价维护两份表即可。
+
+#### 配额拦截（QuotaChecker）
+
+```go
+guarded, _ := provider.TryWithMiddlewares(billed, provider.MiddlewareOptions{
+    Chat:   []provider.Middleware{provider.QuotaMiddleware(myChecker)},
+    Stream: []provider.StreamMiddleware{provider.QuotaStreamMiddleware(myChecker)},
+})
+```
+
+`QuotaChecker.Allow(ctx, userID, model)` 基于累计真实用量判断，超限返回 `ErrQuotaExceeded`，
+请求不发往平台（语义为"已超额拦下一次"，存在最后一次调用的滞后）。
+ctx 无 userID 的请求默认放行；fail-open / fail-close 由实现方决定。
+
+#### 剩余额度硬限（TokenBudget）
+
+业务从账务系统查出用户剩余 token 数后注入 ctx，单次调用的消耗被硬性限制在剩余额度内：
+
+```go
+guarded, _ := provider.TryWithMiddlewares(billed, provider.MiddlewareOptions{
+    Chat:   []provider.Middleware{provider.TokenBudgetMiddleware()},
+    Stream: []provider.StreamMiddleware{provider.TokenBudgetStreamMiddleware()},
+})
+
+ctx = provider.WithTokenBudget(ctx, remainingTokens)
+resp, err := guarded.Chat(ctx, req) // 剩余不足 → ErrQuotaExceeded；足够 → MaxTokens 被收缩到剩余额度内
+```
+
+输入侧按 `EstimateTokens` 启发式估算（误差 ±30%），输出侧通过收缩 `MaxTokens` 硬限；
+需要零误差结算时结合响应 `Usage` 事后对账。
 
 ### Fallback Provider
 
@@ -1615,6 +1762,42 @@ history = append(history, provider.Message{
 })
 ```
 
+### 上下文窗口管理（省 token）
+
+长对话必然触及上下文窗口与成本问题，库提供三个渐进式工具：
+
+**1. 估算**：`EstimateTokens` 无 tokenizer 依赖的启发式估算（CJK 按字、其余按 4 字符/token，
+误差 ±30%），用于预算判断，不用于计费结算：
+
+```go
+if provider.EstimateTokens(history) > 30_000 { /* 触发裁剪或压缩 */ }
+```
+
+**2. 硬裁剪**：`TrimMessagesToTokenBudget` 保留全部 system 与最新消息，从旧到新丢弃超预算部分；
+以"消息组"为单位裁剪（assistant 的 tool_calls 与其结果不拆分），不会裁出非法序列：
+
+```go
+history = provider.TrimMessagesToTokenBudget(history, 30_000)
+```
+
+**3. 摘要压缩**：`CompactMessages` 把较早的历史用一次 LLM 调用总结为摘要消息，
+保留最近 N 组原文——比硬裁剪多花一次摘要调用，但信息不丢失，多轮下净节省显著：
+
+```go
+compacted, summaryResp, err := provider.CompactMessages(ctx, p, history, provider.CompactOptions{
+    Model:            "deepseek-chat", // 摘要用便宜模型即可
+    KeepRecentGroups: 4,               // 最近 4 组保留原文
+    TriggerTokens:    20_000,          // 低于阈值不压缩，避免短对话空耗
+})
+if summaryResp != nil {
+    history = compacted // 压缩发生了：缓存结果，后续轮次复用
+}
+```
+
+正确用法是**业务侧缓存压缩结果、按阈值低频触发**，而不是每轮都压缩；
+摘要调用自身的 usage 会经计费 hook 正常归账。压缩失败返回错误，可回退到硬裁剪。
+固定的 system + 摘要前缀还有利于命中平台的 prompt caching，进一步降低输入成本。
+
 ## 在 Gin/HTTP 服务中使用
 
 ```go
@@ -1661,6 +1844,53 @@ func chatHandler(c *gin.Context) {
     c.JSON(200, gin.H{"content": resp.Content, "usage": resp.Usage})
 }
 ```
+
+### SSE 流式转发（含计费与停止生成）
+
+对话产品的典型形态：前端 SSE 打字机 + 按用户计费 + 停止生成。三者组合的完整示例：
+
+```go
+func streamHandler(c *gin.Context) {
+    // 鉴权后注入身份与会话（计费 hook 依赖）；剩余额度硬限按需注入
+    ctx := provider.WithUserID(c.Request.Context(), c.GetString("uid"))
+    ctx = provider.WithConversationID(ctx, c.Query("conv"))
+    // ctx = provider.WithTokenBudget(ctx, remainingTokens)
+
+    stream, err := billed.ChatStream(ctx, &provider.ChatRequest{
+        Messages: history,
+    })
+    if err != nil {
+        if errors.Is(err, provider.ErrQuotaExceeded) {
+            c.JSON(429, gin.H{"error": "额度已用尽"})
+            return
+        }
+        c.JSON(500, gin.H{"error": err.Error()})
+        return
+    }
+    defer stream.Close() // 客户端断开时提前 Close，stream_complete 事件仍会上报
+
+    c.Header("Content-Type", "text/event-stream")
+    c.Header("Cache-Control", "no-cache")
+    for {
+        chunk, err := stream.Recv()
+        if err != nil {
+            break // io.EOF 或错误：计费 hook 已在流终止时自动归账
+        }
+        if chunk.Delta != "" {
+            c.SSEvent("delta", chunk.Delta)
+            c.Writer.Flush()
+        }
+        if chunk.FinishReason != "" {
+            c.SSEvent("finish", chunk.FinishReason)
+        }
+    }
+    c.SSEvent("done", "")
+}
+```
+
+前端"停止生成"按钮只需断开 SSE 连接：`c.Request.Context()` 取消会终止上游流，
+`stream_complete` 事件以 `StreamFinish=closed/error` 上报，计费侧可识别并按策略处理。
+智能体场景把 `ChatStream` 换成 `RunToolLoopStream`，onChunk 里做同样的 SSEvent 转发即可。
 
 请求示例：
 
@@ -1816,6 +2046,26 @@ curl -X POST http://localhost:8080/chat \
 
 > DeepSeek / Moonshot 官方暂无 embedding 模型，需要请转硅基流动或自部署。
 
+## 与编排框架集成（Eino 等）
+
+本库定位是 **provider 客户端层**：统一多平台调用、用量统计、计费、配额。
+它不做 graph 编排、RAG pipeline、多 agent 协作——那是编排框架（如 [Eino](https://github.com/cloudwego/eino)）的职责。
+两者不互斥，集成边界如下：
+
+- **适配方向**：Eino 的 `ChatModel` 是接口，可写一个薄适配器把本库 `Provider` 包装成
+  Eino ChatModel（`Chat` ↔ `Generate`、`ChatStream` ↔ `Stream`，`Message`/`ContentPart`
+  与 `schema.Message` 的角色、多模态、tool call 字段均可无损互转）。编排归 Eino，
+  provider 与计费层原样保留。
+- **计费不受影响**：`WithObservability` + `NewBillingHook` 挂在 provider 实例上，
+  Eino 经适配器调用时事件照常触发，ctx 中的 UserID/ConversationID 沿 Eino 的
+  ctx 链路自然透传，归账逻辑无需改动。
+- **不要在两层重复做**：接入编排框架后，工具循环（`RunToolLoopStream`）、
+  上下文管理（`TrimMessagesToTokenBudget`/`CompactMessages`）可改由框架的
+  agent/memory 能力承担，避免两层各裁一遍历史。
+- **何时值得接**：多路召回 RAG、多 agent 工作流成为核心需求时再引入；
+  单知识库检索（embedding + 向量库 + 拼 prompt）用本库的 Embedding 能力即可，
+  不需要为此上编排框架。
+
 ## 核心类型参考
 
 ### Provider 接口
@@ -1869,6 +2119,27 @@ type ChatResponse struct {
 resp.HasToolCalls() bool       // 是否包含 tool calls
 resp.AssistantMessage() Message // 转换为可追加到历史的 Message
 ```
+
+### Usage（token 用量统计）
+
+```go
+type Usage struct {
+    PromptTokens     int // 全部输入 token（已包含缓存读/写部分）
+    CompletionTokens int // 全部输出 token（已包含推理部分）
+    ReasoningTokens  int // 推理/思考 token（CompletionTokens 的子集）
+    CacheReadTokens  int // 命中提示词缓存的输入 token（PromptTokens 的子集）
+    CacheWriteTokens int // 写入提示词缓存的输入 token（PromptTokens 的子集，仅 Anthropic）
+    TotalTokens      int // 通常 = PromptTokens + CompletionTokens，provider 返回总量时以其为准
+}
+```
+
+各字段跨 provider 遵循统一的包含关系，可直接用于按 token 计费，无需针对平台做换算：
+
+- **Anthropic** 原始 `input_tokens` 不含缓存部分，本库已归一化为 `PromptTokens = input + cache_read + cache_write`；
+- **Gemini** 原始 `candidatesTokenCount` 不含思考 token，本库已归一化为 `CompletionTokens = candidates + thoughts`；
+- **OpenAI 兼容**平台的语义与上述统一语义天然一致，直接映射。
+
+缓存读、缓存写与常规输入的计价通常不同（如 Anthropic 缓存写约 1.25 倍、缓存读约 0.1 倍），计费时应分别处理这三部分。
 
 ### Message
 
@@ -1956,6 +2227,7 @@ type StreamChunk struct {
     Delta          string          // 增量文本
     ReasoningDelta string          // 增量推理文本
     FinishReason   string          // 非空表示流结束
+    Usage          Usage           // 流尾部 chunk 携带完整 token 统计，其余 chunk 为零值
     ToolCalls      []ToolCallDelta // 流式 tool call 增量
 }
 
