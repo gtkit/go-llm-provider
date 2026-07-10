@@ -6,6 +6,20 @@
 
 ### Added
 
+### Changed
+
+### Deprecated
+
+### Removed
+
+### Fixed
+
+### Security
+
+## [2.6.0] - 2026-07-10
+
+### Added
+
 - `Usage` 新增 `CacheReadTokens` / `CacheWriteTokens` 字段，暴露提示词缓存的读/写 token 数（Anthropic `cache_read_input_tokens` / `cache_creation_input_tokens`、OpenAI `prompt_tokens_details.cached_tokens`、Gemini `cachedContentTokenCount`），便于按缓存价格分档计费；`RunToolLoopWithOptions` 的 `AccumulateUsage` 同步累加新字段
 - 观测 Hook 新增 `stream_complete` 事件（`ObserveOperationStreamComplete`）：流终止时（读到 `io.EOF`、`Recv` 出错或提前 `Close`）上报一次，携带流上观测到的最终 `Usage` 与整个流的持续时长，流式调用的用量记账可统一接入
 - `ObserveEvent` 新增 `StreamFinish` 字段（`eof` / `error` / `closed`），区分流的终止方式，计费方可识别"提前关闭导致 usage 缺失"的漏单场景
@@ -23,20 +37,16 @@
 - README 新增 `Usage` 统一语义说明与流式 token 用量统计用法，含流中断时 usage 缺失的漏单处理建议
 - 新增多模态输出：`ChatRequest.OutputModalities` 声明输出模态，非文本结果经 `ChatResponse.Parts` / `StreamChunk.Parts` 返回（复用 `ContentPart` 载体）；当前 Gemini 原生支持图像输出，其他 provider 收到非文本模态显式返回 `ErrInvalidRequest`；`AssistantMessage` 自动并入非文本输出
 - 流式调用补全计费元数据：`StreamChunk` 新增 `Model` 字段（响应侧实际模型名），`StreamReader` 新增 `Metadata()`（创建时的 RequestID 与响应头，`NewStreamReaderWithMetadata` 构造）；`stream_complete` 事件与 `RecordEntry` 由此携带有效模型名与 RequestID
+- `FallbackProvider` 实现 `DefaultModel()` 探测接口（返回链首默认模型），降级链配合计费时 `RequestModel` 不再为空；README 补充多模型降级链用法与注意事项（`req.Model` 须留空、延迟叠加、流式降级仅在创建阶段）
+- 新增 `NewFallbackProviderWithOptions` 与 `FallbackOptions.ShouldFallback`：自定义降级切换判定，多供应商冗余场景可放宽为 key 失效（401）、模型下线（404）、业务熔断错误也触发切换（默认仍为仅可重试错误）；`FallbackProvider` 支持嵌套组合实现"厂商内穷尽 model 后再切厂商"的两级降级（附测试与 README 说明）
 - `RecordEntry` 新增 `EntryID` 幂等键（`NewEntryID` 生成）；billingstore 流水以唯一索引 + OnConflict DoNothing 实现幂等写入，并新增 `PricingVersion` 费率版本字段
 
 ### Changed
 
 - `Usage` 各字段跨 provider 统一语义：`PromptTokens` 包含缓存读/写部分（Anthropic 原始 `input_tokens` 不含，已归一化），`CompletionTokens` 包含推理部分（Gemini 原始 `candidatesTokenCount` 不含 `thoughtsTokenCount`，已归一化）；使用了 prompt caching 或 Gemini 思考模式的调用方会观察到相应字段数值变化
 
-### Deprecated
-
-### Removed
-
 ### Fixed
 
-- `FallbackProvider` 实现 `DefaultModel()` 探测接口（返回链首默认模型），降级链配合计费时 `RequestModel` 不再为空；README 补充多模型降级链用法与注意事项（`req.Model` 须留空、延迟叠加、流式降级仅在创建阶段）
-- 新增 `NewFallbackProviderWithOptions` 与 `FallbackOptions.ShouldFallback`：自定义降级切换判定，多供应商冗余场景可放宽为 key 失效（401）、模型下线（404）、业务熔断错误也触发切换（默认仍为仅可重试错误）；`FallbackProvider` 支持嵌套组合实现"厂商内穷尽 model 后再切厂商"的两级降级（附测试与 README 说明）
 - 修复 `FallbackProvider` 在调用方 ctx 已取消后仍继续尝试后续 provider 的问题：取消/超时后立即返回，不再发起无意义的尝试
 - 修复客户端中断请求时计费记账随之失败的问题：`NewBillingHook` 交给 Recorder 的 ctx 已剥离取消信号（保留全部 value）——中断场景恰恰最需要落账（漏单审计），记账不再随请求一同取消
 - 修复按模型别名配价时计费查价 miss 的问题（DeepSeek 真实流式验证发现：请求 `deepseek-chat` 实际回传 `deepseek-v4-flash`）：`ObserveEvent` / `RecordEntry` 新增 `RequestModel`（定价口径），`Model` 保留响应侧实际模型名（审计）；请求未指定 model 时自动探测 provider 默认模型（可选接口 `DefaultModel() string`，库内 provider 均已实现，`ObserveOptions.DefaultModel` 可手动覆盖）；billingstore 查价优先 `RequestModel`，流水两个模型名都记录
@@ -48,7 +58,11 @@
 - 修复 Gemini 原生流式调用丢弃 `usageMetadata` 的问题：统计随 `FinishReason` 非空的 chunk 完整给出
 - 修复 Gemini 思考模式下 `Usage.ReasoningTokens` 恒为 0、分项相加与 `TotalTokens` 不一致的问题（解析 `thoughtsTokenCount`）
 
-### Security
+## [2.5.0] - 2026-07-01
+
+### Added
+
+- 新增结构化输出的 schema 派生能力与工具调用重试选项，增强重试路径健壮性
 
 ## [2.4.0] - 2026-05-21
 

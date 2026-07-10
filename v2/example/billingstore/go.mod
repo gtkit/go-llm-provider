@@ -7,7 +7,7 @@ replace github.com/gtkit/go-llm-provider/v2 => ../..
 require (
 	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/glebarez/sqlite v1.11.0
-	github.com/gtkit/go-llm-provider/v2 v2.0.0-00010101000000-000000000000
+	github.com/gtkit/go-llm-provider/v2 v2.5.0
 	github.com/redis/go-redis/v9 v9.21.0
 	github.com/stretchr/testify v1.11.1
 	gorm.io/gorm v1.31.2
@@ -40,7 +40,7 @@ require (
 	go.uber.org/atomic v1.11.0 // indirect
 	golang.org/x/arch v0.29.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
-	golang.org/x/text v0.20.0 // indirect
+	golang.org/x/text v0.40.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	modernc.org/libc v1.22.5 // indirect
 	modernc.org/mathutil v1.5.0 // indirect
