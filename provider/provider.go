@@ -165,6 +165,11 @@ type ChatRequest struct {
 	TopP        *float32
 	Stop        []string
 
+	// StreamUsage 控制流式调用是否请求 token 统计（stream_options.include_usage）。
+	// nil 或 true 时下发（默认），false 时不下发（兼容不认识该参数的老网关/代理，
+	// 此时 StreamChunk.Usage 恒为零值）。
+	StreamUsage *bool
+
 	// ---------- Tool Use ----------
 
 	// Tools 声明本次请求可用的工具列表。
@@ -408,6 +413,11 @@ type StreamChunk struct {
 	Delta        string // 增量文本
 	FinishReason string // 非空时表示流结束
 
+	// Usage 是本次请求的 token 统计，仅在流尾部的 chunk 上非零——
+	// 位于 FinishReason 之后、io.EOF 之前的收尾 chunk（choices 为空）。
+	// 需要统计用量时应读取至 io.EOF，并采用最后一个非零 Usage。
+	Usage Usage
+
 	// ToolCalls 流式模式下的增量 tool call 数据。
 	// 每个 chunk 可能只包含部分 tool call 信息（如部分 arguments），
 	// 调用方需自行累积拼装。对于不涉及 tool call 的 chunk，此字段为 nil。
@@ -584,6 +594,11 @@ func (p *openaiProvider) ChatStream(ctx context.Context, req *ChatRequest) (*Str
 		return nil, err
 	}
 	oReq.Stream = true
+	// 让服务端在最终 chunk 返回整次请求的 token 统计（OpenAI 兼容端点普遍支持）；
+	// 遇到不认识 stream_options 的老网关，可通过 StreamUsage=false 关闭。
+	if req.StreamUsage == nil || *req.StreamUsage {
+		oReq.StreamOptions = &openai.StreamOptions{IncludeUsage: true}
+	}
 
 	stream, err := p.client.CreateChatCompletionStream(ctx, oReq)
 	if err != nil {
@@ -598,34 +613,45 @@ func (p *openaiProvider) ChatStream(ctx context.Context, req *ChatRequest) (*Str
 		if err != nil {
 			return nil, WrapProviderError(p.name, err)
 		}
-
-		chunk := &StreamChunk{}
-		if len(resp.Choices) > 0 {
-			delta := resp.Choices[0].Delta
-			chunk.Delta = delta.Content
-			chunk.FinishReason = string(resp.Choices[0].FinishReason)
-
-			// 映射流式 tool call delta
-			if len(delta.ToolCalls) > 0 {
-				chunk.ToolCalls = make([]ToolCallDelta, 0, len(delta.ToolCalls))
-				for _, tc := range delta.ToolCalls {
-					d := ToolCallDelta{
-						ID: tc.ID,
-						Function: FunctionCallDelta{
-							Name:      tc.Function.Name,
-							Arguments: tc.Function.Arguments,
-						},
-					}
-					if tc.Index != nil {
-						d.Index = *tc.Index
-					}
-					chunk.ToolCalls = append(chunk.ToolCalls, d)
-				}
-			}
-		}
-
-		return chunk, nil
+		return openaiStreamChunk(resp), nil
 	}, stream.Close), nil
+}
+
+// openaiStreamChunk 将 go-openai 的流式响应帧映射为统一 StreamChunk。
+func openaiStreamChunk(resp openai.ChatCompletionStreamResponse) *StreamChunk {
+	chunk := &StreamChunk{}
+	if resp.Usage != nil {
+		chunk.Usage = Usage{
+			PromptTokens:     resp.Usage.PromptTokens,
+			CompletionTokens: resp.Usage.CompletionTokens,
+			TotalTokens:      resp.Usage.TotalTokens,
+		}
+	}
+	if len(resp.Choices) == 0 {
+		return chunk
+	}
+	delta := resp.Choices[0].Delta
+	chunk.Delta = delta.Content
+	chunk.FinishReason = string(resp.Choices[0].FinishReason)
+
+	// 映射流式 tool call delta
+	if len(delta.ToolCalls) > 0 {
+		chunk.ToolCalls = make([]ToolCallDelta, 0, len(delta.ToolCalls))
+		for _, tc := range delta.ToolCalls {
+			d := ToolCallDelta{
+				ID: tc.ID,
+				Function: FunctionCallDelta{
+					Name:      tc.Function.Name,
+					Arguments: tc.Function.Arguments,
+				},
+			}
+			if tc.Index != nil {
+				d.Index = *tc.Index
+			}
+			chunk.ToolCalls = append(chunk.ToolCalls, d)
+		}
+	}
+	return chunk
 }
 
 func (p *openaiProvider) buildRequest(req *ChatRequest) (openai.ChatCompletionRequest, error) {

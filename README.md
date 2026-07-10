@@ -2,7 +2,7 @@
 
 Go 语言统一多模型 LLM 调用库。一套代码接入 OpenAI 以及 DeepSeek、通义千问、智谱、百度千帆、硅基流动、Moonshot 等 OpenAI 兼容平台。
 
-> 版本说明：仓库根目录当前维护 `v1` 代码线（维护模式：只修缺陷，不加能力）；主开发线为 [`./v2/`](./v2/README.md) 子模块。
+> 版本说明：仓库根目录维护 `v1` 代码线，服务存量下游——除缺陷修复外，可回移与类型演进解耦的可靠性能力（重试/降级/用量统计）；多模态、结构化输出、计费体系等类型演进类能力仅在 [`./v2/`](./v2/README.md) 主开发线。
 
 ## v2 比 v1 多了什么
 
@@ -16,7 +16,7 @@ Go 语言统一多模型 LLM 调用库。一套代码接入 OpenAI 以及 DeepSe
 - Gemini 原生 token counting：`TokenCounter` / `CountTokens`。
 - 本地与企业入口：`ProviderOllama`、`NewAzureOpenAIProvider`、`NewBedrockOpenAIProvider`。
 - 更多 OpenAI 兼容 preset：xAI、Groq、Mistral、Cohere。
-- 更完整的横切能力：`ResponseMetadata`、`WithRetry`、`NewFallbackProvider`（含自定义切换判定与多厂商嵌套降级）、`WithObservability`。
+- 更完整的横切能力：`ResponseMetadata`、`WithObservability`（`WithRetry` 与 `NewFallbackProvider` 已回移 v1）。
 - 按用户计费全链路：流式/缓存/推理 token 统一统计、计费 hook 与用量查询、定价表与配额/余额硬限、上下文摘要压缩、流式工具循环、多模态输出（Gemini 图像）。
 
 v1 继续保留兼容维护；多模态、结构化输出、本地推理、token counting 等新能力只在 v2 增加。
@@ -360,6 +360,31 @@ for {
     fmt.Print(chunk.Delta)  // 实时打印增量文本
 }
 ```
+
+#### 流式 token 用量统计
+
+流式调用会自动下发 `stream_options.include_usage`，完整 token 统计随
+`FinishReason` 之后、`io.EOF` 之前的收尾 chunk 返回（`StreamChunk.Usage`）。
+需要统计用量时读取至 `io.EOF` 并采用最后一个非零 `Usage`；
+遇到不认识该参数的老网关，用 `ChatRequest.StreamUsage = &off` 关闭。
+
+#### 内置重试与多 provider 降级
+
+```go
+// 重试：基于 ProviderError.Retryable（限流/超时/5xx/网络才重试）
+p = provider.WithRetry(base, provider.RetryOptions{MaxAttempts: 3})
+
+// 降级链：按序尝试，可自定义切换判定（如 key 失效、业务熔断错也切换）；
+// 各成员在构造时配置模型，req.Model 留空（显式指定会覆盖所有成员、导致降级失效）
+fb, _ := provider.NewFallbackProviderWithOptions([]provider.Provider{primary, backup},
+    provider.FallbackOptions{ShouldFallback: func(err error) bool {
+        return provider.IsRetryableError(err) || errors.Is(err, provider.ErrAuth)
+    }})
+```
+
+ctx 取消/超时后两者都会立即停止，不再发起无意义的尝试。
+`FallbackProvider` 可嵌套组合实现"厂商内穷尽 model 后再切厂商"的两级降级。
+与 v2 的差异：v1 的重试不解析 `Retry-After` 响应头（统一按本地退避策略）。
 
 如果你希望保留 `Close` 错误，也可以显式处理：
 

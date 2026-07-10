@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -730,4 +731,82 @@ func TestOpenAIProviderChatStreamMapsSSE(t *testing.T) {
 
 	_, err = stream.Recv()
 	require.ErrorIs(t, err, io.EOF)
+}
+
+func TestOpenAIProviderChatStreamReportsUsageV1(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&captured))
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"deepseek-chat\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: {\"id\":\"c2\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"deepseek-chat\",\"choices\":[],\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":4,\"total_tokens\":13}}\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(srv.Close)
+
+	p, err := NewProvider(ProviderConfig{
+		Name:    ProviderDeepSeek,
+		BaseURL: srv.URL,
+		APIKey:  "sk-test",
+		Model:   "deepseek-chat",
+	})
+	require.NoError(t, err)
+
+	stream, err := p.ChatStream(t.Context(), &ChatRequest{
+		Messages: []Message{{Role: RoleUser, Content: "hello"}},
+	})
+	require.NoError(t, err)
+	defer func() { _ = stream.Close() }()
+
+	first, err := stream.Recv()
+	require.NoError(t, err)
+	assert.Equal(t, "hi", first.Delta)
+	assert.Equal(t, Usage{}, first.Usage)
+
+	// usage 位于 FinishReason 之后、[DONE] 之前的收尾 chunk。
+	second, err := stream.Recv()
+	require.NoError(t, err)
+	assert.Equal(t, Usage{PromptTokens: 9, CompletionTokens: 4, TotalTokens: 13}, second.Usage)
+
+	_, err = stream.Recv()
+	require.ErrorIs(t, err, io.EOF)
+
+	streamOptions, ok := captured["stream_options"].(map[string]any)
+	require.True(t, ok, "默认应下发 stream_options.include_usage")
+	assert.Equal(t, true, streamOptions["include_usage"])
+}
+
+func TestOpenAIProviderChatStreamUsageOptOutV1(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&captured))
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(srv.Close)
+
+	p, err := NewProvider(ProviderConfig{
+		Name:    ProviderDeepSeek,
+		BaseURL: srv.URL,
+		APIKey:  "sk-test",
+		Model:   "deepseek-chat",
+	})
+	require.NoError(t, err)
+
+	off := false
+	stream, err := p.ChatStream(t.Context(), &ChatRequest{
+		Messages:    []Message{{Role: RoleUser, Content: "hello"}},
+		StreamUsage: &off,
+	})
+	require.NoError(t, err)
+	defer func() { _ = stream.Close() }()
+	_, err = stream.Recv()
+	require.ErrorIs(t, err, io.EOF)
+
+	_, ok := captured["stream_options"]
+	assert.False(t, ok, "StreamUsage=false 不应下发 stream_options")
 }
