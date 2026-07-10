@@ -1,4 +1,4 @@
-.PHONY: tool check tag release-check-root release-check-v2 release-check
+.PHONY: tool check tag release-check-root release-check-v2 release-check-billingstore release-check
 
 
 LINT_TARGETS ?= ./...
@@ -36,7 +36,12 @@ release-check-v2: ## Run release checks for v2 module and enforce provider cover
 		{ echo "v2 provider coverage $$cover% is below $(MIN_PROVIDER_COVERAGE)%"; exit 1; }; \
 	echo "v2 provider coverage $$cover% (threshold $(MIN_PROVIDER_COVERAGE)%)"
 
-release-check: release-check-root release-check-v2 ## Run release checks for both root and v2 modules
+release-check-billingstore: ## Run release checks for the billingstore example module
+	cd v2/example/billingstore && go vet ./...
+	cd v2/example/billingstore && golangci-lint run ./...
+	cd v2/example/billingstore && go test -race -count=1 -timeout=5m ./...
+
+release-check: release-check-root release-check-v2 release-check-billingstore ## Run release checks for all modules
 
 ## 推送标签到远程仓库时，通常不需要指定分支
 tag: ## Create a local annotated tag. Usage: make tag VERSION=v1.4.0

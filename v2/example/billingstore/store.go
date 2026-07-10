@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -27,6 +29,31 @@ const (
 
 // ErrBufferFull 表示流水缓冲已满、本条记录被丢弃（Redis 计数不受影响）。
 var ErrBufferFull = errors.New("billingstore: usage record buffer full, record dropped")
+
+// ErrStoreClosed 表示 Store 已关闭，后续 Record 被拒绝。
+var ErrStoreClosed = errors.New("billingstore: store is closed")
+
+// idempotencyTTL 是 EntryID 幂等标记在 Redis 中的保留时长（重放去重窗口）。
+const idempotencyTTL = 24 * time.Hour
+
+// usageIncrScript 以单个原子脚本完成：EntryID 幂等检查（SETNX）、
+// 总量与当日两个 HASH 的全部字段累计、当日 key 的 TTL 设置。
+// 重放（同 EntryID）时整体跳过，返回 0；首次执行返回 1。
+// KEYS: 1=幂等 key, 2=总量 key, 3=当日 key
+// ARGV: 1=tokens, 2=costMicros, 3=当日 TTL 秒, 4=幂等 TTL 秒
+var usageIncrScript = redis.NewScript(`
+if redis.call('SET', KEYS[1], '1', 'NX', 'EX', ARGV[4]) == false then
+  return 0
+end
+redis.call('HINCRBY', KEYS[2], 'total_tokens', ARGV[1])
+redis.call('HINCRBY', KEYS[2], 'cost_micros', ARGV[2])
+redis.call('HINCRBY', KEYS[2], 'calls', 1)
+redis.call('HINCRBY', KEYS[3], 'total_tokens', ARGV[1])
+redis.call('HINCRBY', KEYS[3], 'cost_micros', ARGV[2])
+redis.call('HINCRBY', KEYS[3], 'calls', 1)
+redis.call('EXPIRE', KEYS[3], ARGV[3])
+return 1
+`)
 
 // Config 配置 Store。Redis 为必填；其余均有默认值。
 type Config struct {
@@ -67,6 +94,9 @@ type Store struct {
 	pending chan UsageRecord
 	done    chan struct{}
 	stopped chan struct{}
+
+	closeOnce sync.Once
+	closed    atomic.Bool
 }
 
 var (
@@ -110,18 +140,21 @@ func (s *Store) Record(ctx context.Context, entry provider.RecordEntry) error {
 	if entry.UserID == "" {
 		return nil
 	}
-
-	costMicros := s.entryCost(entry)
-	s.incrRedis(ctx, entry, costMicros)
-
-	if s.cfg.DB == nil {
-		return nil
+	if s.closed.Load() {
+		return ErrStoreClosed
 	}
 	entryID := entry.EntryID
 	if entryID == "" {
 		// 直接构造 RecordEntry（未经 NewBillingHook）的调用路径：
-		// 兜底生成幂等键，避免空值在唯一索引下互相冲突。
+		// 兜底生成幂等键，避免重放重复累计与唯一索引冲突。
 		entryID = provider.NewEntryID()
+	}
+
+	costMicros := s.entryCost(entry)
+	s.incrRedis(ctx, entryID, entry, costMicros)
+
+	if s.cfg.DB == nil {
+		return nil
 	}
 	record := UsageRecord{
 		EntryID:          entryID,
@@ -195,10 +228,14 @@ func (s *Store) Allow(ctx context.Context, userID, _ string) error {
 	return nil
 }
 
-// Close 停止后台循环并冲刷剩余流水。
+// Close 停止后台循环并冲刷剩余流水；可安全重复调用。
+// 关闭后 Record 返回 ErrStoreClosed。
 func (s *Store) Close() error {
-	close(s.done)
-	<-s.stopped
+	s.closeOnce.Do(func() {
+		s.closed.Store(true)
+		close(s.done)
+		<-s.stopped
+	})
 	return nil
 }
 
@@ -232,30 +269,24 @@ func (s *Store) entryCurrency(entry provider.RecordEntry) string {
 	return ""
 }
 
-// incrRedis 对总量与当日两个 HASH 做原子累计。
-func (s *Store) incrRedis(ctx context.Context, entry provider.RecordEntry, costMicros int64) {
+// incrRedis 通过 Lua 脚本原子完成幂等检查与两级累计：
+// 同一 EntryID 重放时整体跳过（token、费用、调用次数都只计一次）。
+func (s *Store) incrRedis(ctx context.Context, entryID string, entry provider.RecordEntry, costMicros int64) {
 	now := time.Now()
-	for _, key := range []string{
+	keys := []string{
+		s.cfg.KeyPrefix + ":entry:" + entryID,
 		s.usageKey(entry.UserID, QuotaPeriodTotal, now),
 		s.usageKey(entry.UserID, QuotaPeriodDaily, now),
-	} {
-		if err := s.incrKey(ctx, key, entry, costMicros); err != nil {
-			s.reportError(fmt.Errorf("billingstore: incr %s: %w", key, err))
-		}
 	}
-	if err := s.cfg.Redis.Expire(ctx, s.usageKey(entry.UserID, QuotaPeriodDaily, now), dailyKeyTTL).Err(); err != nil {
-		s.reportError(fmt.Errorf("billingstore: expire daily key: %w", err))
+	args := []any{
+		int64(entry.Usage.TotalTokens),
+		costMicros,
+		int64(dailyKeyTTL / time.Second),
+		int64(idempotencyTTL / time.Second),
 	}
-}
-
-func (s *Store) incrKey(ctx context.Context, key string, entry provider.RecordEntry, costMicros int64) error {
-	if err := s.cfg.Redis.HIncrBy(ctx, key, fieldTotalTokens, int64(entry.Usage.TotalTokens)).Err(); err != nil {
-		return err
+	if err := usageIncrScript.Run(ctx, s.cfg.Redis, keys, args...).Err(); err != nil {
+		s.reportError(fmt.Errorf("billingstore: usage incr script: %w", err))
 	}
-	if err := s.cfg.Redis.HIncrBy(ctx, key, fieldCostMicros, costMicros).Err(); err != nil {
-		return err
-	}
-	return s.cfg.Redis.HIncrBy(ctx, key, fieldCalls, 1).Err()
 }
 
 // usageKey 返回累计 HASH 的 key：总量 {prefix}:{uid}:total，当日 {prefix}:{uid}:{yyyymmdd}。

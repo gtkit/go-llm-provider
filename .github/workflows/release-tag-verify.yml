@@ -28,6 +28,20 @@ jobs:
           install-mode: binary
           args: --version
 
+      - name: Verify tag matches module Version constant
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          case "$TAG" in
+            v1.*) FILE="version.go" ;;
+            v2.*) FILE="v2/version.go" ;;
+            *) echo "unrecognized tag $TAG"; exit 1 ;;
+          esac
+          CONST=$(grep -oE 'Version = "v[0-9]+\.[0-9]+\.[0-9]+[^"]*"' "$FILE" | grep -oE 'v[0-9][^"]*')
+          if [ "$CONST" != "$TAG" ]; then
+            echo "tag $TAG does not match $FILE Version constant $CONST"; exit 1
+          fi
+          echo "version constant check passed: $TAG"
+
       - name: Verify root module
         run: |
           go vet ./...
@@ -50,3 +64,10 @@ jobs:
           coverage=$(go tool cover -func=coverage.out | awk '/^total:/ {gsub("%","",$3); print $3}')
           awk -v got="$coverage" 'BEGIN { if (got+0 < 80.0) exit 1 }' || { echo "v2 provider coverage $coverage% < 80%"; exit 1; }
           echo "v2 provider coverage: $coverage%"
+
+      - name: Verify billingstore example module
+        working-directory: v2/example/billingstore
+        run: |
+          go vet ./...
+          golangci-lint run ./...
+          go test -race -count=1 -timeout=5m ./...

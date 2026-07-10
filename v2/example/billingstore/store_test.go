@@ -100,14 +100,18 @@ func TestStoreRecordAccumulatesAndFlushes(t *testing.T) {
 }
 
 func TestStoreRecordIdempotentByEntryID(t *testing.T) {
-	store, _, db := newTestStore(t, nil)
+	store, mr, db := newTestStore(t, nil)
 	ctx := t.Context()
 
 	entry := testEntry(100)
 	entry.EntryID = "fixed-entry-id"
-	// 同一 EntryID 重复写入（模拟重放）：流水只落一条。
+	// 同一 EntryID 重复写入（模拟重放）：Redis 与流水都只计一次。
 	require.NoError(t, store.Record(ctx, entry))
 	require.NoError(t, store.Record(ctx, entry))
+
+	// Redis 幂等：token、调用次数均只累计一次（Lua 脚本整体跳过重放）。
+	assert.Equal(t, "100", mr.HGet("llm:usage:u1:total", fieldTotalTokens))
+	assert.Equal(t, "1", mr.HGet("llm:usage:u1:total", fieldCalls))
 
 	require.Eventually(t, func() bool {
 		var count int64
@@ -190,4 +194,20 @@ func TestStoreRecordWithoutDB(t *testing.T) {
 	assert.Equal(t, "100", mr.HGet("llm:usage:u1:total", fieldTotalTokens))
 	// DB 为 nil：限额视为不限。
 	require.NoError(t, store.Allow(t.Context(), "u1", ""))
+}
+
+func TestStoreCloseIsIdempotent(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+
+	store, err := New(Config{Redis: client})
+	require.NoError(t, err)
+
+	require.NoError(t, store.Close())
+	require.NoError(t, store.Close(), "重复 Close 不应 panic")
+
+	// 关闭后 Record 显式拒绝，不静默丢失。
+	err = store.Record(t.Context(), testEntry(10))
+	require.ErrorIs(t, err, ErrStoreClosed)
 }

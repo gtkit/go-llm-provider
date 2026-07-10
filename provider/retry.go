@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"math/rand/v2"
 	"time"
 )
@@ -36,6 +37,11 @@ func ExponentialBackoffWithJitter(base, maximum time.Duration) BackoffFunc {
 		d := inner(attempt)
 		if d <= 0 {
 			return 0
+		}
+		if d == math.MaxInt64 {
+			// int64(d)+1 会溢出为负并使 rand.Int64N panic；
+			// 上界处退化为 [0, d)，少一个端点无实际影响。
+			return time.Duration(rand.Int64N(int64(d)))
 		}
 		return time.Duration(rand.Int64N(int64(d) + 1))
 	}

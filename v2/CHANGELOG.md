@@ -6,6 +6,9 @@
 
 ### Added
 
+- `PricingTable.Cost` 新增费率与用量合法性校验：负费率、负 token、费率超过上限（1e12 微元/1M）返回新增 sentinel `ErrInvalidPricing`，杜绝非法配置导致的静默溢出错账
+- billingstore：`Store.Close` 幂等可重复调用，关闭后 `Record` 返回 `ErrStoreClosed`；GoDoc 补计费主线 Example（NewBillingHook / CostBudgetMiddleware / CompactMessages / RunToolLoopStream）
+
 ### Changed
 
 ### Deprecated
@@ -13,6 +16,10 @@
 ### Removed
 
 ### Fixed
+
+- 修复 billingstore 计费幂等未覆盖 Redis 的问题：EntryID 幂等检查、总量/当日累计与 TTL 现由单个 Lua 脚本原子完成，重放时 token、费用、调用次数只计一次（此前仅数据库层去重，Redis 会重复累计导致账单与配额错误）
+- 修复 `ExponentialBackoffWithJitter` 在上界为 `math.MaxInt64` 时整数溢出触发 panic 的问题（v1 同步修复）
+- 修正 billingstore 的 go.mod 依赖声明（require v2.6.0，此前为 v2.5.0 被本地 replace 掩盖）
 
 ### Security
 

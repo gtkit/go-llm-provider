@@ -111,3 +111,28 @@ func TestFormatMicros(t *testing.T) {
 	assert.Equal(t, "5", FormatMicros(5_000_000))
 	assert.Equal(t, "-0.5", FormatMicros(-500_000))
 }
+
+func TestPricingTableCostRejectsInvalidInput(t *testing.T) {
+	t.Parallel()
+
+	t.Run("费率超出上限报错而非静默溢出", func(t *testing.T) {
+		t.Parallel()
+		table := PricingTable{"m": {InputPer1M: 1 << 62, Currency: "CNY"}}
+		_, _, err := table.Cost("m", Usage{PromptTokens: 2})
+		require.ErrorIs(t, err, ErrInvalidPricing)
+	})
+
+	t.Run("负费率报错", func(t *testing.T) {
+		t.Parallel()
+		table := PricingTable{"m": {InputPer1M: -1, Currency: "CNY"}}
+		_, _, err := table.Cost("m", Usage{PromptTokens: 1})
+		require.ErrorIs(t, err, ErrInvalidPricing)
+	})
+
+	t.Run("负 token 报错", func(t *testing.T) {
+		t.Parallel()
+		table := PricingTable{"m": {InputPer1M: 1_000_000, Currency: "CNY"}}
+		_, _, err := table.Cost("m", Usage{PromptTokens: -5})
+		require.ErrorIs(t, err, ErrInvalidPricing)
+	})
+}

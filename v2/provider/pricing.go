@@ -20,6 +20,10 @@ type ModelRate struct {
 // PricingTable 是模型名到费率的映射，由调用方注入并维护——
 // 本库不硬编码任何厂商价格（价格会过期）。
 // 底层成本价与对用户售价是两套业务口径，各自实例化一份表即可。
+//
+// 表在注入后应视为只读：价格调整时构造新表整体替换（并更新
+// billingstore 的 PricingVersion），不要在运行中修改条目——
+// map 并发读写会触发 data race。
 type PricingTable map[string]ModelRate
 
 // Cost 计算一次调用的费用（微元）。
@@ -41,6 +45,12 @@ func (t PricingTable) Cost(model string, usage Usage) (micros int64, currency st
 	if !ok {
 		return 0, "", fmt.Errorf("%w: %q", ErrModelNotPriced, model)
 	}
+	if err := validateRate(model, rate); err != nil {
+		return 0, "", err
+	}
+	if err := validateUsage(usage); err != nil {
+		return 0, "", err
+	}
 
 	cacheReadRate := fallbackRate(rate.CacheReadPer1M, rate.InputPer1M)
 	cacheWriteRate := fallbackRate(rate.CacheWritePer1M, rate.InputPer1M)
@@ -61,6 +71,34 @@ func (t PricingTable) Cost(model string, usage Usage) (micros int64, currency st
 
 // tokensPerRateUnit 是费率的计量基数：ModelRate 各单价均为"每 1M tokens"。
 const tokensPerRateUnit = 1_000_000
+
+// maxRatePer1M 是费率合法上限（1e12 微元 / 1M tokens，即每百万 token 一百万元），
+// 远超任何真实模型定价三个数量级。上限校验把 Cost 注释中的溢出余量分析
+// 从假设变成硬保证：合法费率与 token 量下，乘加全程不会越过 int64。
+const maxRatePer1M = 1_000_000_000_000
+
+func validateRate(model string, rate ModelRate) error {
+	for _, per1M := range []int64{
+		rate.InputPer1M, rate.OutputPer1M, rate.CacheReadPer1M, rate.CacheWritePer1M, rate.ReasoningPer1M,
+	} {
+		if per1M < 0 || per1M > maxRatePer1M {
+			return fmt.Errorf("%w: model %q rate %d out of [0, %d]", ErrInvalidPricing, model, per1M, int64(maxRatePer1M))
+		}
+	}
+	return nil
+}
+
+func validateUsage(usage Usage) error {
+	for _, n := range []int{
+		usage.PromptTokens, usage.CompletionTokens, usage.ReasoningTokens,
+		usage.CacheReadTokens, usage.CacheWriteTokens, usage.TotalTokens,
+	} {
+		if n < 0 {
+			return fmt.Errorf("%w: negative token count %d", ErrInvalidPricing, n)
+		}
+	}
+	return nil
+}
 
 func fallbackRate(rate, fallback int64) int64 {
 	if rate > 0 {

@@ -68,6 +68,11 @@ func (r *CompactResult) Compacted() bool {
 // 低频触发，而不是每轮对话都调用。已缓存的摘要再次参与压缩时会被一并
 // 总结进新摘要（增量摘要自然成立）。摘要生成失败时返回错误、不静默降级——
 // 调用方可回退到 TrimMessagesToTokenBudget 硬裁剪。入参 slice 不会被修改。
+//
+// 已知限制：被压缩的旧历史会整体拼入一次摘要请求，历史极端庞大时摘要请求
+// 自身可能超出摘要模型的上下文窗口。按 TriggerTokens 低频触发并缓存摘要
+// （增量摘要）可使输入保持自然上界；若仍超限，先用 TrimMessagesToTokenBudget
+// 将历史裁剪到摘要模型窗口内再压缩。
 func CompactMessages(ctx context.Context, p Provider, msgs []Message, opts CompactOptions) (*CompactResult, error) {
 	if providerIsNil(p) {
 		return nil, ErrNilProvider
