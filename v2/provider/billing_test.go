@@ -119,6 +119,42 @@ func TestNewBillingHookSkipsAndTerminatedSemantics(t *testing.T) {
 	assert.False(t, entries[1].Terminated)
 }
 
+// TestNewBillingHookSurvivesCanceledContext 验证客户端中断场景的记账韧性：
+// 请求 ctx 已取消时，Recorder 收到的 ctx 应剥离取消信号（漏单审计必须落账），
+// 且 UserID 等 value 保持可读。
+func TestNewBillingHookSurvivesCanceledContext(t *testing.T) {
+	t.Parallel()
+
+	var gotCtx context.Context
+	rec := &funcRecorder{fn: func(ctx context.Context, _ RecordEntry) error {
+		gotCtx = ctx
+		return nil
+	}}
+	hook := NewBillingHook(rec)
+
+	ctx, cancel := context.WithCancel(WithUserID(t.Context(), "u1"))
+	cancel() // 模拟客户端中断：hook 触发时请求 ctx 已取消
+
+	hook(ctx, ObserveEvent{
+		Operation:    ObserveOperationStreamComplete,
+		StreamFinish: StreamFinishClosed,
+	})
+
+	require.NotNil(t, gotCtx, "取消的 ctx 不应阻止记账")
+	require.NoError(t, gotCtx.Err(), "Recorder 收到的 ctx 应已剥离取消信号")
+	userID, ok := UserIDFromContext(gotCtx)
+	assert.True(t, ok)
+	assert.Equal(t, "u1", userID, "ctx value 应保留")
+}
+
+type funcRecorder struct {
+	fn func(context.Context, RecordEntry) error
+}
+
+func (r *funcRecorder) Record(ctx context.Context, entry RecordEntry) error {
+	return r.fn(ctx, entry)
+}
+
 func TestCombineObserveHooks(t *testing.T) {
 	t.Parallel()
 

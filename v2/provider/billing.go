@@ -107,6 +107,9 @@ type UsageRecorder interface {
 // 业务调用点无需任何统计代码。ctx 未携带 UserID 的调用跳过计量；
 // 流创建事件（ObserveOperationStream）不含 usage，同样跳过。
 // Record 返回的 error 被忽略，计量失败绝不影响主请求。
+//
+// Record 收到的 ctx 已剥离取消信号（保留全部 value）：请求被客户端中断时
+// ctx 已取消，而中断场景恰恰最需要记账（漏单审计），记账动作不得随请求一同取消。
 func NewBillingHook(rec UsageRecorder) ObserveHook {
 	if rec == nil {
 		return func(context.Context, ObserveEvent) {}
@@ -139,7 +142,7 @@ func NewBillingHook(rec UsageRecorder) ObserveHook {
 			Err:             event.Err,
 			ErrorCode:       event.ErrorCode,
 		}
-		_ = rec.Record(ctx, entry)
+		_ = rec.Record(context.WithoutCancel(ctx), entry)
 	}
 }
 

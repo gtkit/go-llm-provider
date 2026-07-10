@@ -54,6 +54,8 @@ llm-provider/
     ├── tooluse/main.go        # Tool Use 手动多轮示例
     ├── toolloop/main.go       # RunToolLoop 自动循环示例
     ├── middleware/main.go     # Middleware：Logging / TokenStats / Retry 参考实现
+    ├── chatbilling/main.go    # 按用户计费端到端：计费 hook / 配额 / 余额硬限 / 流式工具循环 / 摘要压缩 / 账单
+    ├── billingstore/          # 计费存储参考实现（Redis + GORM，独立 go.mod）
     └── embedding/main.go      # Embedding + RAG 最小闭环示例
 ```
 
@@ -1488,6 +1490,62 @@ resp, err := retrying.Chat(ctx, req)
 
 > 限制：`Retry-After` 仅对**原生 HTTP provider**（Claude / Gemini / Ollama）生效。OpenAI 兼容路径复用 `sashabaranov/go-openai`，其错误类型不暴露响应头，无法读取 `Retry-After`，这类 provider 会回退到退避策略（建议配 `ExponentialBackoffWithJitter`）。
 
+### 熔断集成（Circuit Breaker）
+
+熔断器是通用弹性组件（保护任意外部调用，且实现各有取舍），本库不内置——
+与日志、限流同理，通过 Middleware 挂接你选定的熔断实现（如基于
+`sony/gobreaker/v2` 的封装）只需几行胶水：
+
+```go
+// b := breaker.New[*provider.ChatResponse]("llm-deepseek")   // 你的熔断器，每个上游一个实例
+func breakerMiddleware(b *breaker.Breaker[*provider.ChatResponse]) provider.Middleware {
+    return func(next provider.Handler) provider.Handler {
+        return func(ctx context.Context, req *provider.ChatRequest) (*provider.ChatResponse, error) {
+            return b.Execute(func() (*provider.ChatResponse, error) { return next(ctx, req) })
+        }
+    }
+}
+
+// 流式：熔断包在"流创建"阶段
+func breakerStreamMiddleware(b *breaker.Breaker[*provider.StreamReader]) provider.StreamMiddleware {
+    return func(next provider.StreamHandler) provider.StreamHandler {
+        return func(ctx context.Context, req *provider.ChatRequest) (*provider.StreamReader, error) {
+            return b.Execute(func() (*provider.StreamReader, error) { return next(ctx, req) })
+        }
+    }
+}
+```
+
+**与降级链联动**：熔断开启时快速失败的错误不是库的可重试错误，默认不会触发
+降级切换——在 `FallbackOptions.ShouldFallback` 里显式识别它，熔断开启即刻切换
+到下一个厂商，这正是"熔断 + 降级"配套的意义：
+
+```go
+provider.FallbackOptions{ShouldFallback: func(err error) bool {
+    return provider.IsRetryableError(err) || errors.Is(err, gobreaker.ErrOpenState)
+}}
+```
+
+**流式注意点**：上面的流式熔断只统计**创建阶段**的失败——平台故障有时表现为
+"建流成功但立刻断流"，这类失败熔断器感知不到。要覆盖它，用 `stream_complete`
+观测事件回喂熔断器，无需改动 Recv 循环：
+
+```go
+var errStreamAborted = errors.New("stream aborted mid-flight")
+
+provider.ObserveOptions{OnEvent: func(_ context.Context, e provider.ObserveEvent) {
+    if e.Operation == provider.ObserveOperationStreamComplete &&
+        e.StreamFinish == provider.StreamFinishError {
+        // gobreaker 类实现没有手动上报接口，用空执行喂入一次失败即可。
+        _, _ = b.Execute(func() (*provider.StreamReader, error) { return nil, errStreamAborted })
+    }
+}}
+```
+
+装配位置建议：熔断在**每个降级链成员**上（每个上游独立熔断、独立恢复），
+不要包在整条链外（一个上游故障会把整条链熔断）。熔断实现建议做成团队级
+独立包复用，不要锁在单个业务仓库的 `internal/` 里。
+
 ### 观测 Hook（日志 / 指标 / Trace）
 
 `WithObservability` 提供零外部依赖的观测 hook，不绑定 `slog`、Prometheus 或 OpenTelemetry。每次 `Chat`、`ChatStream`、`Embed` 完成后，库会向 `OnEvent` 发送一个 `ObserveEvent`，其中包含 operation、provider、model、duration、usage、metadata、request id 和错误分类。
@@ -1650,7 +1708,57 @@ if err != nil {
 resp, err := fallback.Chat(ctx, req)
 ```
 
-`FallbackProvider` 会按传入顺序调用 provider。只有当前 provider 返回可重试错误时，才会继续尝试下一个 provider；遇到无效请求、鉴权失败等不可重试错误会立即返回，避免把调用方问题扩散到备用平台。
+`FallbackProvider` 会按传入顺序调用 provider。只有当前 provider 返回可重试错误
+（限流 / 超时 / 5xx / 网络错误）时，才会继续尝试下一个 provider；遇到无效请求、
+鉴权失败、内容审核拦截等不可重试错误会立即返回，避免把调用方问题扩散到备用平台。
+
+**同平台多模型降级链**：构造多个实例、各配不同默认模型即可（也可跨平台混编）：
+
+```go
+fast, _ := provider.NewProviderFromPreset(provider.ProviderDeepSeek, key, "deepseek-chat")
+backup, _ := provider.NewProviderFromPreset(provider.ProviderQwen, qwenKey, "qwen-max")
+p, _ := provider.NewFallbackProvider(fast, backup)
+```
+
+降级链使用须知：
+
+- **`req.Model` 必须留空**——它的语义是"显式覆盖默认模型"，会跟随请求传给链上
+  每个成员，导致降级后仍请求同一个模型、降级失效；留空让各成员用自己的默认模型。
+- **切换对调用方功能无感知，但延迟会叠加**（前面成员的失败耗时 + 当前成员耗时）；
+  给各成员配独立的短超时 `HTTPClient` 可以快速失败、快速切换。
+- **流式的降级只发生在流创建阶段**：打字机开始输出后中途断流不会切换（半截内容
+  无法无缝接续），中断会经 `stream_complete`（`Terminated=true`）正常进入计费审计。
+- **计费口径**：`RequestModel` 取链首默认模型，实际服务的模型由响应侧 `Model`
+  如实记录；链上所有可能的模型都应配入 `PricingTable`。
+- 与 `WithRetry` 组合时，把 retry 包在**每个成员**上（先重试同模型再降级），
+  而不是包在整条链外（那会整链重跑）。
+- **自定义切换判定**：多供应商冗余场景常需要放宽切换条件（key 失效、模型下线、
+  业务熔断错也切换），用 `NewFallbackProviderWithOptions` 注入：
+
+  ```go
+  p, _ := provider.NewFallbackProviderWithOptions([]provider.Provider{fast, backup},
+      provider.FallbackOptions{ShouldFallback: func(err error) bool {
+          return provider.IsRetryableError(err) ||
+              errors.Is(err, provider.ErrAuth) || isBreakerOpen(err)
+      }})
+  ```
+
+  无论判定如何，ctx 已取消/超时时都会立即返回、不再尝试后续成员（调用方已放弃）。
+  全部失败时的"服务繁忙"降级响应属于产品 UX 语义，留在业务层包装。
+
+**多厂商两级降级**（厂商内先穷尽所有 model，再切下一个厂商）：`FallbackProvider`
+本身实现 `Provider` 接口，可嵌套组合；简单场景用扁平链把"厂商×model"按优先级
+排成一列效果等价：
+
+```go
+vendorA, _ := provider.NewFallbackProvider(dsChat, dsReasoner)   // 厂商 A 的 model 链
+vendorB, _ := provider.NewFallbackProvider(qwenMax, qwenPlus)    // 厂商 B 的 model 链
+top, _ := provider.NewFallbackProvider(vendorA, vendorB)         // 厂商间降级
+// A 的所有 model 依次失败后，才会尝试 B 的 model 链
+```
+
+嵌套的价值是**每层可配不同的切换判定**（如厂商内只切 5xx/超时、厂商间连 key
+失效也切）；不需要分层策略时，扁平链更简单。
 
 完整示例见 [`example/middleware/main.go`](example/middleware/main.go)。
 示例还演示了 `tokenStatsMiddleware(stats *int64)`，用 `atomic.AddInt64` 累计总 token 消耗。
@@ -1830,13 +1938,15 @@ history = provider.TrimMessagesToTokenBudget(history, 30_000)
 保留最近 N 组原文——比硬裁剪多花一次摘要调用，但信息不丢失，多轮下净节省显著：
 
 ```go
-compacted, summaryResp, err := provider.CompactMessages(ctx, p, history, provider.CompactOptions{
+result, err := provider.CompactMessages(ctx, p, history, provider.CompactOptions{
     Model:            "deepseek-chat", // 摘要用便宜模型即可
     KeepRecentGroups: 4,               // 最近 4 组保留原文
     TriggerTokens:    20_000,          // 低于阈值不压缩，避免短对话空耗
 })
-if summaryResp != nil {
-    history = compacted // 压缩发生了：缓存结果，后续轮次复用
+if err == nil && result.Compacted() {
+    history = result.Messages
+    // 业务缓存摘要，供后续轮次直接组装（system + 摘要 + 新原文），无需每轮压缩：
+    conv.UpdateSummary(result.Summary, result.CompactedCount) // 摘要正文 + 覆盖的消息条数
 }
 ```
 

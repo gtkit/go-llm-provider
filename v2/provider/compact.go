@@ -38,25 +38,45 @@ type CompactOptions struct {
 	SummaryPrompt string
 }
 
-// CompactMessages 将较早的对话历史压缩为一条摘要消息，实现多轮对话的
-// token 节省：返回的消息序列为 [system 消息…, 摘要消息(user 角色), 最近 N 组原文…]。
+// CompactResult 是 CompactMessages 的结构化结果，携带业务缓存摘要所需的全部信息。
+type CompactResult struct {
+	// Messages 是压缩后可直接发送的消息序列：
+	// [system 消息…, 摘要消息(user 角色), 最近 N 组原文…]；未压缩时为原序列。
+	Messages []Message
+
+	// Summary 是摘要正文（不含前缀），供业务按会话缓存、下轮自行组装上下文；
+	// 未发生压缩时为空。
+	Summary string
+
+	// CompactedCount 是被压缩进摘要的非 system 消息条数（按入参序列口径），
+	// 业务可据此记录"摘要覆盖到第几条"（如 summary_upto_seq）；未压缩时为 0。
+	CompactedCount int
+
+	// Response 是摘要调用的响应（含 Usage，经计费 hook 正常归账）；未压缩时为 nil。
+	Response *ChatResponse
+}
+
+// Compacted 报告本次调用是否实际发生了压缩。
+func (r *CompactResult) Compacted() bool {
+	return r != nil && r.Response != nil
+}
+
+// CompactMessages 将较早的对话历史压缩为一条摘要消息，实现多轮对话的 token 节省。
 //
 // 摘要通过一次 LLM 调用生成（消耗 token，也会被计费 hook 正常归账），
-// 因此正确用法是业务侧缓存压缩结果、按 TriggerTokens 阈值低频触发，
-// 而不是每轮对话都调用。摘要生成失败时返回错误、不静默降级——
-// 调用方可回退到 TrimMessagesToTokenBudget 硬裁剪。
-//
-// 返回值：压缩后的消息序列、摘要调用的响应（含 Usage；未触发压缩时为 nil）。
-// 入参 slice 不会被修改。
-func CompactMessages(ctx context.Context, p Provider, msgs []Message, opts CompactOptions) ([]Message, *ChatResponse, error) {
+// 因此正确用法是业务侧缓存 Summary 与 CompactedCount、按 TriggerTokens 阈值
+// 低频触发，而不是每轮对话都调用。已缓存的摘要再次参与压缩时会被一并
+// 总结进新摘要（增量摘要自然成立）。摘要生成失败时返回错误、不静默降级——
+// 调用方可回退到 TrimMessagesToTokenBudget 硬裁剪。入参 slice 不会被修改。
+func CompactMessages(ctx context.Context, p Provider, msgs []Message, opts CompactOptions) (*CompactResult, error) {
 	if providerIsNil(p) {
-		return nil, nil, ErrNilProvider
+		return nil, ErrNilProvider
 	}
 	if len(msgs) == 0 {
-		return msgs, nil, nil
+		return &CompactResult{Messages: msgs}, nil
 	}
 	if opts.TriggerTokens > 0 && EstimateTokens(msgs) <= opts.TriggerTokens {
-		return msgs, nil, nil
+		return &CompactResult{Messages: msgs}, nil
 	}
 
 	keepRecent := opts.KeepRecentGroups
@@ -74,7 +94,7 @@ func CompactMessages(ctx context.Context, p Provider, msgs []Message, opts Compa
 	}
 	groups := splitMessageGroups(rest)
 	if len(groups) <= keepRecent {
-		return msgs, nil, nil // 没有可压缩的旧历史
+		return &CompactResult{Messages: msgs}, nil // 没有可压缩的旧历史
 	}
 
 	var old []Message
@@ -96,7 +116,7 @@ func CompactMessages(ctx context.Context, p Provider, msgs []Message, opts Compa
 		MaxTokens: maxSummaryTokens,
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("compact messages: %w", err)
+		return nil, fmt.Errorf("compact messages: %w", err)
 	}
 
 	out := make([]Message, 0, len(system)+1+len(rest)-len(old))
@@ -105,7 +125,12 @@ func CompactMessages(ctx context.Context, p Provider, msgs []Message, opts Compa
 	for _, group := range groups[len(groups)-keepRecent:] {
 		out = append(out, group...)
 	}
-	return out, resp, nil
+	return &CompactResult{
+		Messages:       out,
+		Summary:        resp.Content,
+		CompactedCount: len(old),
+		Response:       resp,
+	}, nil
 }
 
 // renderTranscript 将消息序列渲染为供摘要模型阅读的纯文本对话记录。

@@ -38,6 +38,9 @@ jobs:
       - name: 测试（race）
         working-directory: v2
         run: go test -race -count=1 -timeout=5m ./...
+      - name: benchmark 冒烟（确认可运行，不比对数字）
+        working-directory: v2
+        run: go test -bench=. -benchmem -benchtime=1x -run '^$' ./provider/
       - name: 覆盖率（provider 包 ≥80%）
         working-directory: v2
         run: |

@@ -10,11 +10,33 @@ import (
 // a retryable error. It is safe for concurrent use when the wrapped providers
 // are safe for concurrent use.
 type FallbackProvider struct {
-	providers []Provider
+	providers      []Provider
+	shouldFallback func(error) bool
+}
+
+// FallbackOptions 配置降级链的切换行为。
+type FallbackOptions struct {
+	// ShouldFallback 判定某个错误是否应尝试下一个 provider。
+	// nil 时默认 IsRetryableError（限流/超时/5xx/网络才切换）。
+	// 多供应商冗余场景可放宽——如 key 失效（401）、模型下线（404）、
+	// 业务熔断错误也触发切换：
+	//
+	//	provider.FallbackOptions{ShouldFallback: func(err error) bool {
+	//	    return provider.IsRetryableError(err) ||
+	//	        errors.Is(err, provider.ErrAuth) || isBreakerOpen(err)
+	//	}}
+	//
+	// 无论如何判定，ctx 已取消/超时时都不会继续尝试（调用方已放弃）。
+	ShouldFallback func(error) bool
 }
 
 // NewFallbackProvider returns a Provider that falls back across providers in order.
 func NewFallbackProvider(providers ...Provider) (*FallbackProvider, error) {
+	return NewFallbackProviderWithOptions(providers, FallbackOptions{})
+}
+
+// NewFallbackProviderWithOptions 以自定义切换判定构造降级链。
+func NewFallbackProviderWithOptions(providers []Provider, opts FallbackOptions) (*FallbackProvider, error) {
 	if len(providers) == 0 {
 		return nil, ErrNilProvider
 	}
@@ -25,7 +47,11 @@ func NewFallbackProvider(providers ...Provider) (*FallbackProvider, error) {
 		}
 		out = append(out, p)
 	}
-	return &FallbackProvider{providers: out}, nil
+	shouldFallback := opts.ShouldFallback
+	if shouldFallback == nil {
+		shouldFallback = IsRetryableError
+	}
+	return &FallbackProvider{providers: out, shouldFallback: shouldFallback}, nil
 }
 
 // Name returns the first provider name.
@@ -34,6 +60,19 @@ func (p *FallbackProvider) Name() ProviderName {
 		return ""
 	}
 	return p.providers[0].Name()
+}
+
+// DefaultModel 返回链首 provider 的默认模型名（实现观测层的可选探测接口）。
+// 降级链场景 req.Model 通常留空（否则会覆盖各成员的默认模型、导致降级失效），
+// 计费事件的 RequestModel 以链首模型为口径；实际服务的模型由响应侧 Model 如实记录。
+func (p *FallbackProvider) DefaultModel() string {
+	if p == nil || len(p.providers) == 0 {
+		return ""
+	}
+	if dm, ok := p.providers[0].(interface{ DefaultModel() string }); ok {
+		return dm.DefaultModel()
+	}
+	return ""
 }
 
 // Chat tries providers in order until one succeeds or a non-retryable error occurs.
@@ -49,7 +88,11 @@ func (p *FallbackProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRes
 			return resp, nil
 		}
 		errs = append(errs, fmt.Errorf("%s: %w", provider.Name(), err))
-		if i == len(p.providers)-1 || !IsRetryableError(err) {
+		// 调用方已取消/超时：继续尝试没有意义，立即返回。
+		if ctx.Err() != nil {
+			return nil, errors.Join(errs...)
+		}
+		if i == len(p.providers)-1 || !p.shouldFallback(err) {
 			return nil, errors.Join(errs...)
 		}
 	}
@@ -70,7 +113,11 @@ func (p *FallbackProvider) ChatStream(ctx context.Context, req *ChatRequest) (*S
 			return stream, nil
 		}
 		errs = append(errs, fmt.Errorf("%s: %w", provider.Name(), err))
-		if i == len(p.providers)-1 || !IsRetryableError(err) {
+		// 调用方已取消/超时：继续尝试没有意义，立即返回。
+		if ctx.Err() != nil {
+			return nil, errors.Join(errs...)
+		}
+		if i == len(p.providers)-1 || !p.shouldFallback(err) {
 			return nil, errors.Join(errs...)
 		}
 	}

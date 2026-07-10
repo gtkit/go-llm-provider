@@ -15,7 +15,7 @@
 - 新增剩余额度硬限：`WithTokenBudget` 传入用户剩余 token 数，`TokenBudgetMiddleware` / `TokenBudgetStreamMiddleware` 预检输入估算并收缩 `MaxTokens`，从输出侧保证单次调用不超出剩余额度
 - 新增金额口径的余额硬限：`WithCostBudget` 传入用户剩余余额（微元），`CostBudgetMiddleware` / `CostBudgetStreamMiddleware` 按 `PricingTable` 预检输入估算费用、按余额反推输出 token 上限收缩 `MaxTokens`；预算生效但 model 未配价时返回 `ErrModelNotPriced` 显式暴露配置缺失
 - 新增 `RunToolLoopStream` / `RunToolLoopStreamWithOptions` 流式工具循环：每轮流式输出实时回调、工具调用增量由库内拼装、工具执行自动衔接，选项语义与 `RunToolLoopWithOptions` 一致
-- 新增上下文管理工具：`EstimateTokens` 启发式 token 估算、`TrimMessagesToTokenBudget` 组感知历史裁剪（不拆散 tool_calls 与其结果）、`CompactMessages` 对话摘要压缩（可指定低价模型，摘要 usage 正常计费）
+- 新增上下文管理工具：`EstimateTokens` 启发式 token 估算、`TrimMessagesToTokenBudget` 组感知历史裁剪（不拆散 tool_calls 与其结果）、`CompactMessages` 对话摘要压缩（可指定低价模型，摘要 usage 正常计费；返回 `CompactResult`，含摘要正文 `Summary` 与覆盖条数 `CompactedCount`，供业务按会话缓存摘要、支持增量摘要）
 - 新增 `CollectStreamResult`：流式收集完整文本、推理内容与最终 `Usage`（`StreamResult`）
 - `ChatRequest` 新增 `StreamUsage` 开关：默认对 OpenAI 兼容路径下发 `stream_options.include_usage`，可显式关闭以兼容不认识该参数的老网关
 - 新增 DeepSeek 缓存字段预检 smoke 用例（env 门禁）；已实测确认 DeepSeek 回传标准 `cached_tokens` 字段（第二次同 prompt 调用 `CacheReadTokens=384`），现有映射直接可用
@@ -35,6 +35,10 @@
 
 ### Fixed
 
+- `FallbackProvider` 实现 `DefaultModel()` 探测接口（返回链首默认模型），降级链配合计费时 `RequestModel` 不再为空；README 补充多模型降级链用法与注意事项（`req.Model` 须留空、延迟叠加、流式降级仅在创建阶段）
+- 新增 `NewFallbackProviderWithOptions` 与 `FallbackOptions.ShouldFallback`：自定义降级切换判定，多供应商冗余场景可放宽为 key 失效（401）、模型下线（404）、业务熔断错误也触发切换（默认仍为仅可重试错误）；`FallbackProvider` 支持嵌套组合实现"厂商内穷尽 model 后再切厂商"的两级降级（附测试与 README 说明）
+- 修复 `FallbackProvider` 在调用方 ctx 已取消后仍继续尝试后续 provider 的问题：取消/超时后立即返回，不再发起无意义的尝试
+- 修复客户端中断请求时计费记账随之失败的问题：`NewBillingHook` 交给 Recorder 的 ctx 已剥离取消信号（保留全部 value）——中断场景恰恰最需要落账（漏单审计），记账不再随请求一同取消
 - 修复按模型别名配价时计费查价 miss 的问题（DeepSeek 真实流式验证发现：请求 `deepseek-chat` 实际回传 `deepseek-v4-flash`）：`ObserveEvent` / `RecordEntry` 新增 `RequestModel`（定价口径），`Model` 保留响应侧实际模型名（审计）；请求未指定 model 时自动探测 provider 默认模型（可选接口 `DefaultModel() string`，库内 provider 均已实现，`ObserveOptions.DefaultModel` 可手动覆盖）；billingstore 查价优先 `RequestModel`，流水两个模型名都记录
 - 修复 `FormatMicros` 在 `math.MinInt64` 输入下因取负溢出输出非法格式（`--…`）的问题，改为十进制字符串移位实现，全域无溢出（fuzz 边界测试发现）
 - 修复流式计费在请求未指定 model 时（使用 provider 默认模型）拿不到模型名、导致按 0 费用计的问题：`stream_complete` 事件现携带响应侧回传的实际模型名

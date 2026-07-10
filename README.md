@@ -2,7 +2,7 @@
 
 Go 语言统一多模型 LLM 调用库。一套代码接入 OpenAI 以及 DeepSeek、通义千问、智谱、百度千帆、硅基流动、Moonshot 等 OpenAI 兼容平台。
 
-> 版本说明：仓库根目录当前维护 `v1` 代码线；破坏性升级后的 `v2` 子模块位于 [`./v2/`](/Users/xiaozhaofu/go/src/my-gtkit-package/go-llm-provider/v2/README.md)。
+> 版本说明：仓库根目录当前维护 `v1` 代码线（维护模式：只修缺陷，不加能力）；主开发线为 [`./v2/`](./v2/README.md) 子模块。
 
 ## v2 比 v1 多了什么
 
@@ -16,7 +16,8 @@ Go 语言统一多模型 LLM 调用库。一套代码接入 OpenAI 以及 DeepSe
 - Gemini 原生 token counting：`TokenCounter` / `CountTokens`。
 - 本地与企业入口：`ProviderOllama`、`NewAzureOpenAIProvider`、`NewBedrockOpenAIProvider`。
 - 更多 OpenAI 兼容 preset：xAI、Groq、Mistral、Cohere。
-- 更完整的横切能力：`ResponseMetadata`、`WithRetry`、`NewFallbackProvider`、`WithObservability`。
+- 更完整的横切能力：`ResponseMetadata`、`WithRetry`、`NewFallbackProvider`（含自定义切换判定与多厂商嵌套降级）、`WithObservability`。
+- 按用户计费全链路：流式/缓存/推理 token 统一统计、计费 hook 与用量查询、定价表与配额/余额硬限、上下文摘要压缩、流式工具循环、多模态输出（Gemini 图像）。
 
 v1 继续保留兼容维护；多模态、结构化输出、本地推理、token counting 等新能力只在 v2 增加。
 

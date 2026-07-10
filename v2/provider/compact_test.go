@@ -38,15 +38,20 @@ func TestCompactMessagesSummarizesOldHistory(t *testing.T) {
 	}
 
 	msgs := compactFixtureMessages()
-	out, resp, err := CompactMessages(t.Context(), p, msgs, CompactOptions{
+	result, err := CompactMessages(t.Context(), p, msgs, CompactOptions{
 		Model:            "deepseek-chat",
 		KeepRecentGroups: 3,
 	})
 	require.NoError(t, err)
-	require.NotNil(t, resp)
-	assert.Equal(t, 120, resp.Usage.TotalTokens, "摘要调用自身的 usage 可供计费")
+	require.True(t, result.Compacted())
+	assert.Equal(t, 120, result.Response.Usage.TotalTokens, "摘要调用自身的 usage 可供计费")
+
+	// 业务缓存所需的元信息：摘要正文 + 覆盖条数（7 条非 system 中压缩了前 4 条）。
+	assert.Contains(t, result.Summary, "计费模块")
+	assert.Equal(t, 4, result.CompactedCount)
 
 	// 结构：system + 摘要 + 最近 3 组。
+	out := result.Messages
 	require.Len(t, out, 1+1+3)
 	assert.Equal(t, RoleSystem, out[0].Role)
 	assert.Equal(t, RoleUser, out[1].Role)
@@ -80,26 +85,28 @@ func TestCompactMessagesSkipsWhenNotNeeded(t *testing.T) {
 
 	t.Run("低于触发阈值", func(t *testing.T) {
 		t.Parallel()
-		out, resp, err := CompactMessages(t.Context(), p, msgs, CompactOptions{TriggerTokens: 1_000_000})
+		result, err := CompactMessages(t.Context(), p, msgs, CompactOptions{TriggerTokens: 1_000_000})
 		require.NoError(t, err)
-		assert.Nil(t, resp)
-		assert.Equal(t, msgs, out)
+		assert.False(t, result.Compacted())
+		assert.Empty(t, result.Summary)
+		assert.Zero(t, result.CompactedCount)
+		assert.Equal(t, msgs, result.Messages)
 	})
 
 	t.Run("组数不足无旧历史", func(t *testing.T) {
 		t.Parallel()
-		out, resp, err := CompactMessages(t.Context(), p, msgs, CompactOptions{KeepRecentGroups: 100})
+		result, err := CompactMessages(t.Context(), p, msgs, CompactOptions{KeepRecentGroups: 100})
 		require.NoError(t, err)
-		assert.Nil(t, resp)
-		assert.Equal(t, msgs, out)
+		assert.False(t, result.Compacted())
+		assert.Equal(t, msgs, result.Messages)
 	})
 
 	t.Run("空输入", func(t *testing.T) {
 		t.Parallel()
-		out, resp, err := CompactMessages(t.Context(), p, nil, CompactOptions{})
+		result, err := CompactMessages(t.Context(), p, nil, CompactOptions{})
 		require.NoError(t, err)
-		assert.Nil(t, resp)
-		assert.Empty(t, out)
+		assert.False(t, result.Compacted())
+		assert.Empty(t, result.Messages)
 	})
 }
 
@@ -112,6 +119,6 @@ func TestCompactMessagesPropagatesSummaryError(t *testing.T) {
 			return nil, ErrRateLimit
 		},
 	}
-	_, _, err := CompactMessages(t.Context(), p, compactFixtureMessages(), CompactOptions{KeepRecentGroups: 1})
+	_, err := CompactMessages(t.Context(), p, compactFixtureMessages(), CompactOptions{KeepRecentGroups: 1})
 	require.ErrorIs(t, err, ErrRateLimit)
 }
