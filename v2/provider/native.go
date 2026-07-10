@@ -150,6 +150,14 @@ func (p *anthropicProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRe
 	}, nil
 }
 
+// DefaultModel 返回构造时配置的默认模型名（实现观测层的可选探测接口）。
+func (p *anthropicProvider) DefaultModel() string {
+	if p == nil {
+		return ""
+	}
+	return p.model
+}
+
 func (p *anthropicProvider) ChatStream(ctx context.Context, req *ChatRequest) (*StreamReader, error) {
 	if p == nil {
 		return nil, ErrNilProvider
@@ -163,7 +171,7 @@ func (p *anthropicProvider) ChatStream(ctx context.Context, req *ChatRequest) (*
 		return nil, err
 	}
 
-	reader, err := doNativeStream(ctx, p.httpClient, nativeHTTPRequest{
+	reader, metadata, err := doNativeStream(ctx, p.httpClient, nativeHTTPRequest{
 		Method:      http.MethodPost,
 		URL:         p.baseURL + "/v1/messages",
 		Body:        nativeReq,
@@ -178,9 +186,9 @@ func (p *anthropicProvider) ChatStream(ctx context.Context, req *ChatRequest) (*
 	// usage 分散在 message_start（输入侧）与 message_delta（输出侧）事件中，
 	// 在读取过程中累积，最终随 FinishReason 非空的 chunk 一次性给出。
 	var usageAcc anthropicUsage
-	return NewStreamReader(func() (*StreamChunk, error) {
+	return NewStreamReaderWithMetadata(func() (*StreamChunk, error) {
 		return recvAnthropicStreamChunk(reader, &usageAcc)
-	}, reader.Close), nil
+	}, reader.Close, metadata), nil
 }
 
 func (p *anthropicProvider) setHeaders(req *http.Request) {
@@ -192,6 +200,9 @@ func (p *anthropicProvider) setHeaders(req *http.Request) {
 func (p *anthropicProvider) buildRequest(req *ChatRequest, stream bool) (anthropicRequest, string, error) {
 	if len(req.Messages) == 0 {
 		return anthropicRequest{}, "", fmt.Errorf("%w: messages are required", ErrInvalidRequest)
+	}
+	if err := requireTextOnlyOutput(ProviderAnthropic, req.OutputModalities); err != nil {
+		return anthropicRequest{}, "", err
 	}
 	toolChoice, err := buildAnthropicToolChoice(req)
 	if err != nil {
@@ -323,7 +334,7 @@ func (p *geminiProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRespo
 		return nil, err
 	}
 
-	content, finishReason, toolCalls, err := geminiResponseContent(resp)
+	content, finishReason, toolCalls, parts, err := geminiResponseContent(resp)
 	if err != nil {
 		return nil, err
 	}
@@ -335,8 +346,17 @@ func (p *geminiProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRespo
 		FinishReason: finishReason,
 		Usage:        usageFromGemini(resp.UsageMetadata),
 		Metadata:     metadata,
+		Parts:        parts,
 		ToolCalls:    toolCalls,
 	}, nil
+}
+
+// DefaultModel 返回构造时配置的默认模型名（实现观测层的可选探测接口）。
+func (p *geminiProvider) DefaultModel() string {
+	if p == nil {
+		return ""
+	}
+	return p.model
 }
 
 func (p *geminiProvider) ChatStream(ctx context.Context, req *ChatRequest) (*StreamReader, error) {
@@ -360,7 +380,7 @@ func (p *geminiProvider) ChatStream(ctx context.Context, req *ChatRequest) (*Str
 	query.Set("alt", "sse")
 	streamURL.RawQuery = query.Encode()
 
-	reader, err := doNativeStream(ctx, p.httpClient, nativeHTTPRequest{
+	reader, metadata, err := doNativeStream(ctx, p.httpClient, nativeHTTPRequest{
 		Method:      http.MethodPost,
 		URL:         streamURL.String(),
 		Body:        nativeReq,
@@ -373,9 +393,9 @@ func (p *geminiProvider) ChatStream(ctx context.Context, req *ChatRequest) (*Str
 		return nil, err
 	}
 	var usageAcc geminiUsage
-	return NewStreamReader(func() (*StreamChunk, error) {
+	return NewStreamReaderWithMetadata(func() (*StreamChunk, error) {
 		return recvGeminiStreamChunk(reader, &usageAcc)
-	}, reader.Close), nil
+	}, reader.Close, metadata), nil
 }
 
 func (p *geminiProvider) CountTokens(ctx context.Context, req *ChatRequest) (*TokenCountResponse, error) {
@@ -435,6 +455,16 @@ func (p *geminiProvider) buildRequest(req *ChatRequest) (geminiRequest, string, 
 	if err != nil {
 		return geminiRequest{}, "", err
 	}
+	modalities, err := geminiResponseModalities(req.OutputModalities)
+	if err != nil {
+		return geminiRequest{}, "", err
+	}
+	if len(modalities) > 0 {
+		if generation == nil {
+			generation = &geminiGenerationConfig{}
+		}
+		generation.ResponseModalities = modalities
+	}
 	toolConfig, err := buildGeminiToolConfig(req)
 	if err != nil {
 		return geminiRequest{}, "", err
@@ -488,23 +518,23 @@ func doNativeJSON[T any](ctx context.Context, client HTTPDoer, cfg nativeHTTPReq
 	return zero, metadata, nil
 }
 
-func doNativeStream(ctx context.Context, client HTTPDoer, cfg nativeHTTPRequest) (*sseReader, error) {
+func doNativeStream(ctx context.Context, client HTTPDoer, cfg nativeHTTPRequest) (*sseReader, ResponseMetadata, error) {
 	req, err := buildNativeHTTPRequest(ctx, cfg)
 	if err != nil {
-		return nil, err
+		return nil, ResponseMetadata{}, err
 	}
 	req.Header.Set("Accept", "text/event-stream")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, wrapNativeTransportError(cfg.Provider, err)
+		return nil, ResponseMetadata{}, wrapNativeTransportError(cfg.Provider, err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		defer resp.Body.Close()
-		return nil, decodeNativeHTTPError(cfg.Provider, resp, cfg.DecodeError)
+		return nil, ResponseMetadata{}, decodeNativeHTTPError(cfg.Provider, resp, cfg.DecodeError)
 	}
 
-	return newSSEReader(resp.Body), nil
+	return newSSEReader(resp.Body), metadataFromHeader(cfg.Provider, cfg.Model, resp.Header), nil
 }
 
 func buildNativeHTTPRequest(ctx context.Context, cfg nativeHTTPRequest) (*http.Request, error) {
@@ -702,19 +732,21 @@ func geminiStreamChunk(data []byte, usageAcc *geminiUsage) (*StreamChunk, bool, 
 	if event.UsageMetadata != (geminiUsage{}) {
 		*usageAcc = event.UsageMetadata
 	}
-	content, finishReason, toolCalls, err := geminiResponseContent(event)
+	content, finishReason, toolCalls, parts, err := geminiResponseContent(event)
 	if err != nil {
 		return nil, false, err
 	}
 	if len(toolCalls) > 0 {
 		finishReason = "tool_calls"
 	}
-	if content == "" && finishReason == "" {
+	if content == "" && finishReason == "" && len(parts) == 0 {
 		return nil, false, errSkipNativeStreamEvent
 	}
 	chunk := &StreamChunk{
 		Delta:        content,
 		FinishReason: finishReason,
+		Model:        event.ModelVersion,
+		Parts:        parts,
 		ToolCalls:    toolCallDeltas(toolCalls),
 	}
 	if finishReason != "" {
@@ -731,7 +763,7 @@ func anthropicStreamChunk(data []byte, usageAcc *anthropicUsage) (*StreamChunk, 
 	switch event.Type {
 	case "message_start":
 		mergeAnthropicStreamUsage(usageAcc, event.Message.Usage)
-		return &StreamChunk{}, true, nil
+		return &StreamChunk{Model: event.Message.Model}, true, nil
 	case "content_block_start":
 		if event.ContentBlock.Type == "tool_use" {
 			return &StreamChunk{ToolCalls: []ToolCallDelta{{

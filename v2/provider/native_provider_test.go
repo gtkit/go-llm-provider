@@ -3,6 +3,7 @@ package provider
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -864,6 +865,109 @@ func TestGeminiProviderChatMapsThoughtsAndCacheUsage(t *testing.T) {
 	}, resp.Usage)
 }
 
+func TestGeminiProviderImageOutput(t *testing.T) {
+	t.Parallel()
+
+	pngBytes := []byte{0x89, 0x50, 0x4E, 0x47}
+	pngBase64 := base64.StdEncoding.EncodeToString(pngBytes)
+
+	var captured map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&captured))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"candidates": [{
+				"content": {"role":"model","parts":[
+					{"text":"这是生成的图片"},
+					{"inline_data":{"mime_type":"image/png","data":"` + pngBase64 + `"}}
+				]},
+				"finishReason": "STOP"
+			}]
+		}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	p, err := NewGeminiProvider(NativeProviderConfig{
+		APIKey:  "test-key",
+		BaseURL: srv.URL + "/v1beta",
+		Model:   "gemini-2.0-flash-preview-image-generation",
+	})
+	require.NoError(t, err)
+
+	resp, err := p.Chat(t.Context(), &ChatRequest{
+		Messages:         []Message{UserText("画一只猫")},
+		OutputModalities: []Modality{ModalityText, ModalityImage},
+	})
+	require.NoError(t, err)
+
+	// 请求侧带 responseModalities。
+	generation, ok := captured["generationConfig"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, []any{"TEXT", "IMAGE"}, generation["responseModalities"])
+
+	// 响应侧：文本进 Content，图像进 Parts（base64 已解码）。
+	assert.Equal(t, "这是生成的图片", resp.Content)
+	require.Len(t, resp.Parts, 1)
+	assert.Equal(t, pngBytes, resp.Parts[0].ImageData)
+	assert.Equal(t, "image/png", resp.Parts[0].MIMEType)
+
+	// AssistantMessage 并入图像，可直接回传对话历史。
+	msg := resp.AssistantMessage()
+	require.Len(t, msg.Content, 2)
+	assert.Equal(t, pngBytes, msg.Content[1].ImageData)
+}
+
+func TestGeminiProviderChatStreamMapsImageOutput(t *testing.T) {
+	t.Parallel()
+
+	imgBase64 := base64.StdEncoding.EncodeToString([]byte{0xFF, 0xD8})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"inline_data\":{\"mime_type\":\"image/jpeg\",\"data\":\""+imgBase64+"\"}}]},\"finishReason\":\"STOP\"}]}\n\n")
+	}))
+	t.Cleanup(srv.Close)
+
+	p, err := NewGeminiProvider(NativeProviderConfig{
+		APIKey:  "test-key",
+		BaseURL: srv.URL + "/v1beta",
+		Model:   "gemini-2.0-flash-preview-image-generation",
+	})
+	require.NoError(t, err)
+
+	stream, err := p.ChatStream(t.Context(), &ChatRequest{
+		Messages:         []Message{UserText("画一只猫")},
+		OutputModalities: []Modality{ModalityImage},
+	})
+	require.NoError(t, err)
+	defer func() { assert.NoError(t, stream.Close()) }()
+
+	chunk, err := stream.Recv()
+	require.NoError(t, err)
+	require.Len(t, chunk.Parts, 1)
+	assert.Equal(t, []byte{0xFF, 0xD8}, chunk.Parts[0].ImageData)
+	assert.Equal(t, "image/jpeg", chunk.Parts[0].MIMEType)
+	assert.Equal(t, "STOP", chunk.FinishReason)
+}
+
+func TestOutputModalitiesRejectedByTextOnlyProviders(t *testing.T) {
+	t.Parallel()
+
+	req := &ChatRequest{
+		Messages:         []Message{UserText("画一只猫")},
+		OutputModalities: []Modality{ModalityImage},
+	}
+
+	anthropic, err := NewAnthropicProvider(NativeProviderConfig{APIKey: "k", Model: "claude-sonnet-4-5"})
+	require.NoError(t, err)
+	_, err = anthropic.Chat(t.Context(), req)
+	require.ErrorIs(t, err, ErrInvalidRequest)
+
+	openaiCompat, err := NewProvider(ProviderConfig{Name: ProviderDeepSeek, APIKey: "k", Model: "deepseek-chat"})
+	require.NoError(t, err)
+	_, err = openaiCompat.Chat(t.Context(), req)
+	require.ErrorIs(t, err, ErrInvalidRequest)
+}
+
 func TestGeminiProviderChatStreamMapsToolCalls(t *testing.T) {
 	t.Parallel()
 
@@ -1101,7 +1205,7 @@ func TestDoNativeStream(t *testing.T) {
 			},
 		}
 
-		reader, err := doNativeStream(t.Context(), client, nativeHTTPRequest{
+		reader, _, err := doNativeStream(t.Context(), client, nativeHTTPRequest{
 			Method:   http.MethodPost,
 			URL:      "https://example.test/v1/messages",
 			Body:     map[string]string{"message": "hello"},
@@ -1128,7 +1232,7 @@ func TestDoNativeStream(t *testing.T) {
 	t.Run("wraps transport error", func(t *testing.T) {
 		t.Parallel()
 
-		reader, err := doNativeStream(t.Context(), failingHTTPDoer{err: assert.AnError}, nativeHTTPRequest{
+		reader, _, err := doNativeStream(t.Context(), failingHTTPDoer{err: assert.AnError}, nativeHTTPRequest{
 			Method:   http.MethodPost,
 			URL:      "https://example.test/v1/messages",
 			Body:     map[string]string{"message": "hello"},
@@ -1157,7 +1261,7 @@ func TestDoNativeStream(t *testing.T) {
 			},
 		}
 
-		reader, err := doNativeStream(t.Context(), client, nativeHTTPRequest{
+		reader, _, err := doNativeStream(t.Context(), client, nativeHTTPRequest{
 			Method:      http.MethodPost,
 			URL:         "https://example.test/v1/messages",
 			Body:        map[string]string{"message": "hello"},

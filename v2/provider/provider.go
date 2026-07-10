@@ -228,6 +228,32 @@ type ChatRequest struct {
 	// 此时 StreamChunk.Usage 恒为零值）。原生路径（Anthropic/Gemini/Ollama）的
 	// usage 由响应自带，忽略本字段。
 	StreamUsage *bool
+
+	// OutputModalities 声明期望模型输出的内容模态，空表示纯文本（默认）。
+	// 当前仅 Gemini 原生 provider 支持图像输出（需选用支持图像生成的模型，
+	// 如 gemini-2.0-flash-preview-image-generation）；其他 provider 收到
+	// 非文本模态会返回 ErrInvalidRequest，不静默丢弃。
+	OutputModalities []Modality
+}
+
+// Modality 声明模型输出的内容形态。
+type Modality string
+
+const (
+	// ModalityText 表示文本输出。
+	ModalityText Modality = "text"
+	// ModalityImage 表示图像输出，结果通过 ChatResponse.Parts / StreamChunk.Parts 返回。
+	ModalityImage Modality = "image"
+)
+
+// requireTextOnlyOutput 校验不支持多模态输出的 provider 未被请求非文本模态。
+func requireTextOnlyOutput(name ProviderName, modalities []Modality) error {
+	for _, modality := range modalities {
+		if modality != ModalityText {
+			return fmt.Errorf("%w: %s does not support %q output modality", ErrInvalidRequest, name, modality)
+		}
+	}
+	return nil
 }
 
 // Role 定义消息角色。
@@ -264,6 +290,11 @@ type ChatResponse struct {
 	Usage        Usage
 	Metadata     ResponseMetadata
 
+	// Parts 承载非文本输出（如图像生成结果），复用 ContentPart 载体：
+	// 图像为 ImageData + MIMEType。纯文本回复时为 nil，文本始终在 Content。
+	// 需配合 ChatRequest.OutputModalities 使用。
+	Parts []ContentPart
+
 	// ToolCalls 当 FinishReason == "tool_calls" 时，包含模型请求调用的工具列表。
 	ToolCalls []ToolCall
 }
@@ -275,11 +306,14 @@ func (r *ChatResponse) HasToolCalls() bool {
 
 // AssistantMessage 将本次响应转换为可追加到对话历史的 assistant Message。
 // 在 Tool Use 多轮循环中，需要将模型的 tool_calls 响应原样回传，
-// 此方法简化了这一步骤。
+// 此方法简化了这一步骤。非文本输出（Parts）一并并入消息内容。
 func (r *ChatResponse) AssistantMessage() Message {
+	content := make([]ContentPart, 0, 1+len(r.Parts))
+	content = append(content, TextPart(r.Content))
+	content = append(content, r.Parts...)
 	return Message{
 		Role:      RoleAssistant,
-		Content:   []ContentPart{TextPart(r.Content)},
+		Content:   content,
 		ToolCalls: r.ToolCalls,
 	}
 }
@@ -461,8 +495,9 @@ type ParamSchema struct {
 
 // StreamReader 包装流式响应，逐 chunk 读取。
 type StreamReader struct {
-	recv  func() (*StreamChunk, error)
-	close func() error
+	recv     func() (*StreamChunk, error)
+	close    func() error
+	metadata ResponseMetadata
 }
 
 // StreamChunk 是流式响应的一个片段。
@@ -470,6 +505,14 @@ type StreamChunk struct {
 	Delta          string // 增量文本
 	ReasoningDelta string // 增量推理文本
 	FinishReason   string // 非空时表示流结束
+
+	// Model 是响应侧回传的实际模型名（请求未指定 model 时即 provider 的默认模型），
+	// 通常仅部分 chunk 携带非空值；计费按最后一个非空值采用。
+	Model string
+
+	// Parts 承载本 chunk 到达的非文本输出（如图像），语义同 ChatResponse.Parts；
+	// 非文本内容通常整块到达而非增量。
+	Parts []ContentPart
 
 	// Usage 是本次请求的 token 统计，仅在流尾部的 chunk 上非零：
 	// 可能与 FinishReason 同 chunk（Anthropic/Gemini/Ollama），
@@ -503,6 +546,24 @@ func NewStreamReader(recv func() (*StreamChunk, error), closeFn func() error) *S
 		recv:  recv,
 		close: closeFn,
 	}
+}
+
+// NewStreamReaderWithMetadata 在 NewStreamReader 基础上携带流创建时的
+// 响应元数据（RequestID、响应头白名单等），供计费与对账读取。
+func NewStreamReaderWithMetadata(recv func() (*StreamChunk, error), closeFn func() error, metadata ResponseMetadata) *StreamReader {
+	return &StreamReader{
+		recv:     recv,
+		close:    closeFn,
+		metadata: metadata,
+	}
+}
+
+// Metadata 返回流创建时的响应元数据；未携带时为零值。
+func (r *StreamReader) Metadata() ResponseMetadata {
+	if r == nil {
+		return ResponseMetadata{}
+	}
+	return r.metadata
 }
 
 // Recv 读取下一个 chunk。当流结束时返回 io.EOF。
@@ -580,6 +641,14 @@ func NewProvider(cfg ProviderConfig) (Provider, error) {
 		model:  cfg.Model,
 		client: openai.NewClientWithConfig(ocfg),
 	}, nil
+}
+
+// DefaultModel 返回构造时配置的默认模型名（实现观测层的可选探测接口）。
+func (p *openaiProvider) DefaultModel() string {
+	if p == nil {
+		return ""
+	}
+	return p.model
 }
 
 func (p *openaiProvider) Name() ProviderName {
@@ -662,7 +731,7 @@ func (p *openaiProvider) ChatStream(ctx context.Context, req *ChatRequest) (*Str
 		return nil, WrapProviderError(p.name, err)
 	}
 
-	return NewStreamReader(func() (*StreamChunk, error) {
+	return NewStreamReaderWithMetadata(func() (*StreamChunk, error) {
 		resp, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
 			return nil, io.EOF
@@ -671,12 +740,12 @@ func (p *openaiProvider) ChatStream(ctx context.Context, req *ChatRequest) (*Str
 			return nil, WrapProviderError(p.name, err)
 		}
 		return openaiStreamChunk(resp), nil
-	}, stream.Close), nil
+	}, stream.Close, metadataFromHeader(p.name, req.Model, stream.Header())), nil
 }
 
 // openaiStreamChunk 将 go-openai 的流式响应帧映射为统一 StreamChunk。
 func openaiStreamChunk(resp openai.ChatCompletionStreamResponse) *StreamChunk {
-	chunk := &StreamChunk{}
+	chunk := &StreamChunk{Model: resp.Model}
 	if resp.Usage != nil {
 		chunk.Usage = usageFromOpenAI(*resp.Usage)
 	}
@@ -712,6 +781,9 @@ func openaiStreamChunk(resp openai.ChatCompletionStreamResponse) *StreamChunk {
 func (p *openaiProvider) buildRequest(req *ChatRequest) (openai.ChatCompletionRequest, error) {
 	if req == nil {
 		return openai.ChatCompletionRequest{Model: p.model}, nil
+	}
+	if err := requireTextOnlyOutput(p.name, req.OutputModalities); err != nil {
+		return openai.ChatCompletionRequest{}, err
 	}
 
 	model := req.Model

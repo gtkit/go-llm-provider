@@ -2,6 +2,7 @@ package provider
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -70,17 +71,22 @@ func fallbackRate(rate, fallback int64) int64 {
 
 // FormatMicros 将微元金额格式化为十进制货币字符串（如 1234567 -> "1.234567"），
 // 仅用于展示；账务比较与累加请始终使用 int64 微元。
+// 基于十进制字符串移位实现，全域无溢出（含 math.MinInt64）。
 func FormatMicros(micros int64) string {
+	const fracDigits = 6 // 微元 = 1e-6 货币单位，小数部分固定 6 位
+	s := strconv.FormatInt(micros, 10)
 	sign := ""
-	if micros < 0 {
+	if strings.HasPrefix(s, "-") {
 		sign = "-"
-		micros = -micros
+		s = s[1:]
 	}
-	whole := micros / 1_000_000
-	frac := micros % 1_000_000
-	if frac == 0 {
-		return fmt.Sprintf("%s%d", sign, whole)
+	if len(s) < fracDigits+1 {
+		s = strings.Repeat("0", fracDigits+1-len(s)) + s
 	}
-	fracStr := strings.TrimRight(fmt.Sprintf("%06d", frac), "0")
-	return fmt.Sprintf("%s%d.%s", sign, whole, fracStr)
+	whole := s[:len(s)-fracDigits]
+	frac := strings.TrimRight(s[len(s)-fracDigits:], "0")
+	if frac == "" {
+		return sign + whole
+	}
+	return sign + whole + "." + frac
 }

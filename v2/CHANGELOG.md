@@ -20,6 +20,9 @@
 - 新增 DeepSeek 缓存字段预检 smoke 用例（env 门禁）；已实测确认 DeepSeek 回传标准 `cached_tokens` 字段（第二次同 prompt 调用 `CacheReadTokens=384`），现有映射直接可用
 - 新增 `example/billingstore/` 计费存储参考实现（独立 go.mod，reference 级）：Redis 原子累计（总量 + 当日 TTL key）、流水异步批量刷入 GORM、`user_quota` 表支持 token/金额上限与 total/daily 口径、Redis 故障 fail-open，测试基于 miniredis 与纯 Go sqlite
 - README 新增 `Usage` 统一语义说明与流式 token 用量统计用法，含流中断时 usage 缺失的漏单处理建议
+- 新增多模态输出：`ChatRequest.OutputModalities` 声明输出模态，非文本结果经 `ChatResponse.Parts` / `StreamChunk.Parts` 返回（复用 `ContentPart` 载体）；当前 Gemini 原生支持图像输出，其他 provider 收到非文本模态显式返回 `ErrInvalidRequest`；`AssistantMessage` 自动并入非文本输出
+- 流式调用补全计费元数据：`StreamChunk` 新增 `Model` 字段（响应侧实际模型名），`StreamReader` 新增 `Metadata()`（创建时的 RequestID 与响应头，`NewStreamReaderWithMetadata` 构造）；`stream_complete` 事件与 `RecordEntry` 由此携带有效模型名与 RequestID
+- `RecordEntry` 新增 `EntryID` 幂等键（`NewEntryID` 生成）；billingstore 流水以唯一索引 + OnConflict DoNothing 实现幂等写入，并新增 `PricingVersion` 费率版本字段
 
 ### Changed
 
@@ -31,6 +34,10 @@
 
 ### Fixed
 
+- 修复按模型别名配价时计费查价 miss 的问题（DeepSeek 真实流式验证发现：请求 `deepseek-chat` 实际回传 `deepseek-v4-flash`）：`ObserveEvent` / `RecordEntry` 新增 `RequestModel`（定价口径），`Model` 保留响应侧实际模型名（审计）；请求未指定 model 时自动探测 provider 默认模型（可选接口 `DefaultModel() string`，库内 provider 均已实现，`ObserveOptions.DefaultModel` 可手动覆盖）；billingstore 查价优先 `RequestModel`，流水两个模型名都记录
+- 修复 `FormatMicros` 在 `math.MinInt64` 输入下因取负溢出输出非法格式（`--…`）的问题，改为十进制字符串移位实现，全域无溢出（fuzz 边界测试发现）
+- 修复流式计费在请求未指定 model 时（使用 provider 默认模型）拿不到模型名、导致按 0 费用计的问题：`stream_complete` 事件现携带响应侧回传的实际模型名
+- 修复根模块（v1）`go.sum` 缺少 `gtkit/json/v2 v2.0.7` 内容 hash 导致质量门禁无法运行的问题
 - 修复 OpenAI 兼容平台流式调用拿不到 token 统计的问题：请求自动开启 `stream_options.include_usage`，统计随 `io.EOF` 前的收尾 chunk 给出
 - 修复 Anthropic 原生流式调用丢弃 usage 的问题：`message_start` / `message_delta` 事件的统计现随 `FinishReason` 非空的 chunk 完整给出
 - 修复 Gemini 原生流式调用丢弃 `usageMetadata` 的问题：统计随 `FinishReason` 非空的 chunk 完整给出

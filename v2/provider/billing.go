@@ -2,9 +2,24 @@ package provider
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"sync"
 	"time"
 )
+
+// NewEntryID 生成 128 位随机十六进制字符串作为计量记录的唯一标识。
+// NewBillingHook 自动为每条 RecordEntry 生成；自行构造 RecordEntry 的
+// Recorder 实现方也可用它补齐幂等键。
+func NewEntryID() string {
+	var buf [16]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		// crypto/rand 失败在实践中意味着系统熵源异常；
+		// 退化为时间戳，保证记录仍可写入（牺牲全局唯一性）。
+		return time.Now().Format("20060102150405.000000000")
+	}
+	return hex.EncodeToString(buf[:])
+}
 
 // ============================================================
 // 调用方身份 ctx 传递（S-04）
@@ -45,15 +60,23 @@ func ConversationIDFromContext(ctx context.Context) (string, bool) {
 
 // RecordEntry 是一次 LLM 调用的计量记录。
 type RecordEntry struct {
+	// EntryID 是本条记录的唯一标识（由 NewBillingHook 生成），
+	// 供存储层做幂等写入，避免重放导致重复记账。
+	EntryID        string
 	UserID         string
 	ConversationID string // WithConversationID 注入时非空
-	RequestID      string // provider 回传的请求标识，用于对账；流式路径可能为空
+	RequestID      string // provider 回传的请求标识，用于对账
 	Provider       ProviderName
-	Model          string
-	Operation      ObserveOperation
-	Usage          Usage
-	Elapsed        time.Duration
-	Streaming      bool
+
+	// Model 是响应侧回传的实际模型名（平台可能把别名解析为具体版本），留作审计；
+	// RequestModel 是请求侧的模型名（业务定价的口径）。
+	// 按模型查价时应先用 RequestModel、再回落 Model。
+	Model        string
+	RequestModel string
+	Operation    ObserveOperation
+	Usage        Usage
+	Elapsed      time.Duration
+	Streaming    bool
 
 	// Terminated 为 true 表示流式调用未正常读到 io.EOF（收到错误或被提前 Close），
 	// 此时 Usage 可能为零值，但 provider 侧仍可能已产生消耗——
@@ -100,11 +123,13 @@ func NewBillingHook(rec UsageRecorder) ObserveHook {
 		}
 		conversationID, _ := ConversationIDFromContext(ctx)
 		entry := RecordEntry{
+			EntryID:         NewEntryID(),
 			UserID:          userID,
 			ConversationID:  conversationID,
 			RequestID:       event.RequestID,
 			Provider:        event.Provider,
 			Model:           event.Model,
+			RequestModel:    event.RequestModel,
 			Operation:       event.Operation,
 			Usage:           event.Usage,
 			Elapsed:         event.Duration,

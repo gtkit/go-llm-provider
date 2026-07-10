@@ -784,6 +784,33 @@ resp, err := claude.Chat(ctx, &provider.ChatRequest{
 })
 ```
 
+### 多模态输出（图像 / 文件）
+
+通过 `OutputModalities` 声明期望的输出模态，非文本结果经 `ChatResponse.Parts` /
+`StreamChunk.Parts` 返回（复用 `ContentPart` 载体，图像为 `ImageData` + `MIMEType`）：
+
+```go
+resp, err := p.Chat(ctx, &provider.ChatRequest{
+    Messages:         []provider.Message{provider.UserText("画一只橘猫")},
+    OutputModalities: []provider.Modality{provider.ModalityText, provider.ModalityImage},
+})
+fmt.Println(resp.Content) // 文本部分
+for _, part := range resp.Parts {
+    os.WriteFile("cat.png", part.ImageData, 0o644) // 图像部分（已解码）
+}
+// resp.AssistantMessage() 会把 Parts 一并并入，可直接追加对话历史
+```
+
+支持范围与行为约定：
+
+- **图像输出当前仅 Gemini 原生 provider 支持**，需选用支持图像生成的模型
+  （如 `gemini-2.0-flash-preview-image-generation`）；流式模式下图像随单个 chunk 整块到达。
+- 其他 provider 收到非文本模态会返回 `ErrInvalidRequest`，**不静默丢弃**。
+- **文件输出**：类型层已就绪（`Parts` 可承载 `FileData`），但当前没有平台在 chat 响应中
+  直接返回文件——实际产品中"生成文件"的标准模式是 **Tool Use**：模型调用你定义的
+  `export_file` 类工具，业务侧生成文件并把 URL 回传，不需要库层新抽象。
+- 图像输出同样计入 token 并进入计费链路（各平台按图像 token 折算计费）。
+
 ### Thinking（思考模式）
 
 `Thinking` 抽象把“让模型多想一会”和“显式开关 provider 思考模式”统一到了一个字段里：
@@ -1535,7 +1562,8 @@ convTotals, _ := store.ConversationTotals(userID, conversationID)
 fmt.Println(userTotals.Usage.TotalTokens, convTotals.Calls, convTotals.TerminatedCalls)
 ```
 
-`RecordEntry` 携带 UserID、ConversationID、RequestID（对账）、Usage、终止方式等；
+`RecordEntry` 携带 EntryID（库生成的幂等键，存储层据此去重）、UserID、ConversationID、
+RequestID（对账，流式与非流式均有值）、响应侧实际模型名、Usage、终止方式等；
 流式调用异常终止（网络中断 / 提前 Close）时仍会发出记录（`Terminated=true`、Usage 可能为零值），
 漏账可观测——收不收钱由 Recorder 策略决定。`MemoryUsageStore` 为单实例场景设计，
 多实例部署换用共享存储实现 `UsageRecorder` 即可，接口不变——
@@ -2227,7 +2255,9 @@ type StreamChunk struct {
     Delta          string          // 增量文本
     ReasoningDelta string          // 增量推理文本
     FinishReason   string          // 非空表示流结束
+    Model          string          // 响应侧回传的实际模型名（部分 chunk 携带）
     Usage          Usage           // 流尾部 chunk 携带完整 token 统计，其余 chunk 为零值
+    Parts          []ContentPart   // 非文本输出（如图像），通常整块到达
     ToolCalls      []ToolCallDelta // 流式 tool call 增量
 }
 

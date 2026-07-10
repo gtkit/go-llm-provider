@@ -14,6 +14,19 @@ import (
 	provider "github.com/gtkit/go-llm-provider/v2/provider"
 )
 
+// newTestDB 构造单连接的内存 sqlite：
+// :memory: 库下每个新连接都是全新的空库，必须限制连接池为 1，
+// 否则 AutoMigrate 建的表对其他连接不可见（表现为偶发 no such table）。
+func newTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
+	return db
+}
+
 func newTestStore(t *testing.T, pricing provider.PricingTable) (*Store, *miniredis.Miniredis, *gorm.DB) {
 	t.Helper()
 
@@ -21,8 +34,7 @@ func newTestStore(t *testing.T, pricing provider.PricingTable) (*Store, *minired
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() { _ = client.Close() })
 
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	require.NoError(t, err)
+	db := newTestDB(t)
 
 	store, err := New(Config{
 		Redis:         client,
@@ -87,6 +99,26 @@ func TestStoreRecordAccumulatesAndFlushes(t *testing.T) {
 	assert.Equal(t, "CNY", record.Currency)
 }
 
+func TestStoreRecordIdempotentByEntryID(t *testing.T) {
+	store, _, db := newTestStore(t, nil)
+	ctx := t.Context()
+
+	entry := testEntry(100)
+	entry.EntryID = "fixed-entry-id"
+	// 同一 EntryID 重复写入（模拟重放）：流水只落一条。
+	require.NoError(t, store.Record(ctx, entry))
+	require.NoError(t, store.Record(ctx, entry))
+
+	require.Eventually(t, func() bool {
+		var count int64
+		return db.Model(&UsageRecord{}).Count(&count).Error == nil && count == 1
+	}, 2*time.Second, 20*time.Millisecond)
+
+	var record UsageRecord
+	require.NoError(t, db.First(&record).Error)
+	assert.Equal(t, "fixed-entry-id", record.EntryID)
+}
+
 func TestStoreAllowQuota(t *testing.T) {
 	store, _, db := newTestStore(t, testPricing())
 	ctx := t.Context()
@@ -127,8 +159,7 @@ func TestStoreAllowFailOpenOnRedisDown(t *testing.T) {
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() { _ = client.Close() })
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	require.NoError(t, err)
+	db := newTestDB(t)
 
 	store, err := New(Config{
 		Redis:   client,

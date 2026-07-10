@@ -10,11 +10,13 @@ import "time"
 // UsageRecord 是逐次调用的计量流水（GORM 模型）。
 type UsageRecord struct {
 	ID               uint   `gorm:"primaryKey"`
+	EntryID          string `gorm:"size:32;uniqueIndex"` // 幂等键，重复写入被忽略
 	UserID           string `gorm:"size:64;index:idx_user_created,priority:1"`
 	ConversationID   string `gorm:"size:64;index"`
 	RequestID        string `gorm:"size:128"`
 	Provider         string `gorm:"size:32"`
-	Model            string `gorm:"size:64"`
+	Model            string `gorm:"size:64"` // 响应侧实际模型名（审计）
+	RequestModel     string `gorm:"size:64"` // 请求侧模型名（定价口径）
 	PromptTokens     int
 	CompletionTokens int
 	ReasoningTokens  int
@@ -23,6 +25,7 @@ type UsageRecord struct {
 	TotalTokens      int
 	CostMicros       int64  // 按注入的 PricingTable 计算，未配价时为 0
 	Currency         string `gorm:"size:8"`
+	PricingVersion   string `gorm:"size:32"` // 计费时使用的价格表版本，对账时可追溯费率
 	Streaming        bool
 	Terminated       bool      // 流式异常终止（usage 可能缺失），漏账审计用
 	TerminateReason  string    `gorm:"size:16"`

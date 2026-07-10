@@ -987,3 +987,51 @@ func TestOpenAIProviderChatStreamUsageOptOut(t *testing.T) {
 	_, ok := captured["stream_options"]
 	assert.False(t, ok)
 }
+
+// TestStreamCompleteCarriesEffectiveModelAndRequestID 验证流式计费元数据链路：
+// 请求未指定 model 时，stream_complete 事件仍携带响应侧回传的实际模型名与 RequestID。
+func TestStreamCompleteCarriesEffectiveModelAndRequestID(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("x-request-id", "req-stream-1")
+		_, _ = fmt.Fprint(w, "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"deepseek-chat\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: {\"id\":\"c2\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"deepseek-chat\",\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1,\"total_tokens\":4}}\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(srv.Close)
+
+	base, err := NewProvider(ProviderConfig{
+		Name:    ProviderDeepSeek,
+		BaseURL: srv.URL,
+		APIKey:  "sk-test",
+		Model:   "deepseek-chat", // provider 默认模型，请求侧不再指定
+	})
+	require.NoError(t, err)
+
+	var complete ObserveEvent
+	observed := WithObservability(base, ObserveOptions{
+		OnEvent: func(_ context.Context, event ObserveEvent) {
+			if event.Operation == ObserveOperationStreamComplete {
+				complete = event
+			}
+		},
+	})
+
+	// 请求不带 Model，复现流式计费此前拿不到模型名的场景。
+	stream, err := observed.ChatStream(t.Context(), &ChatRequest{Messages: []Message{UserText("hi")}})
+	require.NoError(t, err)
+	for {
+		if _, err := stream.Recv(); err != nil {
+			require.ErrorIs(t, err, io.EOF)
+			break
+		}
+	}
+	require.NoError(t, stream.Close())
+
+	assert.Equal(t, "deepseek-chat", complete.Model, "响应侧回传的实际模型名")
+	assert.Equal(t, "req-stream-1", complete.RequestID)
+	assert.Equal(t, 4, complete.Usage.TotalTokens)
+	assert.Equal(t, "req-stream-1", complete.Metadata.RequestID)
+}

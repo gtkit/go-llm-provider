@@ -34,14 +34,34 @@ type geminiInlineData struct {
 }
 
 type geminiGenerationConfig struct {
-	MaxOutputTokens  int      `json:"maxOutputTokens,omitempty"`
-	CandidateCount   int      `json:"candidateCount,omitempty"`
-	Seed             *int     `json:"seed,omitempty"`
-	Temperature      *float32 `json:"temperature,omitempty"`
-	TopP             *float32 `json:"topP,omitempty"`
-	StopSequences    []string `json:"stopSequences,omitempty"`
-	ResponseMIMEType string   `json:"responseMimeType,omitempty"`
-	ResponseSchema   any      `json:"responseSchema,omitempty"`
+	MaxOutputTokens    int      `json:"maxOutputTokens,omitempty"`
+	CandidateCount     int      `json:"candidateCount,omitempty"`
+	Seed               *int     `json:"seed,omitempty"`
+	Temperature        *float32 `json:"temperature,omitempty"`
+	TopP               *float32 `json:"topP,omitempty"`
+	StopSequences      []string `json:"stopSequences,omitempty"`
+	ResponseMIMEType   string   `json:"responseMimeType,omitempty"`
+	ResponseSchema     any      `json:"responseSchema,omitempty"`
+	ResponseModalities []string `json:"responseModalities,omitempty"`
+}
+
+// geminiResponseModalities 将统一 Modality 映射为 Gemini 的 responseModalities 枚举。
+func geminiResponseModalities(modalities []Modality) ([]string, error) {
+	if len(modalities) == 0 {
+		return nil, nil
+	}
+	out := make([]string, 0, len(modalities))
+	for _, modality := range modalities {
+		switch modality {
+		case ModalityText:
+			out = append(out, "TEXT")
+		case ModalityImage:
+			out = append(out, "IMAGE")
+		default:
+			return nil, fmt.Errorf("%w: gemini does not support %q output modality", ErrInvalidRequest, modality)
+		}
+	}
+	return out, nil
 }
 
 type geminiResponse struct {
@@ -294,7 +314,8 @@ func geminiGeneration(req *ChatRequest) *geminiGenerationConfig {
 		req.Seed == nil &&
 		req.Temperature == nil &&
 		req.TopP == nil &&
-		len(req.Stop) == 0 {
+		len(req.Stop) == 0 &&
+		len(req.OutputModalities) == 0 {
 		return nil
 	}
 	cfg := &geminiGenerationConfig{}
@@ -426,9 +447,9 @@ func appendGeminiMessage(out *geminiRequest, msg Message) error {
 	return nil
 }
 
-func geminiResponseContent(resp geminiResponse) (content, finishReason string, toolCalls []ToolCall, err error) {
+func geminiResponseContent(resp geminiResponse) (content, finishReason string, toolCalls []ToolCall, parts []ContentPart, err error) {
 	if len(resp.Candidates) == 0 {
-		return "", "", nil, nil
+		return "", "", nil, nil, nil
 	}
 	candidate := resp.Candidates[0]
 	var text strings.Builder
@@ -437,7 +458,7 @@ func geminiResponseContent(resp geminiResponse) (content, finishReason string, t
 		if part.FunctionCall != nil {
 			arguments, marshalErr := json.Marshal(part.FunctionCall.Args)
 			if marshalErr != nil {
-				return "", "", nil, fmt.Errorf("marshal gemini function call args: %w", marshalErr)
+				return "", "", nil, nil, fmt.Errorf("marshal gemini function call args: %w", marshalErr)
 			}
 			toolCalls = append(toolCalls, ToolCall{
 				ID: firstString(part.FunctionCall.ID, "gemini_"+part.FunctionCall.Name),
@@ -447,13 +468,37 @@ func geminiResponseContent(resp geminiResponse) (content, finishReason string, t
 				},
 			})
 		}
+		if part.InlineData != nil {
+			output, convertErr := geminiInlineOutputPart(part.InlineData)
+			if convertErr != nil {
+				return "", "", nil, nil, convertErr
+			}
+			parts = append(parts, output)
+		}
 	}
 	if len(toolCalls) > 0 {
 		finishReason = "tool_calls"
 	} else {
 		finishReason = candidate.FinishReason
 	}
-	return text.String(), finishReason, toolCalls, nil
+	return text.String(), finishReason, toolCalls, parts, nil
+}
+
+// geminiInlineOutputPart 将响应中的 inlineData（base64）转换为输出 ContentPart：
+// image/* 映射为图像，其余 MIME 类型映射为文件（类型层已就绪，等平台支持）。
+func geminiInlineOutputPart(inline *geminiInlineData) (ContentPart, error) {
+	data, err := base64.StdEncoding.DecodeString(inline.Data)
+	if err != nil {
+		return ContentPart{}, fmt.Errorf("%w: decode gemini inline output: %w", ErrInvalidRequest, err)
+	}
+	if strings.HasPrefix(inline.MIMEType, "image/") {
+		return ImageDataPart(data, inline.MIMEType), nil
+	}
+	return ContentPart{
+		Type:     ContentTypeFile,
+		FileData: data,
+		MIMEType: inline.MIMEType,
+	}, nil
 }
 
 func decodeGeminiError(provider ProviderName, statusCode int, status string, body []byte) error {

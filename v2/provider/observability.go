@@ -40,9 +40,16 @@ const (
 // ObserveEvent describes a completed provider operation for logs, metrics, or traces.
 // It is safe to read after the hook returns.
 type ObserveEvent struct {
-	Operation  ObserveOperation
-	Provider   ProviderName
-	Model      string
+	Operation ObserveOperation
+	Provider  ProviderName
+
+	// Model 是响应侧回传的实际模型名；平台可能把请求的模型别名解析为
+	// 具体版本（如 DeepSeek 的 "deepseek-chat" 实际执行 "deepseek-v4-flash"）。
+	Model string
+	// RequestModel 是请求侧指定的模型名（可能为空 = provider 默认模型）。
+	// 按模型档位计费时应以此为口径，Model 留作审计。
+	RequestModel string
+
 	RequestID  string
 	Usage      Usage
 	Metadata   ResponseMetadata
@@ -65,6 +72,11 @@ type ObserveHook func(ctx context.Context, event ObserveEvent)
 // A zero-value ObserveOptions makes observability middleware a no-op.
 type ObserveOptions struct {
 	OnEvent ObserveHook
+
+	// DefaultModel 是请求未指定 model 时用于填充事件 RequestModel 的默认模型名。
+	// 留空时 TryWithObservability / WithObservability 会自动从实现了
+	// DefaultModel() string 的 provider 探测（库内 provider 均已实现）。
+	DefaultModel string
 }
 
 // WithObservability returns a Provider decorated with observability hooks.
@@ -83,6 +95,11 @@ func WithObservability(p Provider, opts ObserveOptions) Provider {
 func TryWithObservability(p Provider, opts ObserveOptions) (Provider, error) {
 	if providerIsNil(p) {
 		return nil, ErrNilProvider
+	}
+	if opts.DefaultModel == "" {
+		if dm, ok := p.(interface{ DefaultModel() string }); ok {
+			opts.DefaultModel = dm.DefaultModel()
+		}
 	}
 	return TryWithMiddlewares(p, MiddlewareOptions{
 		Chat:   []Middleware{ObserveMiddleware(p.Name(), opts)},
@@ -117,11 +134,11 @@ func ObserveMiddleware(provider ProviderName, opts ObserveOptions) Middleware {
 			start := time.Now()
 			if next == nil {
 				err := ErrNilProvider
-				emitObserveEvent(ctx, opts.OnEvent, chatObserveEvent(provider, req, nil, err, time.Since(start)))
+				emitObserveEvent(ctx, opts.OnEvent, chatObserveEvent(provider, opts.DefaultModel, req, nil, err, time.Since(start)))
 				return nil, err
 			}
 			resp, err := next(ctx, req)
-			emitObserveEvent(ctx, opts.OnEvent, chatObserveEvent(provider, req, resp, err, time.Since(start)))
+			emitObserveEvent(ctx, opts.OnEvent, chatObserveEvent(provider, opts.DefaultModel, req, resp, err, time.Since(start)))
 			return resp, err
 		}
 	}
@@ -137,24 +154,28 @@ func ObserveStreamMiddleware(provider ProviderName, opts ObserveOptions) StreamM
 			start := time.Now()
 			if next == nil {
 				err := ErrNilProvider
-				emitObserveEvent(ctx, opts.OnEvent, streamObserveEvent(provider, req, err, time.Since(start)))
+				emitObserveEvent(ctx, opts.OnEvent, streamObserveEvent(provider, opts.DefaultModel, req, err, time.Since(start)))
 				return nil, err
 			}
 			stream, err := next(ctx, req)
-			emitObserveEvent(ctx, opts.OnEvent, streamObserveEvent(provider, req, err, time.Since(start)))
+			emitObserveEvent(ctx, opts.OnEvent, streamObserveEvent(provider, opts.DefaultModel, req, err, time.Since(start)))
 			if err != nil || stream == nil || opts.OnEvent == nil {
 				return stream, err
 			}
+			metadata := cloneResponseMetadata(stream.Metadata())
 			obs := &observedStream{
-				inner:    stream,
-				hook:     opts.OnEvent,
-				provider: provider,
-				model:    requestChatModel(req),
-				start:    start,
+				inner:        stream,
+				hook:         opts.OnEvent,
+				provider:     firstProviderName(metadata.Provider, provider),
+				model:        firstString(requestChatModel(req), opts.DefaultModel),
+				requestModel: firstString(requestChatModel(req), opts.DefaultModel),
+				metadata:     metadata,
+				start:        start,
 			}
-			return NewStreamReader(
+			return NewStreamReaderWithMetadata(
 				func() (*StreamChunk, error) { return obs.recv(ctx) },
 				func() error { return obs.close(ctx) },
+				stream.Metadata(),
 			), nil
 		}
 	}
@@ -162,11 +183,13 @@ func ObserveStreamMiddleware(provider ProviderName, opts ObserveOptions) StreamM
 
 // observedStream 包装流读取过程，在流终止时上报一次 stream_complete 事件。
 type observedStream struct {
-	inner    *StreamReader
-	hook     ObserveHook
-	provider ProviderName
-	model    string
-	start    time.Time
+	inner        *StreamReader
+	hook         ObserveHook
+	provider     ProviderName
+	model        string
+	requestModel string
+	metadata     ResponseMetadata
+	start        time.Time
 
 	mu      sync.Mutex
 	usage   Usage
@@ -175,9 +198,15 @@ type observedStream struct {
 
 func (s *observedStream) recv(ctx context.Context) (*StreamChunk, error) {
 	chunk, err := s.inner.Recv()
-	if chunk != nil && chunk.Usage != (Usage{}) {
+	if chunk != nil {
 		s.mu.Lock()
-		s.usage = chunk.Usage
+		if chunk.Usage != (Usage{}) {
+			s.usage = chunk.Usage
+		}
+		// 捕获响应侧回传的实际模型名，覆盖请求侧的（可能为空的）model。
+		if chunk.Model != "" {
+			s.model = chunk.Model
+		}
 		s.mu.Unlock()
 	}
 	switch {
@@ -205,12 +234,16 @@ func (s *observedStream) emit(ctx context.Context, streamErr error, finish Strea
 	}
 	s.emitted = true
 	usage := s.usage
+	model := s.model
 	s.mu.Unlock()
 
 	event := ObserveEvent{
 		Operation:    ObserveOperationStreamComplete,
 		Provider:     s.provider,
-		Model:        s.model,
+		Model:        firstString(model, s.metadata.Model),
+		RequestModel: s.requestModel,
+		RequestID:    s.metadata.RequestID,
+		Metadata:     s.metadata,
 		Usage:        usage,
 		Duration:     time.Since(s.start),
 		Err:          streamErr,
@@ -244,13 +277,15 @@ func emitObserveEvent(ctx context.Context, hook ObserveHook, event ObserveEvent)
 	hook(ctx, event)
 }
 
-func chatObserveEvent(provider ProviderName, req *ChatRequest, resp *ChatResponse, err error, duration time.Duration) ObserveEvent {
+func chatObserveEvent(provider ProviderName, defaultModel string, req *ChatRequest, resp *ChatResponse, err error, duration time.Duration) ObserveEvent {
+	requestModel := firstString(requestChatModel(req), defaultModel)
 	event := ObserveEvent{
-		Operation: ObserveOperationChat,
-		Provider:  provider,
-		Model:     requestChatModel(req),
-		Duration:  duration,
-		Err:       err,
+		Operation:    ObserveOperationChat,
+		Provider:     provider,
+		Model:        requestModel,
+		RequestModel: requestModel,
+		Duration:     duration,
+		Err:          err,
 	}
 	if resp != nil {
 		metadata := cloneResponseMetadata(resp.Metadata)
@@ -264,13 +299,15 @@ func chatObserveEvent(provider ProviderName, req *ChatRequest, resp *ChatRespons
 	return event
 }
 
-func streamObserveEvent(provider ProviderName, req *ChatRequest, err error, duration time.Duration) ObserveEvent {
+func streamObserveEvent(provider ProviderName, defaultModel string, req *ChatRequest, err error, duration time.Duration) ObserveEvent {
+	requestModel := firstString(requestChatModel(req), defaultModel)
 	event := ObserveEvent{
-		Operation: ObserveOperationStream,
-		Provider:  provider,
-		Model:     requestChatModel(req),
-		Duration:  duration,
-		Err:       err,
+		Operation:    ObserveOperationStream,
+		Provider:     provider,
+		Model:        requestModel,
+		RequestModel: requestModel,
+		Duration:     duration,
+		Err:          err,
 	}
 	applyErrorToObserveEvent(&event, err)
 	return event

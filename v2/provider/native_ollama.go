@@ -104,6 +104,14 @@ func (p *ollamaProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRespo
 	}, nil
 }
 
+// DefaultModel 返回构造时配置的默认模型名（实现观测层的可选探测接口）。
+func (p *ollamaProvider) DefaultModel() string {
+	if p == nil {
+		return ""
+	}
+	return p.model
+}
+
 func (p *ollamaProvider) ChatStream(ctx context.Context, req *ChatRequest) (*StreamReader, error) {
 	if p == nil {
 		return nil, ErrNilProvider
@@ -138,7 +146,7 @@ func (p *ollamaProvider) ChatStream(ctx context.Context, req *ChatRequest) (*Str
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxOllamaScanToken)
-	return NewStreamReader(func() (*StreamChunk, error) {
+	return NewStreamReaderWithMetadata(func() (*StreamChunk, error) {
 		for scanner.Scan() {
 			line := bytes.TrimSpace(scanner.Bytes())
 			if len(line) == 0 {
@@ -151,6 +159,7 @@ func (p *ollamaProvider) ChatStream(ctx context.Context, req *ChatRequest) (*Str
 			return &StreamChunk{
 				Delta:        event.Message.Content,
 				FinishReason: event.DoneReason,
+				Model:        event.Model,
 				Usage:        ollamaUsage(event),
 			}, nil
 		}
@@ -158,7 +167,7 @@ func (p *ollamaProvider) ChatStream(ctx context.Context, req *ChatRequest) (*Str
 			return nil, fmt.Errorf("[ollama] stream scan: %w", err)
 		}
 		return nil, io.EOF
-	}, resp.Body.Close), nil
+	}, resp.Body.Close, metadataFromHeader(ProviderOllama, model, resp.Header)), nil
 }
 
 func (p *ollamaProvider) buildRequest(req *ChatRequest, stream bool) (ollamaChatRequest, string, error) {
@@ -170,6 +179,9 @@ func (p *ollamaProvider) buildRequest(req *ChatRequest, stream bool) (ollamaChat
 	}
 	if req.ResponseFormat != nil {
 		return ollamaChatRequest{}, "", fmt.Errorf("%w: ollama native response format is not implemented", ErrInvalidRequest)
+	}
+	if err := requireTextOnlyOutput(ProviderOllama, req.OutputModalities); err != nil {
+		return ollamaChatRequest{}, "", err
 	}
 
 	model := firstString(req.Model, p.model)

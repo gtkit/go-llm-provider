@@ -8,6 +8,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	provider "github.com/gtkit/go-llm-provider/v2/provider"
 )
@@ -40,6 +41,10 @@ type Config struct {
 	// Pricing 可选：配置后按 RecordEntry 的 model 计算费用（微元）并随流水累计。
 	// 未配价的 model 费用记 0 并通过 OnError 上抛 ErrModelNotPriced。
 	Pricing provider.PricingTable
+
+	// PricingVersion 随流水记录的价格表版本标识（如 "2026-07"），
+	// 价格调整时更新，便于对账时追溯每条流水按什么费率计算。
+	PricingVersion string
 
 	// KeyPrefix 是 Redis key 前缀，默认 "llm:usage"。
 	KeyPrefix string
@@ -112,12 +117,20 @@ func (s *Store) Record(ctx context.Context, entry provider.RecordEntry) error {
 	if s.cfg.DB == nil {
 		return nil
 	}
+	entryID := entry.EntryID
+	if entryID == "" {
+		// 直接构造 RecordEntry（未经 NewBillingHook）的调用路径：
+		// 兜底生成幂等键，避免空值在唯一索引下互相冲突。
+		entryID = provider.NewEntryID()
+	}
 	record := UsageRecord{
+		EntryID:          entryID,
 		UserID:           entry.UserID,
 		ConversationID:   entry.ConversationID,
 		RequestID:        entry.RequestID,
 		Provider:         string(entry.Provider),
 		Model:            entry.Model,
+		RequestModel:     entry.RequestModel,
 		PromptTokens:     entry.Usage.PromptTokens,
 		CompletionTokens: entry.Usage.CompletionTokens,
 		ReasoningTokens:  entry.Usage.ReasoningTokens,
@@ -126,6 +139,7 @@ func (s *Store) Record(ctx context.Context, entry provider.RecordEntry) error {
 		TotalTokens:      entry.Usage.TotalTokens,
 		CostMicros:       costMicros,
 		Currency:         s.entryCurrency(entry),
+		PricingVersion:   s.cfg.PricingVersion,
 		Streaming:        entry.Streaming,
 		Terminated:       entry.Terminated,
 		TerminateReason:  string(entry.TerminateReason),
@@ -188,11 +202,22 @@ func (s *Store) Close() error {
 	return nil
 }
 
+// pricingModel 返回查价用的模型名：优先请求侧模型（业务定价口径——
+// 平台可能把别名解析为具体版本回传，如 deepseek-chat → deepseek-v4-flash），
+// 请求侧为空或未配价时回落响应侧实际模型名。
+func (s *Store) pricingModel(entry provider.RecordEntry) string {
+	if _, ok := s.cfg.Pricing[entry.RequestModel]; ok && entry.RequestModel != "" {
+		return entry.RequestModel
+	}
+	return entry.Model
+}
+
 func (s *Store) entryCost(entry provider.RecordEntry) int64 {
-	if len(s.cfg.Pricing) == 0 || entry.Model == "" {
+	model := s.pricingModel(entry)
+	if len(s.cfg.Pricing) == 0 || model == "" {
 		return 0
 	}
-	micros, _, err := s.cfg.Pricing.Cost(entry.Model, entry.Usage)
+	micros, _, err := s.cfg.Pricing.Cost(model, entry.Usage)
 	if err != nil {
 		s.reportError(err)
 		return 0
@@ -201,7 +226,7 @@ func (s *Store) entryCost(entry provider.RecordEntry) int64 {
 }
 
 func (s *Store) entryCurrency(entry provider.RecordEntry) string {
-	if rate, ok := s.cfg.Pricing[entry.Model]; ok {
+	if rate, ok := s.cfg.Pricing[s.pricingModel(entry)]; ok {
 		return rate.Currency
 	}
 	return ""
@@ -251,7 +276,12 @@ func (s *Store) flushLoop() {
 		if len(batch) == 0 {
 			return
 		}
-		if err := s.cfg.DB.CreateInBatches(batch, defaultFlushBatch).Error; err != nil {
+		// EntryID 唯一索引 + DoNothing：重复写入（重放/重试）被静默忽略，保证幂等。
+		err := s.cfg.DB.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "entry_id"}},
+			DoNothing: true,
+		}).CreateInBatches(batch, defaultFlushBatch).Error
+		if err != nil {
 			s.reportError(fmt.Errorf("billingstore: flush %d records: %w", len(batch), err))
 		}
 		batch = batch[:0]
