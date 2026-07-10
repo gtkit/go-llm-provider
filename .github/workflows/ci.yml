@@ -1,0 +1,119 @@
+# 三模块质量门禁：v1（根模块）、v2（主开发模块）、billingstore（示例子模块）。
+# smoke 任务仅手动触发（真实调用平台 API，消耗额度），需在仓库 Secrets 配置对应 key。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GOLANGCI_LINT_VERSION: v2.11.4 # 与本地开发环境一致，避免版本漂移带来新报错
+
+jobs:
+  v2:
+    name: v2（主模块）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: v2/go.mod
+          cache-dependency-path: v2/go.sum
+      - name: gofmt 检查
+        working-directory: v2
+        run: test -z "$(gofmt -l provider/)" || { gofmt -l provider/; exit 1; }
+      - name: go vet
+        working-directory: v2
+        run: go vet ./...
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+          working-directory: v2
+      - name: 测试（race）
+        working-directory: v2
+        run: go test -race -count=1 -timeout=5m ./...
+      - name: 覆盖率（provider 包 ≥80%）
+        working-directory: v2
+        run: |
+          go test -coverprofile=coverage.out ./provider/
+          total=$(go tool cover -func=coverage.out | awk '/^total:/ {gsub(/%/,""); print $3}')
+          echo "coverage: ${total}%"
+          awk -v t="$total" 'BEGIN { exit (t >= 80.0 ? 0 : 1) }' || { echo "覆盖率低于 80%"; exit 1; }
+
+  v1:
+    name: v1（根模块）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: go vet
+        run: go vet ./...
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+      - name: 测试（race）
+        run: go test -race -count=1 -timeout=5m ./...
+
+  billingstore:
+    name: billingstore（示例子模块）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: v2/example/billingstore/go.mod
+          cache-dependency-path: v2/example/billingstore/go.sum
+      - name: go vet
+        working-directory: v2/example/billingstore
+        run: go vet ./...
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+          working-directory: v2/example/billingstore
+      - name: 测试（race）
+        working-directory: v2/example/billingstore
+        run: go test -race -count=1 -timeout=5m ./...
+
+  fuzz:
+    name: fuzz 短跑（回归防护）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: v2/go.mod
+          cache-dependency-path: v2/go.sum
+      - name: 各 fuzz 目标 30 秒
+        working-directory: v2/provider
+        run: |
+          for target in FuzzFormatMicros FuzzAnthropicStreamChunk FuzzGeminiStreamChunk FuzzSSEReader FuzzEstimateTokensAndTrim; do
+            echo "== ${target} =="
+            go test -fuzz="^${target}\$" -fuzztime=30s -run '^$' .
+          done
+
+  smoke:
+    name: 真实平台 smoke（手动触发）
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: v2/go.mod
+          cache-dependency-path: v2/go.sum
+      - name: DeepSeek smoke（未配 Secret 时自动跳过）
+        working-directory: v2
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: go test -run 'TestDeepSeek' -v -count=1 ./provider/

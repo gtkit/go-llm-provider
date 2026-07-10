@@ -121,6 +121,107 @@ func TokenBudgetStreamMiddleware() StreamMiddleware {
 	}
 }
 
+// ============================================================
+// 剩余余额（金额）预算硬限
+// ============================================================
+
+type costBudgetCtxKey struct{}
+
+// WithCostBudget 将调用方剩余余额（微元，1e-6 货币单位）写入 ctx。
+// 业务从账务系统查出用户余额后注入，配合 CostBudgetMiddleware
+// 保证单次调用的预估费用不超出余额。
+func WithCostBudget(ctx context.Context, remainingMicros int64) context.Context {
+	return context.WithValue(ctx, costBudgetCtxKey{}, remainingMicros)
+}
+
+// CostBudgetFromContext 读取 WithCostBudget 写入的剩余余额（微元）。
+// ctx 中不存在时返回 (0, false)。
+func CostBudgetFromContext(ctx context.Context) (int64, bool) {
+	budget, ok := ctx.Value(costBudgetCtxKey{}).(int64)
+	return budget, ok
+}
+
+// CostBudgetMiddleware 依据 ctx 中的剩余余额（微元）对单次调用做硬限：
+//
+//  1. 余额 ≤ 0，或输入的估算费用（EstimateTokens × 输入单价）已达余额 →
+//     返回 ErrQuotaExceeded，请求不发往平台；
+//  2. 否则把剩余余额按输出单价反推为可负担的输出 token 数，收缩 MaxTokens，
+//     从输出侧保证本次费用不超出余额（原 MaxTokens 更小时保持不变）。
+//
+// 查价按 req.Model（金额预算要求可定价：ctx 携带预算但 model 未配价时
+// 返回 ErrModelNotPriced，显式暴露配价缺失而非漏控）。输入侧按无缓存全价
+// 保守估算（误差 ±30%，实际命中缓存只会更便宜）；精确结算以响应 Usage 为准。
+// ctx 未携带余额预算的请求不受影响；可与 TokenBudgetMiddleware 叠加使用。
+func CostBudgetMiddleware(table PricingTable) Middleware {
+	return func(next Handler) Handler {
+		return func(ctx context.Context, req *ChatRequest) (*ChatResponse, error) {
+			clamped, err := applyCostBudget(ctx, table, req)
+			if err != nil {
+				return nil, err
+			}
+			return next(ctx, clamped)
+		}
+	}
+}
+
+// CostBudgetStreamMiddleware 是 CostBudgetMiddleware 的流式对应版本。
+func CostBudgetStreamMiddleware(table PricingTable) StreamMiddleware {
+	return func(next StreamHandler) StreamHandler {
+		return func(ctx context.Context, req *ChatRequest) (*StreamReader, error) {
+			clamped, err := applyCostBudget(ctx, table, req)
+			if err != nil {
+				return nil, err
+			}
+			return next(ctx, clamped)
+		}
+	}
+}
+
+func applyCostBudget(ctx context.Context, table PricingTable, req *ChatRequest) (*ChatRequest, error) {
+	if req == nil {
+		return nil, ErrNilChatRequest
+	}
+	budget, ok := CostBudgetFromContext(ctx)
+	if !ok {
+		return req, nil
+	}
+	if budget <= 0 {
+		return nil, fmt.Errorf("%w: cost budget %s", ErrQuotaExceeded, FormatMicros(budget))
+	}
+	rate, ok := table[req.Model]
+	if !ok {
+		return nil, fmt.Errorf("%w: %q (cost budget requires a priced request model)", ErrModelNotPriced, req.Model)
+	}
+
+	estimatedInput := int64(EstimateTokens(req.Messages))
+	inputCost := estimatedInput * rate.InputPer1M / tokensPerRateUnit
+	remaining := budget - inputCost
+	if remaining <= 0 {
+		return nil, fmt.Errorf("%w: estimated input cost %s reaches budget %s",
+			ErrQuotaExceeded, FormatMicros(inputCost), FormatMicros(budget))
+	}
+
+	// 输出单价按常规输出与推理单价的较高者保守取值。
+	outputRate := max(rate.OutputPer1M, fallbackRate(rate.ReasoningPer1M, rate.OutputPer1M))
+	if outputRate <= 0 {
+		return req, nil // 输出不计费，无需收缩
+	}
+	allowedOutput := remaining * tokensPerRateUnit / outputRate
+	if allowedOutput <= 0 {
+		return nil, fmt.Errorf("%w: remaining budget %s cannot afford any output token",
+			ErrQuotaExceeded, FormatMicros(remaining))
+	}
+	if allowedOutput >= tokenBudgetUnlimitedThreshold {
+		return req, nil
+	}
+	if req.MaxTokens > 0 && int64(req.MaxTokens) <= allowedOutput {
+		return req, nil
+	}
+	clamped := *req
+	clamped.MaxTokens = int(allowedOutput)
+	return &clamped, nil
+}
+
 func applyTokenBudget(ctx context.Context, req *ChatRequest) (*ChatRequest, error) {
 	if req == nil {
 		return nil, ErrNilChatRequest

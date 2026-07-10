@@ -1621,6 +1621,24 @@ resp, err := guarded.Chat(ctx, req) // 剩余不足 → ErrQuotaExceeded；足�
 输入侧按 `EstimateTokens` 启发式估算（误差 ±30%），输出侧通过收缩 `MaxTokens` 硬限；
 需要零误差结算时结合响应 `Usage` 事后对账。
 
+额度体系是**余额（金额）**而非 token 包时，用金额口径的对应版本——业务注入剩余余额（微元），
+middleware 按 `PricingTable` 完成金额与 token 的换算（输入按无缓存全价保守估算，
+输出按剩余余额反推可负担的 token 数）：
+
+```go
+guarded, _ := provider.TryWithMiddlewares(billed, provider.MiddlewareOptions{
+    Chat:   []provider.Middleware{provider.CostBudgetMiddleware(table)},
+    Stream: []provider.StreamMiddleware{provider.CostBudgetStreamMiddleware(table)},
+})
+
+ctx = provider.WithCostBudget(ctx, remainingMicros) // 如余额 1 元 = 1_000_000 微元
+resp, err := guarded.Chat(ctx, req)
+// 余额不足 → ErrQuotaExceeded；model 未配价 → ErrModelNotPriced（显式暴露配价缺失）
+```
+
+注意：金额预算按 `req.Model` 查价，请求需显式指定已配价的模型；
+建议拦截阈值留 20-30% 余量（估算是保守近似），精确扣款始终以响应 `Usage` × 费率结算。
+
 ### Fallback Provider
 
 ```go

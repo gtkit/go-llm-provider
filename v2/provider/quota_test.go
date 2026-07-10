@@ -195,6 +195,119 @@ func TestTokenBudgetStreamMiddlewareRejects(t *testing.T) {
 	assert.False(t, streamCalled)
 }
 
+func TestApplyCostBudget(t *testing.T) {
+	t.Parallel()
+
+	table := PricingTable{
+		"m": {InputPer1M: 2_000_000, OutputPer1M: 8_000_000, Currency: "CNY"}, // 输入 2 元/1M，输出 8 元/1M
+	}
+	msgs := []Message{UserText("hello world, this is a test message")}
+	estimatedInput := int64(EstimateTokens(msgs))
+	inputCost := estimatedInput * 2_000_000 / 1_000_000
+
+	t.Run("无预算透传原请求", func(t *testing.T) {
+		t.Parallel()
+		req := &ChatRequest{Model: "m", Messages: msgs}
+		out, err := applyCostBudget(t.Context(), table, req)
+		require.NoError(t, err)
+		assert.Same(t, req, out)
+	})
+
+	t.Run("余额耗尽直接拒绝", func(t *testing.T) {
+		t.Parallel()
+		_, err := applyCostBudget(WithCostBudget(t.Context(), 0), table, &ChatRequest{Model: "m", Messages: msgs})
+		require.ErrorIs(t, err, ErrQuotaExceeded)
+	})
+
+	t.Run("输入估算费用已达余额时拒绝", func(t *testing.T) {
+		t.Parallel()
+		_, err := applyCostBudget(WithCostBudget(t.Context(), inputCost), table, &ChatRequest{Model: "m", Messages: msgs})
+		require.ErrorIs(t, err, ErrQuotaExceeded)
+	})
+
+	t.Run("金额反推输出上限并收缩 MaxTokens", func(t *testing.T) {
+		t.Parallel()
+		// 余额 = 输入成本 + 800 微元；输出 8 微元/token → 允许 100 token 输出。
+		budget := inputCost + 800
+		req := &ChatRequest{Model: "m", Messages: msgs, MaxTokens: 100_000}
+		out, err := applyCostBudget(WithCostBudget(t.Context(), budget), table, req)
+		require.NoError(t, err)
+		assert.Equal(t, 100, out.MaxTokens)
+		assert.Equal(t, 100_000, req.MaxTokens, "调用方请求不被修改")
+	})
+
+	t.Run("原 MaxTokens 更小时保持不变", func(t *testing.T) {
+		t.Parallel()
+		req := &ChatRequest{Model: "m", Messages: msgs, MaxTokens: 10}
+		out, err := applyCostBudget(WithCostBudget(t.Context(), inputCost+800), table, req)
+		require.NoError(t, err)
+		assert.Same(t, req, out)
+	})
+
+	t.Run("未配价模型显式报错", func(t *testing.T) {
+		t.Parallel()
+		_, err := applyCostBudget(WithCostBudget(t.Context(), 1_000_000), table, &ChatRequest{Model: "unknown", Messages: msgs})
+		require.ErrorIs(t, err, ErrModelNotPriced)
+	})
+
+	t.Run("输出免费的模型只做输入预检不收缩", func(t *testing.T) {
+		t.Parallel()
+		free := PricingTable{"m": {InputPer1M: 1_000_000, Currency: "CNY"}}
+		req := &ChatRequest{Model: "m", Messages: msgs}
+		out, err := applyCostBudget(WithCostBudget(t.Context(), inputCost+1), free, req)
+		require.NoError(t, err)
+		assert.Same(t, req, out)
+	})
+
+	t.Run("余额充足时不强设 MaxTokens", func(t *testing.T) {
+		t.Parallel()
+		req := &ChatRequest{Model: "m", Messages: msgs}
+		out, err := applyCostBudget(WithCostBudget(t.Context(), 100_000_000_000), table, req) // 10 万元
+		require.NoError(t, err)
+		assert.Same(t, req, out)
+	})
+}
+
+func TestCostBudgetMiddlewareEndToEnd(t *testing.T) {
+	t.Parallel()
+
+	table := PricingTable{"m": {InputPer1M: 2_000_000, OutputPer1M: 8_000_000, Currency: "CNY"}}
+	var gotMaxTokens int
+	p := &stubProvider{
+		name: ProviderDeepSeek,
+		chat: func(_ context.Context, req *ChatRequest) (*ChatResponse, error) {
+			gotMaxTokens = req.MaxTokens
+			return &ChatResponse{Content: "ok"}, nil
+		},
+	}
+	wrapped, err := TryWithMiddlewares(p, MiddlewareOptions{
+		Chat: []Middleware{CostBudgetMiddleware(table)},
+	})
+	require.NoError(t, err)
+
+	msgs := []Message{UserText("hi")}
+	budget := int64(EstimateTokens(msgs))*2 + 80 // 输入成本 + 80 微元 → 10 token 输出
+	_, err = wrapped.Chat(WithCostBudget(t.Context(), budget), &ChatRequest{Model: "m", Messages: msgs})
+	require.NoError(t, err)
+	assert.Equal(t, 10, gotMaxTokens)
+
+	var streamCalled bool
+	sp := &stubProvider{
+		name: ProviderDeepSeek,
+		chatStream: func(context.Context, *ChatRequest) (*StreamReader, error) {
+			streamCalled = true
+			return nil, nil
+		},
+	}
+	wrappedStream, err := TryWithMiddlewares(sp, MiddlewareOptions{
+		Stream: []StreamMiddleware{CostBudgetStreamMiddleware(table)},
+	})
+	require.NoError(t, err)
+	_, err = wrappedStream.ChatStream(WithCostBudget(t.Context(), 0), &ChatRequest{Model: "m", Messages: msgs})
+	require.ErrorIs(t, err, ErrQuotaExceeded)
+	assert.False(t, streamCalled)
+}
+
 func TestTokenBudgetMiddlewareEndToEnd(t *testing.T) {
 	t.Parallel()
 

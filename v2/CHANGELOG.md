@@ -13,6 +13,7 @@
 - 新增费用计算：`ModelRate` / `PricingTable` / `Cost`（金额为 int64 微元，费率可注入不硬编码，缓存与推理分档计价、未配置自动回落）与 `FormatMicros` 展示工具
 - 新增配额拦截：`QuotaChecker` 接口（支持按用户与模型限额）、`QuotaMiddleware` / `QuotaStreamMiddleware` 请求前预检，超限返回新增 sentinel `ErrQuotaExceeded`，不产生真实调用
 - 新增剩余额度硬限：`WithTokenBudget` 传入用户剩余 token 数，`TokenBudgetMiddleware` / `TokenBudgetStreamMiddleware` 预检输入估算并收缩 `MaxTokens`，从输出侧保证单次调用不超出剩余额度
+- 新增金额口径的余额硬限：`WithCostBudget` 传入用户剩余余额（微元），`CostBudgetMiddleware` / `CostBudgetStreamMiddleware` 按 `PricingTable` 预检输入估算费用、按余额反推输出 token 上限收缩 `MaxTokens`；预算生效但 model 未配价时返回 `ErrModelNotPriced` 显式暴露配置缺失
 - 新增 `RunToolLoopStream` / `RunToolLoopStreamWithOptions` 流式工具循环：每轮流式输出实时回调、工具调用增量由库内拼装、工具执行自动衔接，选项语义与 `RunToolLoopWithOptions` 一致
 - 新增上下文管理工具：`EstimateTokens` 启发式 token 估算、`TrimMessagesToTokenBudget` 组感知历史裁剪（不拆散 tool_calls 与其结果）、`CompactMessages` 对话摘要压缩（可指定低价模型，摘要 usage 正常计费）
 - 新增 `CollectStreamResult`：流式收集完整文本、推理内容与最终 `Usage`（`StreamResult`）
