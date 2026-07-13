@@ -478,3 +478,21 @@ func TestStoreRecordRejectsNegativeUsage(t *testing.T) {
 	assert.Empty(t, inspect.HGetAll(ctx, store.usageKey("u1", QuotaPeriodTotal, time.Now())).Val(),
 		"负增量不得写入 Redis 累计值")
 }
+
+// TestStoreRecordEmptyModelWithPricingReportsError 验证配置了价格表却解析不出模型名时，
+// 通过 OnError 上抛 ErrModelNotPriced，而非静默记 0。
+func TestStoreRecordEmptyModelWithPricingReportsError(t *testing.T) {
+	store, _, _, sink := newFaultStore(t, testPricing())
+
+	// Model 与 RequestModel 均为空：无法计价。
+	entry := provider.RecordEntry{UserID: "u1", Usage: provider.Usage{TotalTokens: 10}}
+	require.NoError(t, store.Record(t.Context(), entry))
+
+	found := false
+	for _, e := range sink.all() {
+		if errors.Is(e, provider.ErrModelNotPriced) {
+			found = true
+		}
+	}
+	assert.True(t, found, "配价却无法解析模型名应上抛 ErrModelNotPriced")
+}

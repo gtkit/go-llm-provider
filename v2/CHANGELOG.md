@@ -27,7 +27,7 @@
 ### Changed
 
 - billingstore 的用户级 `EntryID` 幂等集合改为与累计总量同生命周期，避免固定时间窗口到期后旧记录重放造成 Redis 与数据库账目分叉
-- billingstore 当日配额 key 改为按 **UTC** 自然日切分（原按进程本地时区），多地区部署日界线一致（升级后当日 key 命名随之变化）
+- billingstore 当日配额 key 改为按 **UTC** 自然日切分（原按进程本地时区），多地区部署日界线一致。⚠ 升级迁移：日中滚动升级会使当天已按本地日期累计的用量搁浅、当日配额近似重置，建议在 UTC 日界线发布，或对当天旧 key 做一次性合并（迁移步骤见 billingstore README）
 
 ### Fixed
 
@@ -88,7 +88,17 @@
 
 ### Added
 
-- 新增结构化输出的 schema 派生能力与工具调用重试选项，增强重试路径健壮性
+- 新增 `SchemaFromType` / `JSONSchemaFormatFor` / `GenerateJSONWithSchema` / `GenerateJSONWithSchemaValidator`，通过反射从 Go 类型派生 json_schema 并解码，支持 `json` tag、`omitempty`/指针可选字段、`jsonschema:"enum=..."` 枚举与匿名嵌入扁平化
+- `RunToolLoopOptions` 新增 `ToolRetry`（`ToolRetryOptions`），可为工具 handler 错误配置重试次数、退避与重试判定；零值保持既有「不重试」行为，context 取消不参与重试
+- 新增 `MaskSecret`，用于在调用方日志中对密钥类字符串脱敏
+- 新增 `ExponentialBackoffWithJitter` 全抖动退避，缓解并发重试惊群
+- 重试现在遵守供应商的 `Retry-After` 响应头（通过新增的 `ProviderError.RetryAfter` 暴露）；仅原生 HTTP provider（Claude / Gemini / Ollama）可获取，OpenAI 兼容路径回退到退避策略
+- `RunToolLoopOptions` 新增 `AccumulateUsage`，开启后返回响应的 `Usage` 为所有轮次 token 消耗的累加值；默认关闭，保持返回最后一轮 Usage 的既有行为
+
+### Changed
+
+- README 补充 v2 相比 v1 的新增能力说明，明确多模态、结构化输出、本地推理、token counting 等新能力只在 v2 增加
+- README 新增本地 LLM 接入（Ollama / vLLM / LM Studio / LocalAI / llama.cpp）详细示例
 
 ## [2.4.0] - 2026-05-21
 

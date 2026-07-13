@@ -32,6 +32,15 @@
 3. 支持从 DB 流水重建 Redis 计数（灾备与漂移校正）；
 4. 配额加本地缓存降低 Redis 读放大；按 `Terminated=true` 的记录做漏单补账。
 
+## 升级注意
+
+- **当日配额 key 从本地时区改为 UTC（v2.7.0）**：日中滚动升级时，当天已按本地日期累计的
+  用量落在旧 key 上，新实例改写 UTC 日期 key，会导致当天用量暂时少算、当日配额近似重置。
+  规避方式二选一：① 在 **UTC 日界线（`00:00 UTC`）** 发布；② 升级前对当天数据做一次性 key
+  合并——把 `{prefix}:{uid}:{本地YYYYMMDD}` 的 `total_tokens` / `cost_micros` / `calls`
+  用 `HINCRBY` 累加进 `{prefix}:{uid}:{UTC-YYYYMMDD}` 并保留 TTL。单区域且本地时区即 UTC 的
+  部署不受影响。
+
 ## 用法
 
 ```go

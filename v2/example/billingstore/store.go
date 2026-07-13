@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -121,6 +122,10 @@ type Store struct {
 	lifecycle sync.Mutex
 	active    sync.WaitGroup
 	closed    bool
+
+	// flushErrReporting 保证同一时刻至多一个刷库错误上报 goroutine 在运行，
+	// 把 OnError 慢/阻塞时的 goroutine 数量上限钉在 1。
+	flushErrReporting atomic.Bool
 }
 
 var (
@@ -318,9 +323,14 @@ func (s *Store) pricingModel(entry provider.RecordEntry) string {
 }
 
 func (s *Store) entryCost(entry provider.RecordEntry) (int64, error) {
+	if len(s.cfg.Pricing) == 0 {
+		return 0, nil // 未配置定价：本就不计费用，非异常
+	}
 	model := s.pricingModel(entry)
-	if len(s.cfg.Pricing) == 0 || model == "" {
-		return 0, nil
+	if model == "" {
+		// 配了价格表却解析不出模型名：无法计价，上抛而非静默记 0。
+		return 0, fmt.Errorf("%w: empty model, cannot price entry (request=%q response=%q)",
+			provider.ErrModelNotPriced, entry.RequestModel, entry.Model)
 	}
 	micros, _, err := s.cfg.Pricing.Cost(model, entry.Usage)
 	if err != nil {
@@ -401,9 +411,17 @@ func (s *Store) flushLoop() {
 			DoNothing: true,
 		}).CreateInBatches(batch, defaultFlushBatch).Error
 		if err != nil {
-			// 在独立 goroutine 上派发：刷库错误的 OnError 回调若调用 Close，
-			// 同步执行会让 flushLoop 自等待（Close 等 stopped，stopped 等本循环退出）而死锁。
-			go s.reportError(fmt.Errorf("billingstore: flush %d records: %w", len(batch), err))
+			// 单飞派发：刷库错误的 OnError 回调若同步执行并调用 Close，会让 flushLoop
+			// 自等待（Close 等 stopped，stopped 等本循环退出）而死锁；改在独立 goroutine 上报。
+			// CAS 保证同一时刻至多一个上报 goroutine，把 OnError 慢/阻塞时的 goroutine 数量
+			// 钉在上限 1，重叠期间的同质刷库错误合并丢弃。
+			flushErr := fmt.Errorf("billingstore: flush %d records: %w", len(batch), err)
+			if s.flushErrReporting.CompareAndSwap(false, true) {
+				go func() {
+					defer s.flushErrReporting.Store(false)
+					s.reportError(flushErr)
+				}()
+			}
 		}
 		batch = batch[:0]
 	}
