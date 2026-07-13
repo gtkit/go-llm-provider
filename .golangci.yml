@@ -19,7 +19,6 @@ run:
 # 输出格式
 # -----------------------------------------------------------
 output:
-  sort-results: true
   # 按文件排序，同文件按行号排序
   sort-order:
     - file
@@ -207,7 +206,7 @@ linters:
               desc: "Use log/slog or zerolog instead"
 
     wrapcheck:
-      ignore-interfaces:
+      ignore-interface-regexps:
         # go-openai 的 stream 接口，Recv 的 io.EOF 不需要 wrap
         - io.Reader
 
