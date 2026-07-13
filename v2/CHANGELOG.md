@@ -27,6 +27,7 @@
 ### Changed
 
 - billingstore 的用户级 `EntryID` 幂等集合改为与累计总量同生命周期，避免固定时间窗口到期后旧记录重放造成 Redis 与数据库账目分叉
+- billingstore 当日配额 key 改为按 **UTC** 自然日切分（原按进程本地时区），多地区部署日界线一致（升级后当日 key 命名随之变化）
 
 ### Fixed
 
@@ -35,6 +36,7 @@
 - 修复缓存 token 或推理 token 超出所属总量时被重复计费或产生负计费基数的问题
 - 修复 billingstore 的 Redis 累计缺少持久幂等、损坏数值被静默视为零、`Record` 与 `Close` 并发时已接纳流水可能丢失的问题
 - billingstore 的 Redis 累计脚本在中途失败（累计字段被写脏、累加溢出 `int64`）时逆向回滚已应用增量并撤销幂等标记，杜绝"已去重未累计"坏账；负用量增量被拒绝而非倒扣累计值
+- billingstore 后台刷库失败触发的 `OnError` 回调内调用 `Close` 不再死锁（刷库错误改由独立 goroutine 派发，避免 `flushLoop` 自等待）
 - 修复流式观测在底层 `Close` 失败时未把错误写入 `stream_complete` 事件的问题
 - 修复 `NewEntryID` 在系统熵源失败且同纳秒并发调用时可能生成重复值的问题
 - 修复 `ExponentialBackoffWithJitter` 在上界为 `math.MaxInt64` 时整数溢出触发 panic 的问题（v1 同步修复）

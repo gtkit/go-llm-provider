@@ -1490,6 +1490,8 @@ resp, err := retrying.Chat(ctx, req)
 
 > 限制：`Retry-After` 仅对**原生 HTTP provider**（Claude / Gemini / Ollama）生效。OpenAI 兼容路径复用 `sashabaranov/go-openai`，其错误类型不暴露响应头，无法读取 `Retry-After`，这类 provider 会回退到退避策略（建议配 `ExponentialBackoffWithJitter`）。
 
+> 生产注意（重复计费风险）：重试与降级是 **at-least-once** 语义。当供应商已处理请求、但响应在网络中丢失（服务端已产生用量，客户端超时未收到）时，重试会再次发起真实调用，造成供应商侧重复执行与重复计费——Chat Completions 类接口通常不提供幂等键，本库无法在客户端去重。成本敏感场景应保守设置 `MaxAttempts` 与请求超时，并以供应商账单为准做对账。
+
 ### 熔断集成（Circuit Breaker）
 
 熔断器是通用弹性组件（保护任意外部调用，且实现各有取舍），本库不内置——

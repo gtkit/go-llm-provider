@@ -39,7 +39,7 @@ type QuotaPeriod string
 const (
 	// QuotaPeriodTotal 按用户累计总量限额。
 	QuotaPeriodTotal QuotaPeriod = "total"
-	// QuotaPeriodDaily 按自然日（本地时区）限额。
+	// QuotaPeriodDaily 按自然日（UTC）限额，跨地区实例日界线一致。
 	QuotaPeriodDaily QuotaPeriod = "daily"
 )
 

@@ -54,8 +54,19 @@ guarded, _ := provider.TryWithMiddlewares(p, provider.MiddlewareOptions{
 ```
 
 `RedisCluster` 默认为 `false`，保持单节点既有 key 格式。开启后 key 会增加由用户 ID
-摘要生成的 hash tag；已有数据不会自动迁移。`OnError` 可能由调用线程或后台刷库线程调用，
-实现必须并发安全并快速返回。
+摘要生成的 hash tag；已有数据不会自动迁移。`OnError` 可能由调用线程（`Record` 旁路）
+或独立 goroutine（后台刷库失败）并发调用，实现必须并发安全并快速返回；允许在回调内调用
+`Close`。
+
+> **生产配置要求（必读）**：`NewBillingHook` 在请求响应路径上**同步**调用 `Record`，且用
+> `context.WithoutCancel` 剥离了取消信号——这是为了客户端中断时仍能记账（漏单审计），但也
+> 意味着调用方的 ctx 超时**不再约束**计费的 Redis I/O。因此**必须为 Redis 客户端配置
+> dial / read / write 超时**，否则 Redis 卡顿会阻塞请求完成，并让 `Close` 长时间等待。
+> 对延迟敏感、不接受计费占用请求路径的场景，应改为在 `Record` 内投递到自有异步队列。
+>
+> `New` 在 `cfg.DB` 非 nil 时会执行一次 `AutoMigrate` 建表（便于示例开箱即跑）。**生产部署应把
+> schema 变更交给发布流程统一执行**：多副本同时启动会并发 DDL、可能相互加锁，应预先建好表，
+> 让应用启动阶段不承担迁移职责。
 
 ### 用 gtkit 生态装配（生产）
 

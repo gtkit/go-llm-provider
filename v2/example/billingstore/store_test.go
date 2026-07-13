@@ -81,7 +81,7 @@ func TestStoreRecordAccumulatesAndFlushes(t *testing.T) {
 
 	// Redis 总量与当日 key 均已累计。
 	totalKey := "llm:usage:u1:total"
-	dailyKey := "llm:usage:u1:" + time.Now().Format("20060102")
+	dailyKey := "llm:usage:u1:" + time.Now().UTC().Format("20060102")
 	assert.Equal(t, "1500", mr.HGet(totalKey, fieldTotalTokens))
 	assert.Equal(t, "1500", mr.HGet(dailyKey, fieldTotalTokens))
 	assert.Equal(t, "2", mr.HGet(totalKey, fieldCalls))
@@ -424,6 +424,43 @@ func TestStoreRecordMidwayFailureReversesAppliedIncrements(t *testing.T) {
 	isMember, err := inspect.SIsMember(ctx, store.entrySetKey("u1"), entry.EntryID).Result()
 	require.NoError(t, err)
 	assert.False(t, isMember, "回滚后必须撤销幂等标记")
+}
+
+// TestStoreFlushErrorCallbackCanClose 验证后台刷库失败触发的 OnError 回调内
+// 调用 Close 不会死锁（回归：flush 路径回调曾在 flushLoop 自身 goroutine 同步执行，
+// Close 等 stopped、stopped 等本循环退出，形成自等待死锁）。
+func TestStoreFlushErrorCallbackCanClose(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+
+	db := newTestDB(t)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+
+	var store *Store
+	closed := make(chan struct{})
+	var once sync.Once
+	store, err = New(Config{
+		Redis:         client,
+		DB:            db,
+		FlushInterval: 10 * time.Millisecond,
+		OnError: func(error) {
+			_ = store.Close() // 从刷库线程触发的错误回调里调 Close
+			once.Do(func() { close(closed) })
+		},
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, sqlDB.Close()) // 关闭底层连接：后续刷库必然失败
+	require.NoError(t, store.Record(t.Context(), testEntry(10)))
+
+	select {
+	case <-closed: // OnError 被触发且 Close 未死锁
+	case <-time.After(2 * time.Second):
+		t.Fatal("flush 路径 OnError 调 Close 发生死锁")
+	}
+	require.ErrorIs(t, store.Record(t.Context(), testEntry(10)), ErrStoreClosed)
 }
 
 // TestStoreRecordRejectsNegativeUsage 验证负 token 增量被 Go 侧拒绝，

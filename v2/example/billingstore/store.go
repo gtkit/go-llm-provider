@@ -104,7 +104,8 @@ type Config struct {
 	BufferSize int
 
 	// OnError 接收后台及旁路错误（刷库失败、Redis 累计失败、未配价等）。
-	// nil 时静默丢弃。回调必须快速返回且并发安全。
+	// nil 时静默丢弃。回调可能由调用线程（Record 旁路）或独立 goroutine（后台刷库
+	// 失败）并发调用，必须并发安全并快速返回；允许在回调内调用 Close，不会死锁。
 	OnError func(error)
 }
 
@@ -128,6 +129,10 @@ var (
 )
 
 // New 构造 Store 并启动后台刷库循环（cfg.DB 为 nil 时不落流水）。
+//
+// 注意：cfg.DB 非 nil 时 New 会执行一次 AutoMigrate 建表，便于示例开箱即跑。
+// 生产部署应把 schema 变更交给发布流程统一执行——多副本同时启动时并发 DDL
+// 可能相互加锁；那种场景下预先建好表，本构造仍会调用 AutoMigrate（幂等，无变化时不改表）。
 func New(cfg Config) (*Store, error) {
 	if cfg.Redis == nil {
 		return nil, errors.New("billingstore: redis client is required")
@@ -358,10 +363,12 @@ func (s *Store) incrRedis(ctx context.Context, entryID string, entry provider.Re
 }
 
 // usageKey 返回累计 HASH 的 key：总量 {prefix}:{uid}:total，当日 {prefix}:{uid}:{yyyymmdd}。
+// 当日 key 按 UTC 自然日切分，避免多地区实例因进程本地时区不同而落到不同日界线，
+// 造成同一时刻写入与读取的当日 key 不一致。
 func (s *Store) usageKey(userID string, period QuotaPeriod, now time.Time) string {
 	prefix := s.userKeyPrefix(userID)
 	if period == QuotaPeriodDaily {
-		return fmt.Sprintf("%s:%s:%s", prefix, userID, now.Format("20060102"))
+		return fmt.Sprintf("%s:%s:%s", prefix, userID, now.UTC().Format("20060102"))
 	}
 	return fmt.Sprintf("%s:%s:total", prefix, userID)
 }
@@ -394,7 +401,9 @@ func (s *Store) flushLoop() {
 			DoNothing: true,
 		}).CreateInBatches(batch, defaultFlushBatch).Error
 		if err != nil {
-			s.reportError(fmt.Errorf("billingstore: flush %d records: %w", len(batch), err))
+			// 在独立 goroutine 上派发：刷库错误的 OnError 回调若调用 Close，
+			// 同步执行会让 flushLoop 自等待（Close 等 stopped，stopped 等本循环退出）而死锁。
+			go s.reportError(fmt.Errorf("billingstore: flush %d records: %w", len(batch), err))
 		}
 		batch = batch[:0]
 	}
