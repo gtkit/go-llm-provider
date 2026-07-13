@@ -1,0 +1,70 @@
+# 导出 API 兼容门禁：同一 module path 内（v1 根模块、v2 子模块）禁止不兼容的导出
+# API 变更。按 Go Module 导入兼容规则，不兼容变更只能通过新 major（/vN）发布；相对
+# 该模块最新 release tag 检测到不兼容变更即失败，阻止误删导出符号、改签名或改接口
+# 方法后仍以 MINOR/PATCH 发布。示例子模块 billingstore 非公共契约，不纳入门禁。
+name: API 兼容门禁
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  apidiff:
+    name: apidiff（${{ matrix.name }}）
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: v1 根模块
+            dir: .
+            pkg: github.com/gtkit/go-llm-provider/provider
+            tag_glob: v1.*
+            gomod: go.mod
+          - name: v2
+            dir: v2
+            pkg: github.com/gtkit/go-llm-provider/v2/provider
+            tag_glob: v2.*
+            gomod: v2/go.mod
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 需要全部历史与 tag 以取基线
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ matrix.gomod }}
+      - name: 安装 apidiff
+        run: go install golang.org/x/exp/cmd/apidiff@latest
+      - name: 计算基线 tag
+        id: base
+        run: |
+          tag=$(git tag --list '${{ matrix.tag_glob }}' | sort -V | tail -1)
+          if [ -z "$tag" ]; then
+            echo "该模块暂无 release tag，跳过 API 比对"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "基线 tag: $tag"
+            echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          fi
+      - name: 比对导出 API
+        if: steps.base.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          base="$RUNNER_TEMP/apidiff-base"
+          git worktree add --quiet "$base" "${{ steps.base.outputs.tag }}"
+          ( cd "$base/${{ matrix.dir }}" && apidiff -w "$RUNNER_TEMP/old.api" "${{ matrix.pkg }}" )
+          ( cd "${{ matrix.dir }}" && apidiff -w "$RUNNER_TEMP/new.api" "${{ matrix.pkg }}" )
+          echo "== 相对 ${{ steps.base.outputs.tag }} 的全部导出 API 变更 =="
+          apidiff "$RUNNER_TEMP/old.api" "$RUNNER_TEMP/new.api"
+          incompat=$(apidiff -incompatible "$RUNNER_TEMP/old.api" "$RUNNER_TEMP/new.api")
+          if [ -n "$incompat" ]; then
+            echo "::error::检测到相对 ${{ steps.base.outputs.tag }} 的不兼容导出 API 变更；同一 module path 内不得发布不兼容变更，请改走新 major（/vN）"
+            echo "$incompat"
+            exit 1
+          fi
+          echo "✅ 无不兼容变更"

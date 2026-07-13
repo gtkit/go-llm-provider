@@ -40,16 +40,33 @@ var ErrStoreClosed = errors.New("billingstore: store is closed")
 // 重放（同 EntryID）时整体跳过，返回 0；首次执行返回 1。
 // KEYS: 1=幂等集合, 2=总量 key, 3=当日 key
 // ARGV: 1=EntryID, 2=tokens, 3=costMicros, 4=当日 TTL 秒
+//
+// 一致性保证：Redis 不支持脚本内事务回滚，若 SADD 抢占幂等标记后某个
+// HINCRBY 失败（累计字段被脏数据写成非整数、或累加溢出 int64），会留下
+// "已去重但未累计"的坏账且无法重试。为此累计全程走 redis.pcall，任一步
+// 失败即逆序回滚本次已应用的增量、SREM 撤销幂等标记，并返回错误交由调用方
+// 重试——要么全部记账、要么完全不记，绝不静默丢账。SADD 自身遇集合类型
+// 错误会在累计前中止，同样不留残迹。
 var usageIncrScript = redis.NewScript(`
 if redis.call('SADD', KEYS[1], ARGV[1]) == 0 then
   return 0
 end
-redis.call('HINCRBY', KEYS[2], 'total_tokens', ARGV[2])
-redis.call('HINCRBY', KEYS[2], 'cost_micros', ARGV[3])
-redis.call('HINCRBY', KEYS[2], 'calls', 1)
-redis.call('HINCRBY', KEYS[3], 'total_tokens', ARGV[2])
-redis.call('HINCRBY', KEYS[3], 'cost_micros', ARGV[3])
-redis.call('HINCRBY', KEYS[3], 'calls', 1)
+local ops = {
+  {KEYS[2], 'total_tokens', ARGV[2]}, {KEYS[2], 'cost_micros', ARGV[3]}, {KEYS[2], 'calls', '1'},
+  {KEYS[3], 'total_tokens', ARGV[2]}, {KEYS[3], 'cost_micros', ARGV[3]}, {KEYS[3], 'calls', '1'},
+}
+local applied = {}
+for i = 1, #ops do
+  local r = redis.pcall('HINCRBY', ops[i][1], ops[i][2], ops[i][3])
+  if type(r) == 'table' and r.err then
+    for j = #applied, 1, -1 do
+      redis.call('HINCRBY', applied[j][1], applied[j][2], '-' .. applied[j][3])
+    end
+    redis.call('SREM', KEYS[1], ARGV[1])
+    return redis.error_reply('billingstore: usage incr failed: ' .. r.err)
+  end
+  applied[#applied + 1] = ops[i]
+end
 redis.call('EXPIRE', KEYS[3], ARGV[4])
 return 1
 `)
@@ -317,6 +334,11 @@ func (s *Store) entryCurrency(entry provider.RecordEntry) string {
 // incrRedis 通过 Lua 脚本原子完成幂等检查与两级累计：
 // 同一 EntryID 重放时整体跳过（token、费用、调用次数都只计一次）。
 func (s *Store) incrRedis(ctx context.Context, entryID string, entry provider.RecordEntry, costMicros int64) error {
+	tokens := int64(entry.Usage.TotalTokens)
+	// 负增量会倒扣累计值并破坏脚本的逆向回滚，直接拒绝而非静默错账。
+	if tokens < 0 || costMicros < 0 {
+		return fmt.Errorf("billingstore: refuse negative usage increment (tokens=%d, cost=%d)", tokens, costMicros)
+	}
 	now := time.Now()
 	keys := []string{
 		s.entrySetKey(entry.UserID),
@@ -325,7 +347,7 @@ func (s *Store) incrRedis(ctx context.Context, entryID string, entry provider.Re
 	}
 	args := []any{
 		entryID,
-		int64(entry.Usage.TotalTokens),
+		tokens,
 		costMicros,
 		int64(dailyKeyTTL / time.Second),
 	}

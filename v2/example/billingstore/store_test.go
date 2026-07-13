@@ -317,3 +317,127 @@ func redisHashTag(key string) string {
 	}
 	return key[start+1 : end]
 }
+
+// errSink 并发安全地收集 OnError 上报的错误，供故障注入测试断言。
+type errSink struct {
+	mu   sync.Mutex
+	errs []error
+}
+
+func (s *errSink) onError(err error) {
+	s.mu.Lock()
+	s.errs = append(s.errs, err)
+	s.mu.Unlock()
+}
+
+func (s *errSink) all() []error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]error(nil), s.errs...)
+}
+
+// newFaultStore 构造一个可注入 Redis 故障的 Store（不落 DB，聚焦 Redis 累计路径），
+// 额外返回一个独立客户端用于直接观察 Redis 状态。
+func newFaultStore(t *testing.T, pricing provider.PricingTable) (*Store, *miniredis.Miniredis, *redis.Client, *errSink) {
+	t.Helper()
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	inspect := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = inspect.Close() })
+
+	sink := &errSink{}
+	store, err := New(Config{
+		Redis:         client,
+		Pricing:       pricing,
+		FlushInterval: 20 * time.Millisecond,
+		OnError:       sink.onError,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	return store, mr, inspect, sink
+}
+
+// TestStoreRecordWrongTypeIdempotencySetIsAtomic 验证幂等集合 key 类型错误时，
+// SADD 在任何累计前中止，不留下部分账目。
+func TestStoreRecordWrongTypeIdempotencySetIsAtomic(t *testing.T) {
+	store, mr, inspect, sink := newFaultStore(t, nil)
+	ctx := t.Context()
+
+	// 幂等集合 key 被写成 string：SADD 触发 WRONGTYPE。
+	require.NoError(t, mr.Set(store.entrySetKey("u1"), "corrupt"))
+
+	entry := testEntry(100)
+	entry.EntryID = "wrongtype-entry"
+	require.NoError(t, store.Record(ctx, entry), "错误应经 OnError 上抛，不影响主请求")
+
+	require.NotEmpty(t, sink.all(), "WRONGTYPE 必须经 OnError 上抛")
+	assert.Empty(t, inspect.HGetAll(ctx, store.usageKey("u1", QuotaPeriodTotal, time.Now())).Val(),
+		"SADD 中止后累计从未发生")
+}
+
+// TestStoreRecordCorruptCounterFieldRollsBackClaim 验证累计字段被脏数据污染导致
+// HINCRBY 失败时，脚本回滚并撤销幂等标记，避免"已去重未累计"坏账。
+func TestStoreRecordCorruptCounterFieldRollsBackClaim(t *testing.T) {
+	store, mr, inspect, sink := newFaultStore(t, nil)
+	ctx := t.Context()
+
+	totalKey := store.usageKey("u1", QuotaPeriodTotal, time.Now())
+	mr.HSet(totalKey, fieldTotalTokens, "garbage") // 非整数，首个 HINCRBY 失败
+
+	entry := testEntry(100)
+	entry.EntryID = "corrupt-field-entry"
+	require.NoError(t, store.Record(ctx, entry))
+
+	require.NotEmpty(t, sink.all(), "脏字段导致的累计失败必须上抛")
+
+	isMember, err := inspect.SIsMember(ctx, store.entrySetKey("u1"), entry.EntryID).Result()
+	require.NoError(t, err)
+	assert.False(t, isMember, "累计失败后必须撤销幂等标记，修复后可重新记账")
+	assert.Equal(t, "garbage", mr.HGet(totalKey, fieldTotalTokens), "失败字段不得被改写")
+	assert.Empty(t, mr.HGet(totalKey, fieldCalls), "后续字段不得被部分累计")
+}
+
+// TestStoreRecordMidwayFailureReversesAppliedIncrements 验证累计中途失败时，
+// 已成功应用的增量被逆向回滚、幂等标记被撤销（脚本回滚循环的核心路径）。
+//
+// 触发方式：污染第二个累计字段 cost_micros，使第一个字段 total_tokens 先累计成功、
+// cost_micros 的 HINCRBY 再失败。int64 累加溢出会触发同一条 HINCRBY 报错→逆向回滚
+// 路径，此处用脏字段注入模拟该失败（miniredis 不模拟 HINCRBY 溢出报错）。
+func TestStoreRecordMidwayFailureReversesAppliedIncrements(t *testing.T) {
+	store, mr, inspect, sink := newFaultStore(t, nil)
+	ctx := t.Context()
+
+	totalKey := store.usageKey("u1", QuotaPeriodTotal, time.Now())
+	mr.HSet(totalKey, fieldCostMicros, "garbage") // 第二个字段非整数，其 HINCRBY 失败
+
+	entry := testEntry(100)
+	entry.EntryID = "midway-fail-entry"
+	require.NoError(t, store.Record(ctx, entry))
+
+	require.NotEmpty(t, sink.all(), "中途失败必须上抛")
+
+	got := mr.HGet(totalKey, fieldTotalTokens)
+	assert.True(t, got == "" || got == "0", "先累计成功的 total_tokens 必须被回滚为 0，实际 %q", got)
+	assert.Equal(t, "garbage", mr.HGet(totalKey, fieldCostMicros), "失败字段不得被改写")
+
+	isMember, err := inspect.SIsMember(ctx, store.entrySetKey("u1"), entry.EntryID).Result()
+	require.NoError(t, err)
+	assert.False(t, isMember, "回滚后必须撤销幂等标记")
+}
+
+// TestStoreRecordRejectsNegativeUsage 验证负 token 增量被 Go 侧拒绝，
+// 不会倒扣 Redis 累计值。
+func TestStoreRecordRejectsNegativeUsage(t *testing.T) {
+	store, _, inspect, sink := newFaultStore(t, nil)
+	ctx := t.Context()
+
+	entry := testEntry(0)
+	entry.EntryID = "negative-entry"
+	entry.Usage.TotalTokens = -100
+
+	require.NoError(t, store.Record(ctx, entry))
+	require.NotEmpty(t, sink.all(), "负增量必须被拒绝并上抛")
+	assert.Empty(t, inspect.HGetAll(ctx, store.usageKey("u1", QuotaPeriodTotal, time.Now())).Val(),
+		"负增量不得写入 Redis 累计值")
+}

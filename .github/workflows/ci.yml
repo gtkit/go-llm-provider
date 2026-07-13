@@ -100,7 +100,7 @@ jobs:
       - name: 各 fuzz 目标 30 秒
         working-directory: v2/provider
         run: |
-          for target in FuzzFormatMicros FuzzAnthropicStreamChunk FuzzGeminiStreamChunk FuzzSSEReader FuzzEstimateTokensAndTrim; do
+          for target in FuzzFormatMicros FuzzPricingTableCost FuzzAnthropicStreamChunk FuzzGeminiStreamChunk FuzzSSEReader FuzzEstimateTokensAndTrim; do
             echo "== ${target} =="
             go test -fuzz="^${target}\$" -fuzztime=30s -run '^$' .
           done

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"math"
+	"math/big"
 	"regexp"
 	"testing"
 )
@@ -107,6 +108,104 @@ func FuzzFormatMicros(f *testing.F) {
 		out := FormatMicros(micros)
 		if !microsPattern.MatchString(out) {
 			t.Fatalf("非法金额格式: %q (输入 %d)", out, micros)
+		}
+	})
+}
+
+// oraclePricingCost 用 math/big 精确复算 PricingTable.Cost 的完整语义，作为差分预言机：
+// 返回 (micros, wantOK)，wantOK=false 表示 Cost 应返回 ErrInvalidPricing。
+// 计费实现走 128 位定点乘加，此处用任意精度整数复核，二者必须逐位一致。
+func oraclePricingCost(usage Usage, rate ModelRate) (int64, bool) {
+	for _, r := range []int64{rate.InputPer1M, rate.OutputPer1M, rate.CacheReadPer1M, rate.CacheWritePer1M, rate.ReasoningPer1M} {
+		if r < 0 || r > maxRatePer1M {
+			return 0, false
+		}
+	}
+	for _, n := range []int{usage.PromptTokens, usage.CompletionTokens, usage.ReasoningTokens, usage.CacheReadTokens, usage.CacheWriteTokens, usage.TotalTokens} {
+		if n < 0 {
+			return 0, false
+		}
+	}
+	if usage.CacheReadTokens > usage.PromptTokens-usage.CacheWriteTokens {
+		return 0, false
+	}
+	if usage.ReasoningTokens > usage.CompletionTokens {
+		return 0, false
+	}
+
+	fallback := func(r, fb int64) int64 {
+		if r > 0 {
+			return r
+		}
+		return fb
+	}
+	total := new(big.Int)
+	addTerm := func(tokens int, r int64) {
+		total.Add(total, new(big.Int).Mul(big.NewInt(int64(tokens)), big.NewInt(r)))
+	}
+	addTerm(usage.PromptTokens-usage.CacheReadTokens-usage.CacheWriteTokens, rate.InputPer1M)
+	addTerm(usage.CacheReadTokens, fallback(rate.CacheReadPer1M, rate.InputPer1M))
+	addTerm(usage.CacheWriteTokens, fallback(rate.CacheWritePer1M, rate.InputPer1M))
+	addTerm(usage.CompletionTokens-usage.ReasoningTokens, rate.OutputPer1M)
+	addTerm(usage.ReasoningTokens, fallback(rate.ReasoningPer1M, rate.OutputPer1M))
+
+	// 非负值除法向零截断即向下取整，与 divideCost 的无符号整除一致。
+	micros := new(big.Int).Quo(total, big.NewInt(tokensPerRateUnit))
+	if !micros.IsInt64() {
+		return 0, false // 最终金额超出 int64，Cost 应报溢出
+	}
+	return micros.Int64(), true
+}
+
+// FuzzPricingTableCost 以 math/big 预言机差分校验 128 位定点计费实现：
+// 任意费率与用量下，Cost 的成功/报错分类与金额都必须与精确计算完全一致。
+func FuzzPricingTableCost(f *testing.F) {
+	// 种子覆盖：常规、缓存/推理子集、零费率回落、上界费率×极端 token（溢出）、
+	// 负 token（拒绝）、缓存子集越界（拒绝）。
+	f.Add(1000, 500, 0, 0, 0, int64(2_000_000), int64(8_000_000), int64(0), int64(0), int64(0))
+	f.Add(1000, 500, 200, 300, 100, int64(2_000_000), int64(8_000_000), int64(500_000), int64(1_000_000), int64(4_000_000))
+	f.Add(math.MaxInt, 0, 0, 0, 0, int64(maxRatePer1M), int64(0), int64(0), int64(0), int64(0))
+	f.Add(0, 0, 0, 0, 0, int64(0), int64(0), int64(0), int64(0), int64(0))
+	f.Add(-5, 0, 0, 0, 0, int64(1), int64(1), int64(0), int64(0), int64(0))
+	f.Add(100, 100, 0, 50, 60, int64(1), int64(1), int64(1), int64(1), int64(1))
+
+	f.Fuzz(func(t *testing.T,
+		prompt, completion, reasoning, cacheRead, cacheWrite int,
+		inputRate, outputRate, cacheReadRate, cacheWriteRate, reasoningRate int64,
+	) {
+		usage := Usage{
+			PromptTokens:     prompt,
+			CompletionTokens: completion,
+			ReasoningTokens:  reasoning,
+			CacheReadTokens:  cacheRead,
+			CacheWriteTokens: cacheWrite,
+		}
+		rate := ModelRate{
+			InputPer1M:      inputRate,
+			OutputPer1M:     outputRate,
+			CacheReadPer1M:  cacheReadRate,
+			CacheWritePer1M: cacheWriteRate,
+			ReasoningPer1M:  reasoningRate,
+			Currency:        "CNY",
+		}
+
+		gotMicros, _, err := PricingTable{"m": rate}.Cost("m", usage)
+		wantMicros, wantOK := oraclePricingCost(usage, rate)
+
+		if wantOK {
+			if err != nil {
+				t.Fatalf("预言机判定合法但 Cost 报错: usage=%+v rate=%+v err=%v", usage, rate, err)
+			}
+			if gotMicros != wantMicros {
+				t.Fatalf("金额不一致: got=%d want=%d usage=%+v rate=%+v", gotMicros, wantMicros, usage, rate)
+			}
+			return
+		}
+		if err == nil {
+			t.Fatalf("预言机判定非法但 Cost 未报错: got=%d usage=%+v rate=%+v", gotMicros, usage, rate)
+		}
+		if !errors.Is(err, ErrInvalidPricing) {
+			t.Fatalf("非法输入应返回 ErrInvalidPricing, got %v", err)
 		}
 	})
 }

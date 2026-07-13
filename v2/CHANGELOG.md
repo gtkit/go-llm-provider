@@ -16,7 +16,7 @@
 
 ### Security
 
-## [2.7.0] - 2026-07-10
+## [2.7.0] - 2026-07-13
 
 ### Added
 
@@ -34,6 +34,7 @@
 - 修复 `CostBudgetMiddleware` 未校验费率且金额与 token 换算可能溢出的问题
 - 修复缓存 token 或推理 token 超出所属总量时被重复计费或产生负计费基数的问题
 - 修复 billingstore 的 Redis 累计缺少持久幂等、损坏数值被静默视为零、`Record` 与 `Close` 并发时已接纳流水可能丢失的问题
+- billingstore 的 Redis 累计脚本在中途失败（累计字段被写脏、累加溢出 `int64`）时逆向回滚已应用增量并撤销幂等标记，杜绝"已去重未累计"坏账；负用量增量被拒绝而非倒扣累计值
 - 修复流式观测在底层 `Close` 失败时未把错误写入 `stream_complete` 事件的问题
 - 修复 `NewEntryID` 在系统熵源失败且同纳秒并发调用时可能生成重复值的问题
 - 修复 `ExponentialBackoffWithJitter` 在上界为 `math.MaxInt64` 时整数溢出触发 panic 的问题（v1 同步修复）

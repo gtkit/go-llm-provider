@@ -13,7 +13,7 @@ import (
 
 var entryIDFallbackSequence atomic.Uint64
 
-// NewEntryID 生成 32 位十六进制字符串作为计量记录的唯一标识。
+// NewEntryID 生成 32 个十六进制字符（128 位）的唯一标识，用作计量记录的幂等键。
 // 正常路径使用 128 位密码学随机数；系统熵源失败时退化为纳秒时间戳与
 // 进程内原子序列的组合。NewBillingHook 自动为每条 RecordEntry 生成；
 // 自行构造 RecordEntry 的 Recorder 实现方也可用它补齐幂等键。
