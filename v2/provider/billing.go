@@ -3,22 +3,36 @@ package provider
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
-// NewEntryID 生成 128 位随机十六进制字符串作为计量记录的唯一标识。
-// NewBillingHook 自动为每条 RecordEntry 生成；自行构造 RecordEntry 的
-// Recorder 实现方也可用它补齐幂等键。
+var entryIDFallbackSequence atomic.Uint64
+
+// NewEntryID 生成 32 位十六进制字符串作为计量记录的唯一标识。
+// 正常路径使用 128 位密码学随机数；系统熵源失败时退化为纳秒时间戳与
+// 进程内原子序列的组合。NewBillingHook 自动为每条 RecordEntry 生成；
+// 自行构造 RecordEntry 的 Recorder 实现方也可用它补齐幂等键。
 func NewEntryID() string {
 	var buf [16]byte
 	if _, err := rand.Read(buf[:]); err != nil {
-		// crypto/rand 失败在实践中意味着系统熵源异常；
-		// 退化为时间戳，保证记录仍可写入（牺牲全局唯一性）。
-		return time.Now().Format("20060102150405.000000000")
+		// crypto/rand 失败在实践中意味着系统熵源异常；退化为
+		// 纳秒时间戳 + 进程内原子序列，保证并发调用仍不会生成重复值。
+		return fallbackEntryID(time.Now().UnixNano(), entryIDFallbackSequence.Add(1))
 	}
 	return hex.EncodeToString(buf[:])
+}
+
+func fallbackEntryID(unixNano int64, sequence uint64) string {
+	payload := strconv.AppendInt(nil, unixNano, 10)
+	payload = append(payload, ':')
+	payload = strconv.AppendUint(payload, sequence, 10)
+	digest := sha256.Sum256(payload)
+	return hex.EncodeToString(digest[:16])
 }
 
 // ============================================================

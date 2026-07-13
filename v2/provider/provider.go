@@ -99,7 +99,8 @@ var (
 	// ErrQuotaExceeded 表示调用方配额已用尽，请求未发往平台。
 	ErrQuotaExceeded = errors.New("user quota exceeded")
 
-	// ErrInvalidPricing 表示 PricingTable 中的费率或传入的用量数据非法（负值或超出上限）。
+	// ErrInvalidPricing 表示 PricingTable 中的费率或传入的用量数据非法，
+	// 包括负值、费率越界、token 子集关系不成立或最终金额溢出。
 	ErrInvalidPricing = errors.New("invalid pricing rate or usage")
 )
 

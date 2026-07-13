@@ -221,7 +221,7 @@ func (s *observedStream) recv(ctx context.Context) (*StreamChunk, error) {
 func (s *observedStream) close(ctx context.Context) error {
 	err := s.inner.Close()
 	// 未读到流尾就 Close 时也上报，Usage 以已读到的为准（可能为零值）。
-	s.emit(ctx, nil, StreamFinishClosed)
+	s.emit(ctx, err, StreamFinishClosed)
 	return err
 }
 

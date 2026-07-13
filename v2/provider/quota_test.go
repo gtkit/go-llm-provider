@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -263,6 +264,22 @@ func TestApplyCostBudget(t *testing.T) {
 		t.Parallel()
 		req := &ChatRequest{Model: "m", Messages: msgs}
 		out, err := applyCostBudget(WithCostBudget(t.Context(), 100_000_000_000), table, req) // 10 万元
+		require.NoError(t, err)
+		assert.Same(t, req, out)
+	})
+
+	t.Run("非法费率返回 ErrInvalidPricing", func(t *testing.T) {
+		t.Parallel()
+		invalid := PricingTable{"m": {InputPer1M: math.MaxInt64, OutputPer1M: 1}}
+		_, err := applyCostBudget(WithCostBudget(t.Context(), 1_000_000), invalid, &ChatRequest{Model: "m", Messages: msgs})
+		require.ErrorIs(t, err, ErrInvalidPricing)
+	})
+
+	t.Run("极大余额不发生乘法溢出", func(t *testing.T) {
+		t.Parallel()
+		cheap := PricingTable{"m": {OutputPer1M: 1, Currency: "CNY"}}
+		req := &ChatRequest{Model: "m"}
+		out, err := applyCostBudget(WithCostBudget(t.Context(), math.MaxInt64), cheap, req)
 		require.NoError(t, err)
 		assert.Same(t, req, out)
 	})

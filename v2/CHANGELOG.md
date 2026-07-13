@@ -6,9 +6,6 @@
 
 ### Added
 
-- `PricingTable.Cost` 新增费率与用量合法性校验：负费率、负 token、费率超过上限（1e12 微元/1M）返回新增 sentinel `ErrInvalidPricing`，杜绝非法配置导致的静默溢出错账
-- billingstore：`Store.Close` 幂等可重复调用，关闭后 `Record` 返回 `ErrStoreClosed`；GoDoc 补计费主线 Example（NewBillingHook / CostBudgetMiddleware / CompactMessages / RunToolLoopStream）
-
 ### Changed
 
 ### Deprecated
@@ -17,11 +14,30 @@
 
 ### Fixed
 
-- 修复 billingstore 计费幂等未覆盖 Redis 的问题：EntryID 幂等检查、总量/当日累计与 TTL 现由单个 Lua 脚本原子完成，重放时 token、费用、调用次数只计一次（此前仅数据库层去重，Redis 会重复累计导致账单与配额错误）
-- 修复 `ExponentialBackoffWithJitter` 在上界为 `math.MaxInt64` 时整数溢出触发 panic 的问题（v1 同步修复）
-- 修正 billingstore 的 go.mod 依赖声明（require v2.6.0，此前为 v2.5.0 被本地 replace 掩盖）
-
 ### Security
+
+## [2.7.0] - 2026-07-10
+
+### Added
+
+- 新增 `ErrInvalidPricing`，统一表示负费率、负 token、token 子集关系不成立、费率越界与最终金额溢出
+- billingstore 新增 `Config.RedisCluster`，开启后同一用户的幂等集合与累计 key 使用相同 hash tag，兼容 Redis Cluster Lua 多 key 限制
+- 补齐 `NewBillingHook`、`CostBudgetMiddleware`、`CompactMessages` 与 `RunToolLoopStream` 的可验证 GoDoc Example
+
+### Changed
+
+- billingstore 的用户级 `EntryID` 幂等集合改为与累计总量同生命周期，避免固定时间窗口到期后旧记录重放造成 Redis 与数据库账目分叉
+
+### Fixed
+
+- 修复 `PricingTable.Cost` 在合法极值费率与 token 数下发生整数回绕的问题，乘加改为 128 位中间值并校验最终 `int64` 金额
+- 修复 `CostBudgetMiddleware` 未校验费率且金额与 token 换算可能溢出的问题
+- 修复缓存 token 或推理 token 超出所属总量时被重复计费或产生负计费基数的问题
+- 修复 billingstore 的 Redis 累计缺少持久幂等、损坏数值被静默视为零、`Record` 与 `Close` 并发时已接纳流水可能丢失的问题
+- 修复流式观测在底层 `Close` 失败时未把错误写入 `stream_complete` 事件的问题
+- 修复 `NewEntryID` 在系统熵源失败且同纳秒并发调用时可能生成重复值的问题
+- 修复 `ExponentialBackoffWithJitter` 在上界为 `math.MaxInt64` 时整数溢出触发 panic 的问题（v1 同步修复）
+- 修正 billingstore 独立模块对 v2 的版本依赖声明
 
 ## [2.6.0] - 2026-07-10
 

@@ -3,6 +3,7 @@
 
 LINT_TARGETS ?= ./...
 MIN_PROVIDER_COVERAGE ?= 80.0
+REMOTE ?= gtkit
 
 tool: ## Lint Go code with the installed golangci-lint
 	@ echo "▶️ golangci-lint run"
@@ -18,7 +19,7 @@ release-check-root: ## Run release checks for root module and enforce provider c
 	go vet ./...
 	golangci-lint run ./...
 	go test -race -count=1 -timeout=5m ./...
-	go test -bench=. -benchmem -count=3 ./...
+	go test -run '^$$' -bench=. -benchmem -count=3 ./...
 	go test -coverprofile=coverage.out ./provider
 	@cover=$$(go tool cover -func=coverage.out | awk '/^total:/ {gsub("%","",$$3); print $$3}'); \
 	awk -v got="$$cover" -v min="$(MIN_PROVIDER_COVERAGE)" 'BEGIN { if (got+0 < min+0) exit 1 }' || \
@@ -29,7 +30,7 @@ release-check-v2: ## Run release checks for v2 module and enforce provider cover
 	cd v2 && go vet ./...
 	cd v2 && golangci-lint run ./...
 	cd v2 && go test -race -count=1 -timeout=5m ./...
-	cd v2 && go test -bench=. -benchmem -count=3 ./...
+	cd v2 && go test -run '^$$' -bench=. -benchmem -count=3 ./...
 	cd v2 && go test -coverprofile=coverage.out ./provider
 	@cover=$$(cd v2 && go tool cover -func=coverage.out | awk '/^total:/ {gsub("%","",$$3); print $$3}'); \
 	awk -v got="$$cover" -v min="$(MIN_PROVIDER_COVERAGE)" 'BEGIN { if (got+0 < min+0) exit 1 }' || \
@@ -44,9 +45,10 @@ release-check-billingstore: ## Run release checks for the billingstore example m
 release-check: release-check-root release-check-v2 release-check-billingstore ## Run release checks for all modules
 
 ## 推送标签到远程仓库时，通常不需要指定分支
-tag: ## Create a local annotated tag. Usage: make tag VERSION=v1.4.0
-	@test -n "$(VERSION)" || { echo "VERSION is required, for example: make tag VERSION=v1.4.0"; exit 1; }
+tag: ## Create a local annotated tag. Usage: make tag VERSION=v1.5.0 MESSAGE='- fix: 修复问题'
+	@test -n "$(VERSION)" || { echo "VERSION is required, for example: make tag VERSION=v1.5.0 MESSAGE='- fix: 修复问题'"; exit 1; }
+	@test -n "$(MESSAGE)" || { echo "MESSAGE is required, for example: MESSAGE='- fix: 修复问题'"; exit 1; }
 	@printf '%s\n' "$(VERSION)" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$$' || { echo "invalid VERSION: $(VERSION)"; exit 1; }
 	@git rev-parse -q --verify "refs/tags/$(VERSION)" >/dev/null && { echo "tag $(VERSION) already exists"; exit 1; } || true
-	git tag -a "$(VERSION)" -m "版本 $(VERSION)" -m "主要变更：" -m "- feat: 新增原生 provider 接入与发布前 smoke test"
-	@echo "created local tag $(VERSION). Push manually with: git push origin $(VERSION)"
+	git tag -a "$(VERSION)" -m "版本 $(VERSION)" -m "主要变更：" -m "$(MESSAGE)"
+	@echo "created local tag $(VERSION). Push manually with: git push $(REMOTE) $(VERSION)"

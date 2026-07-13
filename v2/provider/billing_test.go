@@ -147,6 +147,16 @@ func TestNewBillingHookSurvivesCanceledContext(t *testing.T) {
 	assert.Equal(t, "u1", userID, "ctx value 应保留")
 }
 
+func TestFallbackEntryIDIsStableAndDistinct(t *testing.T) {
+	t.Parallel()
+
+	first := fallbackEntryID(123, 1)
+	second := fallbackEntryID(123, 2)
+	assert.Len(t, first, 32)
+	assert.Len(t, second, 32)
+	assert.NotEqual(t, first, second)
+}
+
 type funcRecorder struct {
 	fn func(context.Context, RecordEntry) error
 }

@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -92,14 +93,14 @@ func TestPricingTableCost(t *testing.T) {
 	}
 }
 
-func TestPricingTableCostDefendsInconsistentUsage(t *testing.T) {
+func TestPricingTableCostRejectsInconsistentUsage(t *testing.T) {
 	t.Parallel()
 
 	table := PricingTable{"m": {InputPer1M: 1_000_000, OutputPer1M: 1_000_000, Currency: "CNY"}}
-	// 子集字段超过总量的异常数据：基础项按 0 计，不产生负费用。
-	micros, _, err := table.Cost("m", Usage{PromptTokens: 100, CacheReadTokens: 200})
-	require.NoError(t, err)
-	assert.GreaterOrEqual(t, micros, int64(0))
+	_, _, err := table.Cost("m", Usage{PromptTokens: 100, CacheReadTokens: 200})
+	require.ErrorIs(t, err, ErrInvalidPricing)
+	_, _, err = table.Cost("m", Usage{CompletionTokens: 100, ReasoningTokens: 200})
+	require.ErrorIs(t, err, ErrInvalidPricing)
 }
 
 func TestFormatMicros(t *testing.T) {
@@ -133,6 +134,13 @@ func TestPricingTableCostRejectsInvalidInput(t *testing.T) {
 		t.Parallel()
 		table := PricingTable{"m": {InputPer1M: 1_000_000, Currency: "CNY"}}
 		_, _, err := table.Cost("m", Usage{PromptTokens: -5})
+		require.ErrorIs(t, err, ErrInvalidPricing)
+	})
+
+	t.Run("合法费率配合极端 token 报错而非溢出", func(t *testing.T) {
+		t.Parallel()
+		table := PricingTable{"m": {InputPer1M: maxRatePer1M, Currency: "CNY"}}
+		_, _, err := table.Cost("m", Usage{PromptTokens: math.MaxInt})
 		require.ErrorIs(t, err, ErrInvalidPricing)
 	})
 }

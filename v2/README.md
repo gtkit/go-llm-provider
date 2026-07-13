@@ -1626,7 +1626,8 @@ RequestID（对账，流式与非流式均有值）、响应侧实际模型名�
 漏账可观测——收不收钱由 Recorder 策略决定。`MemoryUsageStore` 为单实例场景设计，
 多实例部署换用共享存储实现 `UsageRecorder` 即可，接口不变——
 `example/billingstore/` 提供 Redis + GORM 的参考实现（独立 go.mod，reference 级），
-含 Redis 原子累计、流水异步落库与 `QuotaChecker` 限额，可直接抄改。
+含 `EntryID` 幂等的 Redis Lua 原子累计、流水异步落库与 `QuotaChecker` 限额；
+Redis Cluster 部署需启用其 `Config.RedisCluster`，让同一用户的多 key 固定到同一 slot。
 
 #### 费用计算（PricingTable）
 
@@ -1645,8 +1646,11 @@ micros, currency, err := table.Cost("deepseek-chat", resp.Usage)
 fmt.Println(provider.FormatMicros(micros), currency) // 如 "0.0123 CNY"
 ```
 
-计费公式先减子集再分档乘价（`ReasoningTokens ⊆ CompletionTokens`、缓存 ⊆ `PromptTokens`），
-不会重复计费；未配价模型返回 `ErrModelNotPriced`。仅支持线性单价，分时折扣、阶梯定价请在业务层处理。
+计费公式先减子集再分档乘价（`ReasoningTokens ⊆ CompletionTokens`、
+`CacheReadTokens + CacheWriteTokens ≤ PromptTokens`），不会重复计费；
+未配价模型返回 `ErrModelNotPriced`。负费率、负 token、子集关系不成立、费率越界或
+最终金额超出 `int64` 时返回 `ErrInvalidPricing`，不回绕为错误金额。
+仅支持线性单价，分时折扣、阶梯定价请在业务层处理。
 底层成本价与对用户售价维护两份表即可。
 
 #### 配额拦截（QuotaChecker）
@@ -1691,7 +1695,7 @@ guarded, _ := provider.TryWithMiddlewares(billed, provider.MiddlewareOptions{
 
 ctx = provider.WithCostBudget(ctx, remainingMicros) // 如余额 1 元 = 1_000_000 微元
 resp, err := guarded.Chat(ctx, req)
-// 余额不足 → ErrQuotaExceeded；model 未配价 → ErrModelNotPriced（显式暴露配价缺失）
+// 余额不足 → ErrQuotaExceeded；model 未配价 → ErrModelNotPriced；非法费率 → ErrInvalidPricing
 ```
 
 注意：金额预算按 `req.Model` 查价，请求需显式指定已配价的模型；

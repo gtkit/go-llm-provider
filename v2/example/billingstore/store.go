@@ -2,10 +2,12 @@ package billingstore
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -33,25 +35,22 @@ var ErrBufferFull = errors.New("billingstore: usage record buffer full, record d
 // ErrStoreClosed 表示 Store 已关闭，后续 Record 被拒绝。
 var ErrStoreClosed = errors.New("billingstore: store is closed")
 
-// idempotencyTTL 是 EntryID 幂等标记在 Redis 中的保留时长（重放去重窗口）。
-const idempotencyTTL = 24 * time.Hour
-
-// usageIncrScript 以单个原子脚本完成：EntryID 幂等检查（SETNX）、
+// usageIncrScript 以单个原子脚本完成：EntryID 幂等检查（SADD）、
 // 总量与当日两个 HASH 的全部字段累计、当日 key 的 TTL 设置。
 // 重放（同 EntryID）时整体跳过，返回 0；首次执行返回 1。
-// KEYS: 1=幂等 key, 2=总量 key, 3=当日 key
-// ARGV: 1=tokens, 2=costMicros, 3=当日 TTL 秒, 4=幂等 TTL 秒
+// KEYS: 1=幂等集合, 2=总量 key, 3=当日 key
+// ARGV: 1=EntryID, 2=tokens, 3=costMicros, 4=当日 TTL 秒
 var usageIncrScript = redis.NewScript(`
-if redis.call('SET', KEYS[1], '1', 'NX', 'EX', ARGV[4]) == false then
+if redis.call('SADD', KEYS[1], ARGV[1]) == 0 then
   return 0
 end
-redis.call('HINCRBY', KEYS[2], 'total_tokens', ARGV[1])
-redis.call('HINCRBY', KEYS[2], 'cost_micros', ARGV[2])
+redis.call('HINCRBY', KEYS[2], 'total_tokens', ARGV[2])
+redis.call('HINCRBY', KEYS[2], 'cost_micros', ARGV[3])
 redis.call('HINCRBY', KEYS[2], 'calls', 1)
-redis.call('HINCRBY', KEYS[3], 'total_tokens', ARGV[1])
-redis.call('HINCRBY', KEYS[3], 'cost_micros', ARGV[2])
+redis.call('HINCRBY', KEYS[3], 'total_tokens', ARGV[2])
+redis.call('HINCRBY', KEYS[3], 'cost_micros', ARGV[3])
 redis.call('HINCRBY', KEYS[3], 'calls', 1)
-redis.call('EXPIRE', KEYS[3], ARGV[3])
+redis.call('EXPIRE', KEYS[3], ARGV[4])
 return 1
 `)
 
@@ -76,6 +75,11 @@ type Config struct {
 	// KeyPrefix 是 Redis key 前缀，默认 "llm:usage"。
 	KeyPrefix string
 
+	// RedisCluster 为 true 时，所有同一用户的计费 key 自动使用相同 Redis Cluster
+	// hash tag，确保 Lua 脚本涉及的多个 key 位于同一 slot。开启后 key 命名与单节点
+	// 模式不同，迁移已有数据时需由业务侧完成一次性转换。
+	RedisCluster bool
+
 	// FlushInterval 是流水批量刷库周期，默认 5s。
 	FlushInterval time.Duration
 
@@ -96,7 +100,9 @@ type Store struct {
 	stopped chan struct{}
 
 	closeOnce sync.Once
-	closed    atomic.Bool
+	lifecycle sync.Mutex
+	active    sync.WaitGroup
+	closed    bool
 }
 
 var (
@@ -137,12 +143,23 @@ func New(cfg Config) (*Store, error) {
 // Record 实现 provider.UsageRecorder：Redis 原子累计（总量 + 当日），
 // 流水投入缓冲异步刷库。错误一律通过 OnError 上抛，不影响主请求。
 func (s *Store) Record(ctx context.Context, entry provider.RecordEntry) error {
+	if s == nil {
+		return ErrStoreClosed
+	}
 	if entry.UserID == "" {
 		return nil
 	}
-	if s.closed.Load() {
+	if !s.beginRecord() {
 		return ErrStoreClosed
 	}
+	var reported []error
+	defer func() {
+		s.active.Done()
+		for _, err := range reported {
+			s.reportError(err)
+		}
+	}()
+
 	entryID := entry.EntryID
 	if entryID == "" {
 		// 直接构造 RecordEntry（未经 NewBillingHook）的调用路径：
@@ -150,8 +167,13 @@ func (s *Store) Record(ctx context.Context, entry provider.RecordEntry) error {
 		entryID = provider.NewEntryID()
 	}
 
-	costMicros := s.entryCost(entry)
-	s.incrRedis(ctx, entryID, entry, costMicros)
+	costMicros, err := s.entryCost(entry)
+	if err != nil {
+		reported = append(reported, err)
+	}
+	if err := s.incrRedis(ctx, entryID, entry, costMicros); err != nil {
+		reported = append(reported, err)
+	}
 
 	if s.cfg.DB == nil {
 		return nil
@@ -182,9 +204,19 @@ func (s *Store) Record(ctx context.Context, entry provider.RecordEntry) error {
 	select {
 	case s.pending <- record:
 	default:
-		s.reportError(ErrBufferFull)
+		reported = append(reported, ErrBufferFull)
 	}
 	return nil
+}
+
+func (s *Store) beginRecord() bool {
+	s.lifecycle.Lock()
+	defer s.lifecycle.Unlock()
+	if s.closed {
+		return false
+	}
+	s.active.Add(1)
+	return true
 }
 
 // Allow 实现 provider.QuotaChecker：读取用户限额与 Redis 累计值比较，
@@ -213,8 +245,16 @@ func (s *Store) Allow(ctx context.Context, userID, _ string) error {
 		s.reportError(fmt.Errorf("billingstore: read usage: %w", err))
 		return nil // fail-open
 	}
-	usedTokens := redisInt(values[0])
-	usedMicros := redisInt(values[1])
+	usedTokens, err := redisInt(values[0])
+	if err != nil {
+		s.reportError(fmt.Errorf("billingstore: parse token usage: %w", err))
+		return nil // fail-open
+	}
+	usedMicros, err := redisInt(values[1])
+	if err != nil {
+		s.reportError(fmt.Errorf("billingstore: parse cost usage: %w", err))
+		return nil // fail-open
+	}
 
 	if quota.TokenLimit > 0 && usedTokens >= quota.TokenLimit {
 		return fmt.Errorf("%w: user %s used %d tokens (limit %d, period %s)",
@@ -231,8 +271,14 @@ func (s *Store) Allow(ctx context.Context, userID, _ string) error {
 // Close 停止后台循环并冲刷剩余流水；可安全重复调用。
 // 关闭后 Record 返回 ErrStoreClosed。
 func (s *Store) Close() error {
+	if s == nil {
+		return nil
+	}
 	s.closeOnce.Do(func() {
-		s.closed.Store(true)
+		s.lifecycle.Lock()
+		s.closed = true
+		s.lifecycle.Unlock()
+		s.active.Wait()
 		close(s.done)
 		<-s.stopped
 	})
@@ -249,17 +295,16 @@ func (s *Store) pricingModel(entry provider.RecordEntry) string {
 	return entry.Model
 }
 
-func (s *Store) entryCost(entry provider.RecordEntry) int64 {
+func (s *Store) entryCost(entry provider.RecordEntry) (int64, error) {
 	model := s.pricingModel(entry)
 	if len(s.cfg.Pricing) == 0 || model == "" {
-		return 0
+		return 0, nil
 	}
 	micros, _, err := s.cfg.Pricing.Cost(model, entry.Usage)
 	if err != nil {
-		s.reportError(err)
-		return 0
+		return 0, err
 	}
-	return micros
+	return micros, nil
 }
 
 func (s *Store) entryCurrency(entry provider.RecordEntry) string {
@@ -271,30 +316,44 @@ func (s *Store) entryCurrency(entry provider.RecordEntry) string {
 
 // incrRedis 通过 Lua 脚本原子完成幂等检查与两级累计：
 // 同一 EntryID 重放时整体跳过（token、费用、调用次数都只计一次）。
-func (s *Store) incrRedis(ctx context.Context, entryID string, entry provider.RecordEntry, costMicros int64) {
+func (s *Store) incrRedis(ctx context.Context, entryID string, entry provider.RecordEntry, costMicros int64) error {
 	now := time.Now()
 	keys := []string{
-		s.cfg.KeyPrefix + ":entry:" + entryID,
+		s.entrySetKey(entry.UserID),
 		s.usageKey(entry.UserID, QuotaPeriodTotal, now),
 		s.usageKey(entry.UserID, QuotaPeriodDaily, now),
 	}
 	args := []any{
+		entryID,
 		int64(entry.Usage.TotalTokens),
 		costMicros,
 		int64(dailyKeyTTL / time.Second),
-		int64(idempotencyTTL / time.Second),
 	}
 	if err := usageIncrScript.Run(ctx, s.cfg.Redis, keys, args...).Err(); err != nil {
-		s.reportError(fmt.Errorf("billingstore: usage incr script: %w", err))
+		return fmt.Errorf("billingstore: usage incr script: %w", err)
 	}
+	return nil
 }
 
 // usageKey 返回累计 HASH 的 key：总量 {prefix}:{uid}:total，当日 {prefix}:{uid}:{yyyymmdd}。
 func (s *Store) usageKey(userID string, period QuotaPeriod, now time.Time) string {
+	prefix := s.userKeyPrefix(userID)
 	if period == QuotaPeriodDaily {
-		return fmt.Sprintf("%s:%s:%s", s.cfg.KeyPrefix, userID, now.Format("20060102"))
+		return fmt.Sprintf("%s:%s:%s", prefix, userID, now.Format("20060102"))
 	}
-	return fmt.Sprintf("%s:%s:total", s.cfg.KeyPrefix, userID)
+	return fmt.Sprintf("%s:%s:total", prefix, userID)
+}
+
+func (s *Store) entrySetKey(userID string) string {
+	return fmt.Sprintf("%s:%s:entries", s.userKeyPrefix(userID), userID)
+}
+
+func (s *Store) userKeyPrefix(userID string) string {
+	if !s.cfg.RedisCluster {
+		return s.cfg.KeyPrefix
+	}
+	digest := sha256.Sum256([]byte(userID))
+	return s.cfg.KeyPrefix + ":{" + hex.EncodeToString(digest[:8]) + "}"
 }
 
 func (s *Store) flushLoop() {
@@ -347,12 +406,17 @@ func (s *Store) reportError(err error) {
 	}
 }
 
-func redisInt(value any) int64 {
+func redisInt(value any) (int64, error) {
+	if value == nil {
+		return 0, nil
+	}
 	str, ok := value.(string)
 	if !ok {
-		return 0
+		return 0, fmt.Errorf("unexpected Redis value type %T", value)
 	}
-	var n int64
-	_, _ = fmt.Sscanf(str, "%d", &n)
-	return n
+	n, err := strconv.ParseInt(str, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse %q: %w", str, err)
+	}
+	return n, nil
 }

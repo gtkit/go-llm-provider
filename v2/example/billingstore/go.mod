@@ -7,7 +7,7 @@ replace github.com/gtkit/go-llm-provider/v2 => ../..
 require (
 	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/glebarez/sqlite v1.11.0
-	github.com/gtkit/go-llm-provider/v2 v2.6.0
+	github.com/gtkit/go-llm-provider/v2 v2.7.0
 	github.com/redis/go-redis/v9 v9.21.0
 	github.com/stretchr/testify v1.11.1
 	gorm.io/gorm v1.31.2

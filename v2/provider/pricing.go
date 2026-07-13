@@ -2,6 +2,8 @@ package provider
 
 import (
 	"fmt"
+	"math"
+	"math/bits"
 	"strconv"
 	"strings"
 )
@@ -36,9 +38,8 @@ type PricingTable map[string]ModelRate
 //	cost = inputBase*Input + CacheRead*CacheRead + CacheWrite*CacheWrite
 //	     + outputBase*Output + Reasoning*Reasoning   （各项 / 1M，末尾一次整除）
 //
-// 末尾一次整除向零截断，尾差对用户让利。
-// 溢出余量：token 计数 ~1e7、高价模型费率 ~1e9 微元/1M 时，
-// 五项累加 ~1e17，仍低于 int64 上限（~9.2e18）一个数量级以上。
+// 末尾一次整除向零截断，尾差对用户让利。乘加使用 128 位无符号中间值，
+// 最终微元金额超出 int64 时返回 ErrInvalidPricing，不发生回绕错账。
 // 模型不在表中时返回 ErrModelNotPriced，不静默按零计费。
 func (t PricingTable) Cost(model string, usage Usage) (micros int64, currency string, err error) {
 	rate, ok := t[model]
@@ -56,25 +57,38 @@ func (t PricingTable) Cost(model string, usage Usage) (micros int64, currency st
 	cacheWriteRate := fallbackRate(rate.CacheWritePer1M, rate.InputPer1M)
 	reasoningRate := fallbackRate(rate.ReasoningPer1M, rate.OutputPer1M)
 
-	// 异常数据防御：子集字段超过总量时按 0 计基础项，缓存/推理项照常计。
-	inputBase := max(int64(usage.PromptTokens-usage.CacheReadTokens-usage.CacheWriteTokens), 0)
-	outputBase := max(int64(usage.CompletionTokens-usage.ReasoningTokens), 0)
+	inputBase := usage.PromptTokens - usage.CacheReadTokens - usage.CacheWriteTokens
+	outputBase := usage.CompletionTokens - usage.ReasoningTokens
 
-	total := inputBase*rate.InputPer1M +
-		int64(usage.CacheReadTokens)*cacheReadRate +
-		int64(usage.CacheWriteTokens)*cacheWriteRate +
-		outputBase*rate.OutputPer1M +
-		int64(usage.ReasoningTokens)*reasoningRate
-
-	return total / tokensPerRateUnit, rate.Currency, nil
+	var totalHi, totalLo uint64
+	for _, term := range []struct {
+		tokens int
+		rate   int64
+	}{
+		{inputBase, rate.InputPer1M},
+		{usage.CacheReadTokens, cacheReadRate},
+		{usage.CacheWriteTokens, cacheWriteRate},
+		{outputBase, rate.OutputPer1M},
+		{usage.ReasoningTokens, reasoningRate},
+	} {
+		var addErr error
+		totalHi, totalLo, addErr = addCostTerm(totalHi, totalLo, term.tokens, term.rate)
+		if addErr != nil {
+			return 0, "", fmt.Errorf("%w: model %q cost overflow", ErrInvalidPricing, model)
+		}
+	}
+	micros, err = divideCost(totalHi, totalLo)
+	if err != nil {
+		return 0, "", fmt.Errorf("%w: model %q cost exceeds int64 micros", ErrInvalidPricing, model)
+	}
+	return micros, rate.Currency, nil
 }
 
 // tokensPerRateUnit 是费率的计量基数：ModelRate 各单价均为"每 1M tokens"。
 const tokensPerRateUnit = 1_000_000
 
-// maxRatePer1M 是费率合法上限（1e12 微元 / 1M tokens，即每百万 token 一百万元），
-// 远超任何真实模型定价三个数量级。上限校验把 Cost 注释中的溢出余量分析
-// 从假设变成硬保证：合法费率与 token 量下，乘加全程不会越过 int64。
+// maxRatePer1M 是费率合法上限（1e12 微元 / 1M tokens，即每百万 token 一百万元）。
+// Cost 对合法费率仍执行 128 位乘加与最终 int64 边界校验。
 const maxRatePer1M = 1_000_000_000_000
 
 func validateRate(model string, rate ModelRate) error {
@@ -97,7 +111,69 @@ func validateUsage(usage Usage) error {
 			return fmt.Errorf("%w: negative token count %d", ErrInvalidPricing, n)
 		}
 	}
+	if usage.CacheReadTokens > usage.PromptTokens-usage.CacheWriteTokens {
+		return fmt.Errorf("%w: cache read/write tokens exceed prompt tokens", ErrInvalidPricing)
+	}
+	if usage.ReasoningTokens > usage.CompletionTokens {
+		return fmt.Errorf("%w: reasoning tokens exceed completion tokens", ErrInvalidPricing)
+	}
 	return nil
+}
+
+func addCostTerm(totalHi, totalLo uint64, tokens int, rate int64) (resultHi, resultLo uint64, err error) {
+	if tokens < 0 || rate < 0 {
+		return 0, 0, ErrInvalidPricing
+	}
+	// tokens 与 rate 已在本函数入口验证为非负值，转换不会改变数值。
+	termHi, termLo := bits.Mul64(uint64(tokens), uint64(rate))
+	totalLo, carry := bits.Add64(totalLo, termLo, 0)
+	totalHi, overflow := bits.Add64(totalHi, termHi, carry)
+	if overflow != 0 {
+		return 0, 0, ErrInvalidPricing
+	}
+	return totalHi, totalLo, nil
+}
+
+func divideCost(totalHi, totalLo uint64) (int64, error) {
+	quotientHi, remainder := bits.Div64(0, totalHi, tokensPerRateUnit)
+	quotientLo, _ := bits.Div64(remainder, totalLo, tokensPerRateUnit)
+	if quotientHi != 0 || quotientLo > math.MaxInt64 {
+		return 0, ErrInvalidPricing
+	}
+	return int64(quotientLo), nil
+}
+
+func mulDivFloor(a, b, divisor int64) (int64, error) {
+	quotient, _, err := mulDiv(a, b, divisor)
+	return quotient, err
+}
+
+func mulDiv(a, b, divisor int64) (quotient int64, remainder uint64, err error) {
+	if a < 0 || b < 0 || divisor <= 0 {
+		return 0, 0, ErrInvalidPricing
+	}
+	// a、b 与 divisor 已在本函数入口验证，以下转换不会改变数值。
+	hi, lo := bits.Mul64(uint64(a), uint64(b))
+	quotientHi, remainderHi := bits.Div64(0, hi, uint64(divisor))
+	quotientLo, remainder := bits.Div64(remainderHi, lo, uint64(divisor))
+	if quotientHi != 0 || quotientLo > math.MaxInt64 {
+		return 0, 0, ErrInvalidPricing
+	}
+	return int64(quotientLo), remainder, nil
+}
+
+func mulDivCeil(a, b, divisor int64) (int64, error) {
+	quotient, remainder, err := mulDiv(a, b, divisor)
+	if err != nil {
+		return 0, err
+	}
+	if remainder == 0 {
+		return quotient, nil
+	}
+	if quotient == math.MaxInt64 {
+		return 0, ErrInvalidPricing
+	}
+	return quotient + 1, nil
 }
 
 func fallbackRate(rate, fallback int64) int64 {

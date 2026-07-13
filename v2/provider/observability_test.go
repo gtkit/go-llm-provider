@@ -242,6 +242,34 @@ func TestObserveStreamMiddlewareReportsCompletionOnEarlyClose(t *testing.T) {
 	assert.Equal(t, StreamFinishClosed, complete.StreamFinish)
 }
 
+func TestObserveStreamMiddlewareReportsCloseError(t *testing.T) {
+	t.Parallel()
+
+	closeErr := &ProviderError{Provider: ProviderOpenAI, Code: ErrorCodeNetwork, Retryable: true}
+	p := &stubProvider{
+		name: ProviderOpenAI,
+		chatStream: func(context.Context, *ChatRequest) (*StreamReader, error) {
+			return NewStreamReader(func() (*StreamChunk, error) {
+				return &StreamChunk{Delta: "partial"}, nil
+			}, func() error { return closeErr }), nil
+		},
+	}
+
+	var events []ObserveEvent
+	wrapped := WithObservability(p, ObserveOptions{OnEvent: func(_ context.Context, event ObserveEvent) {
+		events = append(events, event)
+	}})
+	stream, err := wrapped.ChatStream(t.Context(), &ChatRequest{Model: "stream-model"})
+	require.NoError(t, err)
+	require.ErrorIs(t, stream.Close(), closeErr)
+
+	require.Len(t, events, 2)
+	complete := events[1]
+	require.ErrorIs(t, complete.Err, closeErr)
+	assert.Equal(t, ErrorCodeNetwork, complete.ErrorCode)
+	assert.Equal(t, StreamFinishClosed, complete.StreamFinish)
+}
+
 func TestObserveEmbedMiddlewareReportsEmbedSuccess(t *testing.T) {
 	t.Parallel()
 

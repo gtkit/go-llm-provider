@@ -1,6 +1,11 @@
 package billingstore
 
 import (
+	"errors"
+	"fmt"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -108,6 +113,8 @@ func TestStoreRecordIdempotentByEntryID(t *testing.T) {
 	// 同一 EntryID 重复写入（模拟重放）：Redis 与流水都只计一次。
 	require.NoError(t, store.Record(ctx, entry))
 	require.NoError(t, store.Record(ctx, entry))
+	mr.FastForward(25 * time.Hour)
+	require.NoError(t, store.Record(ctx, entry), "幂等不能因时间窗口过期而失效")
 
 	// Redis 幂等：token、调用次数均只累计一次（Lua 脚本整体跳过重放）。
 	assert.Equal(t, "100", mr.HGet("llm:usage:u1:total", fieldTotalTokens))
@@ -210,4 +217,103 @@ func TestStoreCloseIsIdempotent(t *testing.T) {
 	// 关闭后 Record 显式拒绝，不静默丢失。
 	err = store.Record(t.Context(), testEntry(10))
 	require.ErrorIs(t, err, ErrStoreClosed)
+}
+
+func TestStoreRecordErrorCallbackCanClose(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+
+	var store *Store
+	var err error
+	store, err = New(Config{
+		Redis: client,
+		Pricing: provider.PricingTable{
+			"deepseek-chat": {InputPer1M: -1},
+		},
+		OnError: func(error) { _ = store.Close() },
+	})
+	require.NoError(t, err)
+
+	done := make(chan error, 1)
+	go func() { done <- store.Record(t.Context(), testEntry(10)) }()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Record 与 OnError 触发的 Close 发生死锁")
+	}
+	require.ErrorIs(t, store.Record(t.Context(), testEntry(10)), ErrStoreClosed)
+}
+
+func TestStoreConcurrentRecordAndCloseDoesNotLoseAcceptedRecords(t *testing.T) {
+	store, _, db := newTestStore(t, nil)
+
+	var accepted atomic.Int64
+	var wg sync.WaitGroup
+	errCh := make(chan error, 100)
+	start := make(chan struct{})
+	for i := range 100 {
+		wg.Go(func() {
+			<-start
+			entry := testEntry(1)
+			entry.EntryID = fmt.Sprintf("concurrent-%d", i)
+			if err := store.Record(t.Context(), entry); err == nil {
+				accepted.Add(1)
+			} else if !errors.Is(err, ErrStoreClosed) {
+				errCh <- err
+			}
+		})
+	}
+	close(start)
+	closeDone := make(chan struct{})
+	go func() {
+		_ = store.Close()
+		close(closeDone)
+	}()
+	wg.Wait()
+	close(errCh)
+	<-closeDone
+	for err := range errCh {
+		require.NoError(t, err)
+	}
+
+	var count int64
+	require.NoError(t, db.Model(&UsageRecord{}).Count(&count).Error)
+	assert.Equal(t, accepted.Load(), count)
+}
+
+func TestStoreClusterKeysShareHashTag(t *testing.T) {
+	store := &Store{cfg: Config{KeyPrefix: defaultKeyPrefix, RedisCluster: true}}
+	now := time.Now()
+	keys := []string{
+		store.entrySetKey("u1"),
+		store.usageKey("u1", QuotaPeriodTotal, now),
+		store.usageKey("u1", QuotaPeriodDaily, now),
+	}
+	tag := redisHashTag(keys[0])
+	require.NotEmpty(t, tag)
+	for _, key := range keys[1:] {
+		assert.Equal(t, tag, redisHashTag(key))
+	}
+}
+
+func TestStoreAllowReportsCorruptRedisValue(t *testing.T) {
+	var reported []error
+	store, mr, db := newTestStore(t, nil)
+	store.cfg.OnError = func(err error) { reported = append(reported, err) }
+	require.NoError(t, db.Create(&UserQuota{UserID: "u1", TokenLimit: 1}).Error)
+	mr.HSet(store.usageKey("u1", QuotaPeriodTotal, time.Now()), fieldTotalTokens, "broken")
+
+	require.NoError(t, store.Allow(t.Context(), "u1", ""))
+	require.NotEmpty(t, reported)
+}
+
+func redisHashTag(key string) string {
+	start := strings.IndexByte(key, '{')
+	end := strings.IndexByte(key, '}')
+	if start < 0 || end <= start+1 {
+		return ""
+	}
+	return key[start+1 : end]
 }

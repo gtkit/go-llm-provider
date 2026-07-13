@@ -6,9 +6,9 @@
 
 ## 架构
 
-- **Redis 热路径**：每次调用原子累计（`HINCRBY`）到两个 HASH——
+- **Redis 热路径**：单个 Lua 脚本先按 `EntryID` 幂等去重，再原子累计到两个 HASH——
   `llm:usage:{uid}:total`（累计）与 `llm:usage:{uid}:{yyyymmdd}`（当日，48h TTL），
-  字段含 `total_tokens` / `cost_micros` / `calls`。配额预检直接读 Redis，微秒级返回。
+  字段含 `total_tokens` / `cost_micros` / `calls`。配额预检直接读 Redis。
 - **GORM 流水**：逐次调用明细（`usage_record` 表，含会话、RequestID、缓存/推理分项、
   费用、流终止方式）经内存缓冲**异步批量**刷库，供对账与审计。
 - **限额配置**：`user_quota` 表，支持 token 上限与金额上限、`total` / `daily` 两种口径。
@@ -18,20 +18,23 @@
 - 刷库是 **best-effort**：进程崩溃丢缓冲内流水；刷库失败不重试，仅经 `OnError` 上抛。
 - Redis 与 DB **不保证一致**：Redis 是热路径加速，最终对账以 DB 流水聚合为准。
 - 配额存在**一次调用的滞后**（先放行后记账），Redis 故障时 **fail-open**。
+- Redis 的用户级幂等集合与累计总量同生命周期，不自动过期；需要结合流水保留策略做归档，
+  不能单独缩短幂等集合生命周期，否则旧 `EntryID` 重放会再次增加累计值。
 
-需要更强保证时的强化方向：流水改走消息队列；Redis 累计改 Lua 脚本合并往返；
-配额加本地缓存；按 `Terminated=true` 的记录做漏单补账。
+需要更强保证时的强化方向：流水改走消息队列；配额加本地缓存；
+按 `Terminated=true` 的记录做漏单补账。
 
 ## 用法
 
 ```go
 store, err := billingstore.New(billingstore.Config{
-    Redis:   redisClient,          // redis.Cmdable
-    DB:      gormDB,               // *gorm.DB；nil = 只计数不落流水
-    Pricing: pricingTable,         // 可选：配置后自动算费用
-    OnError: func(err error) { logger.Warn("billing", "err", err) },
+    Redis:        redisClient,          // redis.Cmdable
+    DB:           gormDB,               // *gorm.DB；nil = 只计数不落流水
+    Pricing:      pricingTable,         // 可选：配置后自动算费用
+    RedisCluster: true,                 // 仅 Redis Cluster 部署开启；同一用户 key 固定到同一 slot
+    OnError:      func(err error) { logger.Warn("billing", "err", err) },
 })
-defer store.Close() // 冲刷缓冲
+defer func() { _ = store.Close() }() // 拒绝新记录并冲刷已接纳流水
 
 p := provider.WithObservability(base, provider.ObserveOptions{
     OnEvent: provider.NewBillingHook(store),
@@ -41,6 +44,10 @@ guarded, _ := provider.TryWithMiddlewares(p, provider.MiddlewareOptions{
     Stream: []provider.StreamMiddleware{provider.QuotaStreamMiddleware(store)},
 })
 ```
+
+`RedisCluster` 默认为 `false`，保持单节点既有 key 格式。开启后 key 会增加由用户 ID
+摘要生成的 hash tag；已有数据不会自动迁移。`OnError` 可能由调用线程或后台刷库线程调用，
+实现必须并发安全并快速返回。
 
 ### 用 gtkit 生态装配（生产）
 

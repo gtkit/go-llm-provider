@@ -6,16 +6,6 @@
 
 ### Added
 
-- 从 v2 回移 `WithRetry` / `TryWithRetry` / `RetryMiddleware` / `RetryStreamMiddleware`：基于 `ProviderError.Retryable` 的内置重试（暂不解析 Retry-After 响应头，该能力仅 v2 提供）
-- 从 v2 回移 `NewFallbackProvider` / `NewFallbackProviderWithOptions`：多 provider 降级链，含自定义切换判定 `FallbackOptions.ShouldFallback`、ctx 取消即停、嵌套组合实现"厂商内穷尽 model 后再切厂商"
-- 流式调用支持 token 统计：自动下发 `stream_options.include_usage`，`StreamChunk` 新增 `Usage` 字段（统计位于 `FinishReason` 之后、`io.EOF` 之前的收尾 chunk）；`ChatRequest` 新增 `StreamUsage` 开关兼容老网关
-- 重试与降级链补 GoDoc Example 与热路径基准测试
-
-### Fixed
-
-- 修复 `ExponentialBackoffWithJitter` 在上界为 `math.MaxInt64` 时整数溢出触发 panic 的问题
-- 修正 `Version` 常量滞后（v1.4.2 发布时仍为 v1.4.1，随本版本更正为 v1.5.0；发布校验工作流已增加 tag 与版本常量一致性检查）
-
 ### Changed
 
 ### Deprecated
@@ -25,6 +15,20 @@
 ### Fixed
 
 ### Security
+
+## [1.5.0] - 2026-07-10
+
+### Added
+
+- 从 v2 回移 `WithRetry` / `TryWithRetry` / `RetryMiddleware` / `RetryStreamMiddleware`：基于 `ProviderError.Retryable` 的内置重试（暂不解析 Retry-After 响应头，该能力仅 v2 提供）
+- 从 v2 回移 `NewFallbackProvider` / `NewFallbackProviderWithOptions`：多 provider 降级链，含自定义切换判定 `FallbackOptions.ShouldFallback`、ctx 取消即停、嵌套组合实现"厂商内穷尽 model 后再切厂商"
+- 流式调用支持 token 统计：自动下发 `stream_options.include_usage`，`StreamChunk` 新增 `Usage` 字段（统计位于 `FinishReason` 之后、`io.EOF` 之前的收尾 chunk）；`ChatRequest` 新增 `StreamUsage` 开关兼容老网关
+- 重试与降级链补 GoDoc Example 与热路径基准测试
+
+### Fixed
+
+- 修复 `ExponentialBackoffWithJitter` 在上界为 `math.MaxInt64` 时整数溢出触发 panic 的问题
+- 修正 `Version` 常量滞后（v1.4.2 发布时仍为 v1.4.1，随本版本更正为 v1.5.0；发布校验工作流已增加 tag 与版本常量一致性检查）
 
 ## [1.4.2] - 2026-07-10
 

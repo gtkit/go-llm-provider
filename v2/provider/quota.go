@@ -192,9 +192,15 @@ func applyCostBudget(ctx context.Context, table PricingTable, req *ChatRequest) 
 	if !ok {
 		return nil, fmt.Errorf("%w: %q (cost budget requires a priced request model)", ErrModelNotPriced, req.Model)
 	}
+	if err := validateRate(req.Model, rate); err != nil {
+		return nil, err
+	}
 
 	estimatedInput := int64(EstimateTokens(req.Messages))
-	inputCost := estimatedInput * rate.InputPer1M / tokensPerRateUnit
+	inputCost, err := mulDivFloor(estimatedInput, rate.InputPer1M, tokensPerRateUnit)
+	if err != nil {
+		return nil, fmt.Errorf("%w: estimated input cost overflow", ErrInvalidPricing)
+	}
 	remaining := budget - inputCost
 	if remaining <= 0 {
 		return nil, fmt.Errorf("%w: estimated input cost %s reaches budget %s",
@@ -206,13 +212,20 @@ func applyCostBudget(ctx context.Context, table PricingTable, req *ChatRequest) 
 	if outputRate <= 0 {
 		return req, nil // 输出不计费，无需收缩
 	}
-	allowedOutput := remaining * tokensPerRateUnit / outputRate
+	unlimitedCost, err := mulDivCeil(tokenBudgetUnlimitedThreshold, outputRate, tokensPerRateUnit)
+	if err != nil {
+		return nil, fmt.Errorf("%w: output budget threshold overflow", ErrInvalidPricing)
+	}
+	if remaining >= unlimitedCost {
+		return req, nil
+	}
+	allowedOutput, err := mulDivFloor(remaining, tokensPerRateUnit, outputRate)
+	if err != nil {
+		return nil, fmt.Errorf("%w: allowed output calculation overflow", ErrInvalidPricing)
+	}
 	if allowedOutput <= 0 {
 		return nil, fmt.Errorf("%w: remaining budget %s cannot afford any output token",
 			ErrQuotaExceeded, FormatMicros(remaining))
-	}
-	if allowedOutput >= tokenBudgetUnlimitedThreshold {
-		return req, nil
 	}
 	if req.MaxTokens > 0 && int64(req.MaxTokens) <= allowedOutput {
 		return req, nil

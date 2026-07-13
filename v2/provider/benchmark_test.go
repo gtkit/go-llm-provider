@@ -70,6 +70,34 @@ func BenchmarkGenerateJSON(b *testing.B) {
 	}
 }
 
+func BenchmarkPricingTableCost(b *testing.B) {
+	table := PricingTable{
+		"deepseek-chat": {
+			InputPer1M:      2_000_000,
+			OutputPer1M:     8_000_000,
+			CacheReadPer1M:  200_000,
+			CacheWritePer1M: 2_000_000,
+			ReasoningPer1M:  8_000_000,
+			Currency:        "CNY",
+		},
+	}
+	usage := Usage{
+		PromptTokens:     12_000,
+		CompletionTokens: 3_000,
+		CacheReadTokens:  8_000,
+		ReasoningTokens:  1_000,
+		TotalTokens:      15_000,
+	}
+
+	b.ReportAllocs()
+	for b.Loop() {
+		micros, _, err := table.Cost("deepseek-chat", usage)
+		if err != nil || micros <= 0 {
+			b.Fatal("unexpected pricing result")
+		}
+	}
+}
+
 // benchmarkHistory 构造一份贴近真实对话的长历史：40 轮混合中英文 + 工具调用组。
 func benchmarkHistory() []Message {
 	msgs := []Message{SystemText("你是一个严谨的办公助手，回答保持简短、准确、专业。")}
