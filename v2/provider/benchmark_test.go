@@ -146,8 +146,8 @@ func BenchmarkAnthropicStreamChunk(b *testing.B) {
 	frame := []byte(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"根据季度数据，营收环比增长约 12%，enterprise 订阅贡献显著。"}}`)
 	b.ReportAllocs()
 	for b.Loop() {
-		var acc anthropicUsage
-		if _, ok, err := anthropicStreamChunk(frame, &acc); err != nil || !ok {
+		state := &anthropicStreamState{}
+		if _, ok, err := anthropicStreamChunk(frame, state); err != nil || !ok {
 			b.Fatal("unexpected parse result")
 		}
 	}

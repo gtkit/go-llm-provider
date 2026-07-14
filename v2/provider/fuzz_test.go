@@ -19,14 +19,14 @@ func FuzzAnthropicStreamChunk(f *testing.F) {
 	f.Add([]byte(`not json`))
 	f.Add([]byte(``))
 	f.Fuzz(func(t *testing.T, data []byte) {
-		var acc anthropicUsage
-		chunk, ok, err := anthropicStreamChunk(data, &acc)
+		state := &anthropicStreamState{}
+		chunk, ok, err := anthropicStreamChunk(data, state)
 		if ok && chunk == nil {
 			t.Fatal("ok=true 时 chunk 不得为 nil")
 		}
-		if acc.InputTokens < 0 || acc.OutputTokens < 0 {
+		if state.usage.InputTokens < 0 || state.usage.OutputTokens < 0 {
 			// 累积值仅在事件携带正值时覆盖，不应变负。
-			t.Fatalf("usage 累积出现负值: %+v", acc)
+			t.Fatalf("usage 累积出现负值: %+v", state.usage)
 		}
 		_ = err
 	})
@@ -39,8 +39,7 @@ func FuzzGeminiStreamChunk(f *testing.F) {
 	f.Add([]byte(`{"usageMetadata":{"promptTokenCount":1}}`))
 	f.Add([]byte(`{`))
 	f.Fuzz(func(t *testing.T, data []byte) {
-		var acc geminiUsage
-		chunk, ok, _ := geminiStreamChunk(data, &acc)
+		chunk, ok, _ := geminiStreamChunk(data, &geminiStreamState{})
 		if ok && chunk == nil {
 			t.Fatal("ok=true 时 chunk 不得为 nil")
 		}
@@ -113,24 +112,55 @@ func FuzzFormatMicros(f *testing.F) {
 }
 
 // oraclePricingCost 用 math/big 精确复算 PricingTable.Cost 的完整语义，作为差分预言机：
-// 返回 (micros, wantOK)，wantOK=false 表示 Cost 应返回 ErrInvalidPricing。
+// 返回 (micros, wantErr)，wantErr 非 nil 表示 Cost 应返回同类错误
+// （ErrInvalidPricing 或 ErrModelNotPriced）。
 // 计费实现走 128 位定点乘加，此处用任意精度整数复核，二者必须逐位一致。
-func oraclePricingCost(usage Usage, rate ModelRate) (int64, bool) {
-	for _, r := range []int64{rate.InputPer1M, rate.OutputPer1M, rate.CacheReadPer1M, rate.CacheWritePer1M, rate.ReasoningPer1M} {
+func oraclePricingCost(usage Usage, rate ModelRate) (int64, error) {
+	for _, r := range []int64{
+		rate.InputPer1M, rate.OutputPer1M, rate.CacheReadPer1M, rate.CacheWritePer1M, rate.ReasoningPer1M,
+		rate.WebSearchPer1K, rate.GroundedPromptPer1K,
+	} {
 		if r < 0 || r > maxRatePer1M {
-			return 0, false
+			return 0, ErrInvalidPricing
 		}
 	}
-	for _, n := range []int{usage.PromptTokens, usage.CompletionTokens, usage.ReasoningTokens, usage.CacheReadTokens, usage.CacheWriteTokens, usage.TotalTokens} {
+	for _, n := range []int{
+		usage.PromptTokens, usage.CompletionTokens, usage.ReasoningTokens,
+		usage.CacheReadTokens, usage.CacheWriteTokens, usage.TotalTokens,
+		usage.WebSearchRequests, usage.WebSearchGroundedPrompts,
+	} {
 		if n < 0 {
-			return 0, false
+			return 0, ErrInvalidPricing
 		}
 	}
 	if usage.CacheReadTokens > usage.PromptTokens-usage.CacheWriteTokens {
-		return 0, false
+		return 0, ErrInvalidPricing
 	}
 	if usage.ReasoningTokens > usage.CompletionTokens {
-		return 0, false
+		return 0, ErrInvalidPricing
+	}
+	// 复算 webSearchCostTerm 的口径二选一规则。
+	searchUnits, searchRate := 0, int64(0)
+	if usage.WebSearchRequests > 0 || usage.WebSearchGroundedPrompts > 0 {
+		switch {
+		case rate.WebSearchPer1K > 0 && rate.GroundedPromptPer1K > 0:
+			return 0, ErrInvalidPricing
+		case rate.WebSearchPer1K > 0:
+			if usage.WebSearchRequests == 0 {
+				return 0, ErrModelNotPriced
+			}
+			searchUnits, searchRate = usage.WebSearchRequests, rate.WebSearchPer1K
+		case rate.GroundedPromptPer1K > 0:
+			if usage.WebSearchGroundedPrompts == 0 {
+				return 0, ErrModelNotPriced
+			}
+			searchUnits, searchRate = usage.WebSearchGroundedPrompts, rate.GroundedPromptPer1K
+		default:
+			return 0, ErrModelNotPriced
+		}
+	}
+	if searchUnits > math.MaxInt/searchUnitScale {
+		return 0, ErrInvalidPricing
 	}
 
 	fallback := func(r, fb int64) int64 {
@@ -148,51 +178,63 @@ func oraclePricingCost(usage Usage, rate ModelRate) (int64, bool) {
 	addTerm(usage.CacheWriteTokens, fallback(rate.CacheWritePer1M, rate.InputPer1M))
 	addTerm(usage.CompletionTokens-usage.ReasoningTokens, rate.OutputPer1M)
 	addTerm(usage.ReasoningTokens, fallback(rate.ReasoningPer1M, rate.OutputPer1M))
+	addTerm(searchUnits*searchUnitScale, searchRate)
 
 	// 非负值除法向零截断即向下取整，与 divideCost 的无符号整除一致。
 	micros := new(big.Int).Quo(total, big.NewInt(tokensPerRateUnit))
 	if !micros.IsInt64() {
-		return 0, false // 最终金额超出 int64，Cost 应报溢出
+		return 0, ErrInvalidPricing // 最终金额超出 int64，Cost 应报溢出
 	}
-	return micros.Int64(), true
+	return micros.Int64(), nil
 }
 
 // FuzzPricingTableCost 以 math/big 预言机差分校验 128 位定点计费实现：
 // 任意费率与用量下，Cost 的成功/报错分类与金额都必须与精确计算完全一致。
 func FuzzPricingTableCost(f *testing.F) {
 	// 种子覆盖：常规、缓存/推理子集、零费率回落、上界费率×极端 token（溢出）、
-	// 负 token（拒绝）、缓存子集越界（拒绝）。
-	f.Add(1000, 500, 0, 0, 0, int64(2_000_000), int64(8_000_000), int64(0), int64(0), int64(0))
-	f.Add(1000, 500, 200, 300, 100, int64(2_000_000), int64(8_000_000), int64(500_000), int64(1_000_000), int64(4_000_000))
-	f.Add(math.MaxInt, 0, 0, 0, 0, int64(maxRatePer1M), int64(0), int64(0), int64(0), int64(0))
-	f.Add(0, 0, 0, 0, 0, int64(0), int64(0), int64(0), int64(0), int64(0))
-	f.Add(-5, 0, 0, 0, 0, int64(1), int64(1), int64(0), int64(0), int64(0))
-	f.Add(100, 100, 0, 50, 60, int64(1), int64(1), int64(1), int64(1), int64(1))
+	// 负 token（拒绝）、缓存子集越界（拒绝）、搜索双口径
+	// （按次/按 grounded prompt/未配价/双配冲突/口径不匹配/换算溢出）。
+	f.Add(1000, 500, 0, 0, 0, 0, 0, int64(2_000_000), int64(8_000_000), int64(0), int64(0), int64(0), int64(0), int64(0))
+	f.Add(1000, 500, 200, 300, 100, 0, 0, int64(2_000_000), int64(8_000_000), int64(500_000), int64(1_000_000), int64(4_000_000), int64(0), int64(0))
+	f.Add(math.MaxInt, 0, 0, 0, 0, 0, 0, int64(maxRatePer1M), int64(0), int64(0), int64(0), int64(0), int64(0), int64(0))
+	f.Add(0, 0, 0, 0, 0, 0, 0, int64(0), int64(0), int64(0), int64(0), int64(0), int64(0), int64(0))
+	f.Add(-5, 0, 0, 0, 0, 0, 0, int64(1), int64(1), int64(0), int64(0), int64(0), int64(0), int64(0))
+	f.Add(100, 100, 0, 50, 60, 0, 0, int64(1), int64(1), int64(1), int64(1), int64(1), int64(0), int64(0))
+	f.Add(1000, 500, 0, 0, 0, 3, 0, int64(2_000_000), int64(8_000_000), int64(0), int64(0), int64(0), int64(70_000_000), int64(0))
+	f.Add(0, 0, 0, 0, 0, 2, 1, int64(1), int64(1), int64(0), int64(0), int64(0), int64(0), int64(245_000_000))
+	f.Add(0, 0, 0, 0, 0, 1, 0, int64(1), int64(1), int64(0), int64(0), int64(0), int64(0), int64(0))
+	f.Add(0, 0, 0, 0, 0, 1, 1, int64(1), int64(1), int64(0), int64(0), int64(0), int64(1), int64(1))
+	f.Add(0, 0, 0, 0, 0, 2, 0, int64(1), int64(1), int64(0), int64(0), int64(0), int64(0), int64(1))
+	f.Add(0, 0, 0, 0, 0, math.MaxInt, 0, int64(1), int64(1), int64(0), int64(0), int64(0), int64(1), int64(0))
 
 	f.Fuzz(func(t *testing.T,
-		prompt, completion, reasoning, cacheRead, cacheWrite int,
-		inputRate, outputRate, cacheReadRate, cacheWriteRate, reasoningRate int64,
+		prompt, completion, reasoning, cacheRead, cacheWrite, webSearches, groundedPrompts int,
+		inputRate, outputRate, cacheReadRate, cacheWriteRate, reasoningRate, webSearchRate, groundedRate int64,
 	) {
 		usage := Usage{
-			PromptTokens:     prompt,
-			CompletionTokens: completion,
-			ReasoningTokens:  reasoning,
-			CacheReadTokens:  cacheRead,
-			CacheWriteTokens: cacheWrite,
+			PromptTokens:             prompt,
+			CompletionTokens:         completion,
+			ReasoningTokens:          reasoning,
+			CacheReadTokens:          cacheRead,
+			CacheWriteTokens:         cacheWrite,
+			WebSearchRequests:        webSearches,
+			WebSearchGroundedPrompts: groundedPrompts,
 		}
 		rate := ModelRate{
-			InputPer1M:      inputRate,
-			OutputPer1M:     outputRate,
-			CacheReadPer1M:  cacheReadRate,
-			CacheWritePer1M: cacheWriteRate,
-			ReasoningPer1M:  reasoningRate,
-			Currency:        "CNY",
+			InputPer1M:          inputRate,
+			OutputPer1M:         outputRate,
+			CacheReadPer1M:      cacheReadRate,
+			CacheWritePer1M:     cacheWriteRate,
+			ReasoningPer1M:      reasoningRate,
+			WebSearchPer1K:      webSearchRate,
+			GroundedPromptPer1K: groundedRate,
+			Currency:            "CNY",
 		}
 
 		gotMicros, _, err := PricingTable{"m": rate}.Cost("m", usage)
-		wantMicros, wantOK := oraclePricingCost(usage, rate)
+		wantMicros, wantErr := oraclePricingCost(usage, rate)
 
-		if wantOK {
+		if wantErr == nil {
 			if err != nil {
 				t.Fatalf("预言机判定合法但 Cost 报错: usage=%+v rate=%+v err=%v", usage, rate, err)
 			}
@@ -204,8 +246,8 @@ func FuzzPricingTableCost(f *testing.F) {
 		if err == nil {
 			t.Fatalf("预言机判定非法但 Cost 未报错: got=%d usage=%+v rate=%+v", gotMicros, usage, rate)
 		}
-		if !errors.Is(err, ErrInvalidPricing) {
-			t.Fatalf("非法输入应返回 ErrInvalidPricing, got %v", err)
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("错误类别不一致: want %v, got %v (usage=%+v rate=%+v)", wantErr, err, usage, rate)
 		}
 	})
 }

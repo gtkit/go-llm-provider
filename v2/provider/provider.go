@@ -299,6 +299,10 @@ type ChatResponse struct {
 	// 需配合 ChatRequest.OutputModalities 使用。
 	Parts []ContentPart
 
+	// Search 是原生联网搜索的结果元数据（查询与来源），
+	// 未启用搜索或未触发搜索时为 nil。
+	Search *SearchMetadata
+
 	// ToolCalls 当 FinishReason == "tool_calls" 时，包含模型请求调用的工具列表。
 	ToolCalls []ToolCall
 }
@@ -345,6 +349,18 @@ type Usage struct {
 	CacheWriteTokens int
 
 	TotalTokens int
+
+	// WebSearchRequests 是"按搜索次数"口径的原生联网搜索用量，
+	// 不参与 token 包含关系：Anthropic 为平台返回的计费搜索次数
+	// （usage.server_tool_use.web_search_requests），Gemini 为响应
+	// groundingMetadata.webSearchQueries 的数量（Gemini 3 系按 query 计费的口径）。
+	WebSearchRequests int
+
+	// WebSearchGroundedPrompts 是"按触发 grounding 的请求"口径的搜索用量
+	// （单次调用为 0 或 1，聚合后可累加）：仅 Gemini 上报（Gemini 2.5 系按
+	// grounded prompt 计费的口径），Anthropic 恒为 0。
+	// 两种口径在 ModelRate 中按配置的费率二选一计费，见 PricingTable.Cost。
+	WebSearchGroundedPrompts int
 }
 
 // ============================================================
@@ -352,9 +368,16 @@ type Usage struct {
 // ============================================================
 
 // Tool 描述一个可供模型调用的工具。
+// WebSearch 为 nil 时表示函数工具（Function 必填）；
+// 非 nil 时表示厂商原生联网搜索工具，Function 字段被忽略。
 type Tool struct {
 	// Function 描述工具的函数签名。
 	Function FunctionDef
+
+	// WebSearch 声明厂商原生联网搜索工具（服务端执行，不产生客户端 ToolCall）。
+	// 用 WebSearchTool / WebSearchToolWithOptions 构造。
+	// 仅 Anthropic 与 Gemini 原生路径支持，其他 provider 返回 ErrInvalidRequest。
+	WebSearch *WebSearchOptions
 }
 
 // FunctionDef 定义一个函数的名称、描述和参数 schema。
@@ -523,6 +546,10 @@ type StreamChunk struct {
 	// 也可能出现在其后、io.EOF 之前的收尾 chunk（OpenAI 兼容端点）。
 	// 需要统计用量时应读取至 io.EOF，并采用最后一个非零 Usage。
 	Usage Usage
+
+	// Search 是原生联网搜索的结果元数据，仅随 FinishReason 非空的 chunk
+	// 给出（流上聚合后的最终值），未触发搜索时为 nil。
+	Search *SearchMetadata
 
 	// ToolCalls 流式模式下的增量 tool call 数据。
 	// 每个 chunk 可能只包含部分 tool call 信息（如部分 arguments），
@@ -832,6 +859,10 @@ func (p *openaiProvider) buildRequest(req *ChatRequest) (openai.ChatCompletionRe
 	if len(req.Tools) > 0 {
 		oReq.Tools = make([]openai.Tool, 0, len(req.Tools))
 		for _, t := range req.Tools {
+			if t.WebSearch != nil {
+				return openai.ChatCompletionRequest{}, fmt.Errorf(
+					"%w: %s does not support native web search tools", ErrInvalidRequest, p.name)
+			}
 			oReq.Tools = append(oReq.Tools, openai.Tool{
 				Type: openai.ToolTypeFunction,
 				Function: &openai.FunctionDefinition{

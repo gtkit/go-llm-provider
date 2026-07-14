@@ -23,14 +23,18 @@ type UsageRecord struct {
 	CacheReadTokens  int
 	CacheWriteTokens int
 	TotalTokens      int
-	CostMicros       int64  // 按注入的 PricingTable 计算，未配价时为 0
-	Currency         string `gorm:"size:8"`
-	PricingVersion   string `gorm:"size:32"` // 计费时使用的价格表版本，对账时可追溯费率
-	Streaming        bool
-	Terminated       bool      // 流式异常终止（usage 可能缺失），漏账审计用
-	TerminateReason  string    `gorm:"size:16"`
-	ErrorCode        string    `gorm:"size:32"`
-	CreatedAt        time.Time `gorm:"index:idx_user_created,priority:2"`
+	// WebSearchRequests / WebSearchGroundedPrompts 是原生联网搜索的双口径用量
+	// （语义见 provider.Usage），入库后历史流水可按任一口径重算搜索费用。
+	WebSearchRequests        int
+	WebSearchGroundedPrompts int
+	CostMicros               int64  // 按注入的 PricingTable 计算，未配价时为 0
+	Currency                 string `gorm:"size:8"`
+	PricingVersion           string `gorm:"size:32"` // 计费时使用的价格表版本，对账时可追溯费率
+	Streaming                bool
+	Terminated               bool      // 流式异常终止（usage 可能缺失），漏账审计用
+	TerminateReason          string    `gorm:"size:16"`
+	ErrorCode                string    `gorm:"size:32"`
+	CreatedAt                time.Time `gorm:"index:idx_user_created,priority:2"`
 }
 
 // QuotaPeriod 是配额的统计口径。

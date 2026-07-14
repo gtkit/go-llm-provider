@@ -172,12 +172,14 @@ func maxIterations(n int) int {
 // addUsage 逐字段累加两个 Usage。
 func addUsage(a, b Usage) Usage {
 	return Usage{
-		PromptTokens:     a.PromptTokens + b.PromptTokens,
-		CompletionTokens: a.CompletionTokens + b.CompletionTokens,
-		ReasoningTokens:  a.ReasoningTokens + b.ReasoningTokens,
-		CacheReadTokens:  a.CacheReadTokens + b.CacheReadTokens,
-		CacheWriteTokens: a.CacheWriteTokens + b.CacheWriteTokens,
-		TotalTokens:      a.TotalTokens + b.TotalTokens,
+		PromptTokens:             a.PromptTokens + b.PromptTokens,
+		CompletionTokens:         a.CompletionTokens + b.CompletionTokens,
+		ReasoningTokens:          a.ReasoningTokens + b.ReasoningTokens,
+		CacheReadTokens:          a.CacheReadTokens + b.CacheReadTokens,
+		CacheWriteTokens:         a.CacheWriteTokens + b.CacheWriteTokens,
+		TotalTokens:              a.TotalTokens + b.TotalTokens,
+		WebSearchRequests:        a.WebSearchRequests + b.WebSearchRequests,
+		WebSearchGroundedPrompts: a.WebSearchGroundedPrompts + b.WebSearchGroundedPrompts,
 	}
 }
 

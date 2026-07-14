@@ -3,7 +3,9 @@ package provider
 import (
 	"encoding/base64"
 	"fmt"
+	"maps"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/gtkit/json/v2"
@@ -52,6 +54,21 @@ type anthropicCacheControl struct {
 	Type string `json:"type"`
 }
 
+// anthropicCountTokensRequest 是 /v1/messages/count_tokens 的请求体。
+// 该端点只接受消息语义字段，携带 max_tokens / stream 等生成参数会被平台拒绝，
+// 因此不复用 anthropicRequest。
+type anthropicCountTokensRequest struct {
+	Model      string               `json:"model"`
+	Messages   []anthropicMessage   `json:"messages"`
+	System     string               `json:"system,omitempty"`
+	Tools      []anthropicTool      `json:"tools,omitempty"`
+	ToolChoice *anthropicToolChoice `json:"tool_choice,omitempty"`
+}
+
+type anthropicCountTokensResponse struct {
+	InputTokens int `json:"input_tokens"`
+}
+
 type anthropicResponse struct {
 	ID         string                 `json:"id"`
 	Type       string                 `json:"type"`
@@ -63,10 +80,15 @@ type anthropicResponse struct {
 }
 
 type anthropicUsage struct {
-	InputTokens              int `json:"input_tokens"`
-	OutputTokens             int `json:"output_tokens"`
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
-	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	InputTokens              int                    `json:"input_tokens"`
+	OutputTokens             int                    `json:"output_tokens"`
+	CacheCreationInputTokens int                    `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int                    `json:"cache_read_input_tokens"`
+	ServerToolUse            anthropicServerToolUse `json:"server_tool_use"`
+}
+
+type anthropicServerToolUse struct {
+	WebSearchRequests int `json:"web_search_requests"`
 }
 
 // usageFromAnthropic 将 anthropicUsage 归一化为统一 Usage。
@@ -75,11 +97,12 @@ type anthropicUsage struct {
 func usageFromAnthropic(usage anthropicUsage) Usage {
 	prompt := usage.InputTokens + usage.CacheReadInputTokens + usage.CacheCreationInputTokens
 	return Usage{
-		PromptTokens:     prompt,
-		CompletionTokens: usage.OutputTokens,
-		CacheReadTokens:  usage.CacheReadInputTokens,
-		CacheWriteTokens: usage.CacheCreationInputTokens,
-		TotalTokens:      prompt + usage.OutputTokens,
+		PromptTokens:      prompt,
+		CompletionTokens:  usage.OutputTokens,
+		CacheReadTokens:   usage.CacheReadInputTokens,
+		CacheWriteTokens:  usage.CacheCreationInputTokens,
+		TotalTokens:       prompt + usage.OutputTokens,
+		WebSearchRequests: usage.ServerToolUse.WebSearchRequests,
 	}
 }
 
@@ -99,18 +122,85 @@ func mergeAnthropicStreamUsage(acc *anthropicUsage, event anthropicUsage) {
 	if event.CacheReadInputTokens > 0 {
 		acc.CacheReadInputTokens = event.CacheReadInputTokens
 	}
+	if event.ServerToolUse.WebSearchRequests > 0 {
+		acc.ServerToolUse.WebSearchRequests = event.ServerToolUse.WebSearchRequests
+	}
 }
 
 type anthropicTool struct {
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
-	InputSchema any    `json:"input_schema,omitempty"`
+	Type           string   `json:"type,omitempty"`
+	Name           string   `json:"name"`
+	Description    string   `json:"description,omitempty"`
+	InputSchema    any      `json:"input_schema,omitempty"`
+	MaxUses        int      `json:"max_uses,omitempty"`
+	AllowedDomains []string `json:"allowed_domains,omitempty"`
+	BlockedDomains []string `json:"blocked_domains,omitempty"`
 }
 
 type anthropicToolChoice struct {
 	Type                   string `json:"type"`
 	Name                   string `json:"name,omitempty"`
 	DisableParallelToolUse *bool  `json:"disable_parallel_tool_use,omitempty"`
+}
+
+// anthropicStreamState 保存流式解析的跨事件状态：
+// usage 在 message_start / message_delta 间累积；serverToolBlocks 记录
+// 服务端工具内容块的索引，用于抑制其增量事件外露；serverToolInputs
+// 按块索引累积 server_tool_use 的 input JSON（流式下 input 走
+// input_json_delta 增量），流结束时解析出搜索查询；search 聚合来源。
+type anthropicStreamState struct {
+	usage            anthropicUsage
+	serverToolBlocks map[int]struct{}
+	serverToolInputs map[int]*strings.Builder
+	search           *SearchMetadata
+}
+
+func (s *anthropicStreamState) markServerToolBlock(index int) {
+	if s.serverToolBlocks == nil {
+		s.serverToolBlocks = make(map[int]struct{})
+	}
+	s.serverToolBlocks[index] = struct{}{}
+}
+
+func (s *anthropicStreamState) isServerToolBlock(index int) bool {
+	_, ok := s.serverToolBlocks[index]
+	return ok
+}
+
+func (s *anthropicStreamState) appendServerToolInput(index int, partial string) {
+	if s.serverToolInputs == nil {
+		s.serverToolInputs = make(map[int]*strings.Builder)
+	}
+	if s.serverToolInputs[index] == nil {
+		s.serverToolInputs[index] = &strings.Builder{}
+	}
+	_, _ = s.serverToolInputs[index].WriteString(partial) // strings.Builder 不返回错误
+}
+
+// finalizeSearch 组装流上聚合的搜索元数据：按块索引升序解析累积的
+// server_tool_use 输入提取查询，合并已收集的来源。未触发搜索时返回 nil。
+func (s *anthropicStreamState) finalizeSearch() *SearchMetadata {
+	for _, index := range slices.Sorted(maps.Keys(s.serverToolInputs)) {
+		raw := s.serverToolInputs[index].String()
+		if raw == "" {
+			continue
+		}
+		var input any
+		if err := json.Unmarshal([]byte(raw), &input); err != nil {
+			continue
+		}
+		if query := anthropicServerToolQuery(input); query != "" {
+			s.search = appendSearchQuery(s.search, query)
+		}
+	}
+	s.serverToolInputs = nil
+	return s.search
+}
+
+// anthropicServerToolBlock 判定内容块是否为平台服务端执行的工具块
+// （原生 web search 的调用与结果），这类块不映射为客户端工具调用。
+func anthropicServerToolBlock(blockType string) bool {
+	return blockType == "server_tool_use" || blockType == "web_search_tool_result"
 }
 
 type anthropicStreamEvent struct {
@@ -301,19 +391,64 @@ func anthropicRole(role Role) string {
 	}
 }
 
-func anthropicTools(tools []Tool) []anthropicTool {
+// anthropicWebSearchToolType 是 Anthropic 服务端联网搜索工具的版本化类型标识。
+const anthropicWebSearchToolType = "web_search_20250305"
+
+// anthropicPauseTurnError 是 stop_reason == "pause_turn" 的统一错误：
+// 服务端工具长时间运行时 Anthropic 会暂停回合，官方要求把响应内容
+// （含服务端工具块）原样回传续跑；本库尚未支持服务端工具块跨轮往返，
+// 报明确错误而不是返回被截断的响应。
+func anthropicPauseTurnError() error {
+	return fmt.Errorf(
+		"%w: anthropic paused the turn while running a server tool (stop_reason \"pause_turn\"); resuming paused turns is not supported yet, retry the request or lower web search usage",
+		ErrUnsupportedCapability)
+}
+
+func anthropicTools(tools []Tool) ([]anthropicTool, error) {
 	if len(tools) == 0 {
-		return nil
+		return nil, nil
 	}
+	hasSearch, hasFunction := false, false
 	out := make([]anthropicTool, 0, len(tools))
 	for _, tool := range tools {
+		if tool.WebSearch != nil {
+			hasSearch = true
+			search, err := anthropicWebSearchTool(tool.WebSearch)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, search)
+			continue
+		}
+		hasFunction = true
 		out = append(out, anthropicTool{
 			Name:        tool.Function.Name,
 			Description: tool.Function.Description,
 			InputSchema: tool.Function.Parameters,
 		})
 	}
-	return out
+	// 混用时响应会同时携带服务端与客户端工具块，续跑要求把服务端工具块
+	// 原样回传；AssistantMessage 尚无法承载这些块，禁止组合而非静默丢上下文。
+	if hasSearch && hasFunction {
+		return nil, fmt.Errorf(
+			"%w: anthropic web search cannot be combined with function tools yet (server tool blocks are not preserved across turns)",
+			ErrInvalidRequest)
+	}
+	return out, nil
+}
+
+func anthropicWebSearchTool(opts *WebSearchOptions) (anthropicTool, error) {
+	if len(opts.AllowedDomains) > 0 && len(opts.BlockedDomains) > 0 {
+		return anthropicTool{}, fmt.Errorf(
+			"%w: web search allowed and blocked domains are mutually exclusive", ErrInvalidRequest)
+	}
+	return anthropicTool{
+		Type:           anthropicWebSearchToolType,
+		Name:           "web_search",
+		MaxUses:        max(opts.MaxUses, 0),
+		AllowedDomains: opts.AllowedDomains,
+		BlockedDomains: opts.BlockedDomains,
+	}, nil
 }
 
 func anthropicStructuredTool(format *ResponseFormat) (*anthropicTool, *anthropicToolChoice, error) {
@@ -388,7 +523,7 @@ func buildAnthropicToolChoice(req *ChatRequest) (*anthropicToolChoice, error) {
 	return choice, nil
 }
 
-func anthropicResponseContent(resp anthropicResponse) (content, finishReason string, toolCalls []ToolCall, err error) {
+func anthropicResponseContent(resp anthropicResponse) (content, finishReason string, toolCalls []ToolCall, search *SearchMetadata, err error) {
 	var text strings.Builder
 	for _, part := range resp.Content {
 		switch part.Type {
@@ -397,7 +532,7 @@ func anthropicResponseContent(resp anthropicResponse) (content, finishReason str
 		case "tool_use":
 			arguments, marshalErr := json.Marshal(part.Input)
 			if marshalErr != nil {
-				return "", "", nil, fmt.Errorf("marshal anthropic tool input: %w", marshalErr)
+				return "", "", nil, nil, fmt.Errorf("marshal anthropic tool input: %w", marshalErr)
 			}
 			toolCalls = append(toolCalls, ToolCall{
 				ID: part.ID,
@@ -406,6 +541,12 @@ func anthropicResponseContent(resp anthropicResponse) (content, finishReason str
 					Arguments: string(arguments),
 				},
 			})
+		case "server_tool_use":
+			if query := anthropicServerToolQuery(part.Input); query != "" {
+				search = appendSearchQuery(search, query)
+			}
+		case "web_search_tool_result":
+			search = appendSearchSources(search, anthropicSearchResultSources(part.Content))
 		}
 	}
 	if len(toolCalls) > 0 || resp.StopReason == "tool_use" {
@@ -413,7 +554,71 @@ func anthropicResponseContent(resp anthropicResponse) (content, finishReason str
 	} else {
 		finishReason = resp.StopReason
 	}
-	return text.String(), finishReason, toolCalls, nil
+	return text.String(), finishReason, toolCalls, search, nil
+}
+
+// anthropicServerToolQuery 提取 server_tool_use（web_search）输入中的搜索查询。
+func anthropicServerToolQuery(input any) string {
+	raw, err := json.Marshal(input)
+	if err != nil {
+		return ""
+	}
+	var parsed struct {
+		Query string `json:"query"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return ""
+	}
+	return parsed.Query
+}
+
+type anthropicWebSearchResult struct {
+	Type  string `json:"type"`
+	URL   string `json:"url"`
+	Title string `json:"title"`
+}
+
+// anthropicSearchResultSources 解析 web_search_tool_result 块的 content
+// （形如 [{type:"web_search_result",url,title,...}]），无法解析时返回 nil。
+func anthropicSearchResultSources(content any) []SearchSource {
+	raw, err := json.Marshal(content)
+	if err != nil {
+		return nil
+	}
+	var results []anthropicWebSearchResult
+	if err := json.Unmarshal(raw, &results); err != nil {
+		return nil
+	}
+	sources := make([]SearchSource, 0, len(results))
+	for _, result := range results {
+		if result.Type != "" && result.Type != "web_search_result" {
+			continue
+		}
+		sources = append(sources, SearchSource{URL: result.URL, Title: result.Title})
+	}
+	if len(sources) == 0 {
+		return nil
+	}
+	return sources
+}
+
+func appendSearchQuery(search *SearchMetadata, query string) *SearchMetadata {
+	if search == nil {
+		search = &SearchMetadata{}
+	}
+	search.Queries = append(search.Queries, query)
+	return search
+}
+
+func appendSearchSources(search *SearchMetadata, sources []SearchSource) *SearchMetadata {
+	if len(sources) == 0 {
+		return search
+	}
+	if search == nil {
+		search = &SearchMetadata{}
+	}
+	search.Sources = append(search.Sources, sources...)
+	return search
 }
 
 func anthropicStructuredContent(resp anthropicResponse) (content string, ok bool, err error) {

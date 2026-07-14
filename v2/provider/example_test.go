@@ -83,6 +83,29 @@ func ExampleCountTokens() {
 	// Output: example-model 12
 }
 
+func ExampleWebSearchTool() {
+	tool := provider.WebSearchTool()
+	fmt.Println(tool.WebSearch != nil)
+
+	caps, _ := provider.ModelCapabilitiesFromPreset(provider.ProviderAnthropic)
+	fmt.Println(caps.Supports(provider.CapabilityWebSearch))
+	// Output:
+	// true
+	// true
+}
+
+func ExampleWebSearchToolWithOptions() {
+	tool := provider.WebSearchToolWithOptions(provider.WebSearchOptions{
+		MaxUses:        3,
+		AllowedDomains: []string{"go.dev"},
+	})
+	fmt.Println(tool.WebSearch.MaxUses)
+	fmt.Println(tool.WebSearch.AllowedDomains[0])
+	// Output:
+	// 3
+	// go.dev
+}
+
 func ExampleModelCapabilitiesFromPreset() {
 	caps, ok := provider.ModelCapabilitiesFromPreset(provider.ProviderOpenAI)
 	fmt.Println(ok)

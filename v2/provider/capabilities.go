@@ -16,10 +16,16 @@ const (
 	CapabilityStructuredOutput Capability = "structured_output"
 	// CapabilityVision indicates image input support.
 	CapabilityVision Capability = "vision"
+	// CapabilityFile indicates document/file input support (Message ContentTypeFile parts).
+	CapabilityFile Capability = "file"
 	// CapabilityReasoning indicates provider-side reasoning or thinking controls.
 	CapabilityReasoning Capability = "reasoning"
 	// CapabilityEmbedding indicates text embedding support.
 	CapabilityEmbedding Capability = "embedding"
+	// CapabilityWebSearch indicates built-in provider-native web search mapping
+	// (WebSearchTool). Providers without it can still perform web search through
+	// a regular function tool executed by the caller's ToolHandler (see README).
+	CapabilityWebSearch Capability = "web_search"
 )
 
 // ModelCapabilities describes the default models and known capabilities for a preset.

@@ -26,8 +26,9 @@ const estimateTokensPerAttachment = 800
 // 启发式规则：CJK 字符按 1 token/字，其余文本按 4 字符/token，
 // 图片/文件附件按固定预算计，tool call 的函数名与参数按文本计。
 // 误差可达 ±30%，适用于上下文预算裁剪与额度预检，不可用于计费结算——
-// 结算一律以响应返回的 Usage 为准。需要精确请求前计数时，
-// 使用支持 TokenCounter 的 provider（如 Gemini 的 CountTokens）。
+// 结算一律以响应返回的 Usage 为准。需要更精确的请求前计数时，
+// 使用支持 TokenCounter 的 provider（如 Gemini 与 Anthropic 的 CountTokens，
+// 供应商侧计数同样是估算口径，只是精度远高于本地启发式）。
 func EstimateTokens(msgs []Message) int {
 	total := 0
 	for _, msg := range msgs {

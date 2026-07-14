@@ -93,6 +93,121 @@ func TestPricingTableCost(t *testing.T) {
 	}
 }
 
+func TestPricingTableCostWebSearch(t *testing.T) {
+	t.Parallel()
+
+	table := PricingTable{
+		"per-request": {
+			InputPer1M:     2_000_000,
+			OutputPer1M:    8_000_000,
+			WebSearchPer1K: 70_000_000, // 70 元 / 1000 次
+			Currency:       "CNY",
+		},
+		"per-grounded-prompt": {
+			InputPer1M:          2_000_000,
+			OutputPer1M:         8_000_000,
+			GroundedPromptPer1K: 245_000_000, // 245 元 / 1000 次 grounded prompt
+			Currency:            "CNY",
+		},
+		"both-rates": {
+			InputPer1M:          2_000_000,
+			OutputPer1M:         8_000_000,
+			WebSearchPer1K:      70_000_000,
+			GroundedPromptPer1K: 245_000_000,
+			Currency:            "CNY",
+		},
+		"tokens-only": {
+			InputPer1M:  2_000_000,
+			OutputPer1M: 8_000_000,
+			Currency:    "CNY",
+		},
+	}
+
+	t.Run("按次数计费并与 token 项累加", func(t *testing.T) {
+		t.Parallel()
+		micros, currency, err := table.Cost("per-request", Usage{
+			PromptTokens:      1_000_000,
+			CompletionTokens:  100_000,
+			WebSearchRequests: 3,
+		})
+		require.NoError(t, err)
+		// 2 元 + 0.8 元 + 3 次 * 0.07 元 = 3.01 元
+		assert.Equal(t, int64(3_010_000), micros)
+		assert.Equal(t, "CNY", currency)
+	})
+
+	t.Run("Gemini 双口径用量按 grounded prompt 费率计费", func(t *testing.T) {
+		t.Parallel()
+		// Gemini 上报双口径（2 个 query + 1 个 grounded prompt），
+		// 配置 GroundedPromptPer1K 时按 grounded prompt 计，query 数不重复计费。
+		micros, _, err := table.Cost("per-grounded-prompt", Usage{
+			WebSearchRequests:        2,
+			WebSearchGroundedPrompts: 1,
+		})
+		require.NoError(t, err)
+		assert.Equal(t, int64(245_000), micros)
+	})
+
+	t.Run("Gemini 双口径用量按次数费率计费", func(t *testing.T) {
+		t.Parallel()
+		micros, _, err := table.Cost("per-request", Usage{
+			WebSearchRequests:        2,
+			WebSearchGroundedPrompts: 1,
+		})
+		require.NoError(t, err)
+		assert.Equal(t, int64(140_000), micros)
+	})
+
+	t.Run("双费率同时配置返回 ErrInvalidPricing 防重复计费", func(t *testing.T) {
+		t.Parallel()
+		_, _, err := table.Cost("both-rates", Usage{WebSearchRequests: 1, WebSearchGroundedPrompts: 1})
+		require.ErrorIs(t, err, ErrInvalidPricing)
+	})
+
+	t.Run("双费率同时配置但无搜索用量不报错", func(t *testing.T) {
+		t.Parallel()
+		micros, _, err := table.Cost("both-rates", Usage{PromptTokens: 1_000_000})
+		require.NoError(t, err)
+		assert.Equal(t, int64(2_000_000), micros)
+	})
+
+	t.Run("配置口径与用量口径不符返回 ErrModelNotPriced", func(t *testing.T) {
+		t.Parallel()
+		// Anthropic 只有次数口径，配了 grounded prompt 费率时无法计价——报错防漏账。
+		_, _, err := table.Cost("per-grounded-prompt", Usage{WebSearchRequests: 2})
+		require.ErrorIs(t, err, ErrModelNotPriced)
+		_, _, err = table.Cost("per-request", Usage{WebSearchGroundedPrompts: 1})
+		require.ErrorIs(t, err, ErrModelNotPriced)
+	})
+
+	t.Run("无搜索用量时不要求配置搜索价", func(t *testing.T) {
+		t.Parallel()
+		micros, _, err := table.Cost("tokens-only", Usage{PromptTokens: 1_000_000})
+		require.NoError(t, err)
+		assert.Equal(t, int64(2_000_000), micros)
+	})
+
+	t.Run("有搜索用量但未配搜索价返回 ErrModelNotPriced", func(t *testing.T) {
+		t.Parallel()
+		_, _, err := table.Cost("tokens-only", Usage{WebSearchRequests: 1})
+		require.ErrorIs(t, err, ErrModelNotPriced)
+	})
+
+	t.Run("负搜索用量报错", func(t *testing.T) {
+		t.Parallel()
+		_, _, err := table.Cost("per-request", Usage{WebSearchRequests: -1})
+		require.ErrorIs(t, err, ErrInvalidPricing)
+		_, _, err = table.Cost("per-grounded-prompt", Usage{WebSearchGroundedPrompts: -1})
+		require.ErrorIs(t, err, ErrInvalidPricing)
+	})
+
+	t.Run("搜索次数换算溢出报错而非回绕", func(t *testing.T) {
+		t.Parallel()
+		_, _, err := table.Cost("per-request", Usage{WebSearchRequests: math.MaxInt})
+		require.ErrorIs(t, err, ErrInvalidPricing)
+	})
+}
+
 func TestPricingTableCostRejectsInconsistentUsage(t *testing.T) {
 	t.Parallel()
 

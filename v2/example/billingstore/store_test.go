@@ -104,6 +104,44 @@ func TestStoreRecordAccumulatesAndFlushes(t *testing.T) {
 	assert.Equal(t, "CNY", record.Currency)
 }
 
+func TestStoreRecordPersistsWebSearchUsage(t *testing.T) {
+	pricing := provider.PricingTable{
+		"claude-sonnet-4-5": {
+			InputPer1M:     3_000_000,
+			OutputPer1M:    15_000_000,
+			WebSearchPer1K: 70_000_000,
+			Currency:       "CNY",
+		},
+	}
+	store, _, db := newTestStore(t, pricing)
+
+	entry := provider.RecordEntry{
+		UserID:   "u1",
+		Provider: provider.ProviderAnthropic,
+		Model:    "claude-sonnet-4-5",
+		Usage: provider.Usage{
+			PromptTokens:      1_000_000,
+			CompletionTokens:  100_000,
+			TotalTokens:       1_100_000,
+			WebSearchRequests: 3,
+		},
+	}
+	require.NoError(t, store.Record(t.Context(), entry))
+
+	require.Eventually(t, func() bool {
+		var count int64
+		return db.Model(&UsageRecord{}).Count(&count).Error == nil && count == 1
+	}, 2*time.Second, 20*time.Millisecond)
+
+	// 搜索双口径用量入库，历史流水可按任一口径重算与核对搜索费用。
+	var record UsageRecord
+	require.NoError(t, db.First(&record).Error)
+	assert.Equal(t, 3, record.WebSearchRequests)
+	assert.Equal(t, 0, record.WebSearchGroundedPrompts)
+	// 3 元（输入）+ 1.5 元（输出）+ 3 次 * 0.07 元（搜索）= 4.71 元。
+	assert.Equal(t, int64(4_710_000), record.CostMicros)
+}
+
 func TestStoreRecordIdempotentByEntryID(t *testing.T) {
 	store, mr, db := newTestStore(t, nil)
 	ctx := t.Context()

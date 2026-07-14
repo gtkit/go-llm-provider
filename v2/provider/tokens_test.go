@@ -53,6 +53,65 @@ func TestGeminiProviderCountTokensMapsRequestAndResponse(t *testing.T) {
 	assert.NotEmpty(t, systemInstruction)
 }
 
+func TestAnthropicProviderCountTokensMapsRequestAndResponse(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/v1/messages/count_tokens", r.URL.Path)
+		assert.Equal(t, "test-key", r.Header.Get("x-api-key"))
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&captured))
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"input_tokens": 23}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	p, err := NewAnthropicProvider(NativeProviderConfig{
+		APIKey:  "test-key",
+		BaseURL: srv.URL,
+		Model:   "claude-sonnet-4-5",
+	})
+	require.NoError(t, err)
+
+	counter, ok := p.(TokenCounter)
+	require.True(t, ok)
+
+	resp, err := counter.CountTokens(t.Context(), &ChatRequest{
+		Messages: []Message{
+			SystemText("be concise"),
+			UserText("hello"),
+		},
+		MaxTokens: 128,
+		Tools:     []Tool{{Function: FunctionDef{Name: "get_time"}}},
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "claude-sonnet-4-5", resp.Model)
+	assert.Equal(t, 23, resp.TotalTokens)
+
+	assert.Equal(t, "claude-sonnet-4-5", captured["model"])
+	assert.Equal(t, "be concise", captured["system"])
+	require.Len(t, captured["messages"], 1)
+	require.Len(t, captured["tools"], 1)
+	// count_tokens 端点不接受生成参数，请求体不得携带。
+	assert.NotContains(t, captured, "max_tokens")
+	assert.NotContains(t, captured, "stream")
+}
+
+func TestAnthropicProviderCountTokensRejectsEmptyMessages(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewAnthropicProvider(NativeProviderConfig{APIKey: "test-key"})
+	require.NoError(t, err)
+
+	counter, ok := p.(TokenCounter)
+	require.True(t, ok)
+
+	_, err = counter.CountTokens(t.Context(), &ChatRequest{})
+	require.ErrorIs(t, err, ErrInvalidRequest)
+}
+
 func TestCountTokensReturnsUnsupportedForProviderWithoutCounter(t *testing.T) {
 	t.Parallel()
 

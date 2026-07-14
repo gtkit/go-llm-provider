@@ -13,6 +13,7 @@ Go 语言统一多模型 LLM 调用库。一套代码接入 OpenAI 以及 DeepSe
 - `Registry` 注册表管理多个 Provider，运行时按名称切换
 - 支持非流式和流式两种调用模式
 - 完整的 Tool Use / Function Calling 支持，包含自动循环执行的 `RunToolLoop`
+- 厂商原生联网搜索工具透传（`WebSearchTool`，当前映射 Anthropic / Gemini），搜索次数进入统一计费口径
 - 主包保持轻量，零额外厂商 SDK 依赖；OpenAI 兼容路径复用 `sashabaranov/go-openai`，非兼容路径用标准库 `net/http`
 
 ## 项目结构
@@ -92,26 +93,26 @@ go get github.com/gtkit/go-llm-provider/v2
 
 ### 能力矩阵
 
-| 平台 | Chat | Streaming | Tools | Structured Output | Vision | Reasoning | Embedding | 协议 |
-|------|------|-----------|-------|-------------------|--------|-----------|-----------|------|
-| DeepSeek | 是 | 是 | 是 | 是 | 否 | 是 | 否 | OpenAI 兼容 |
-| 通义千问（百炼） | 是 | 是 | 是 | 是 | 否 | 否 | 是 | OpenAI 兼容 |
-| 智谱 AI / GLM | 是 | 是 | 是 | 是 | 否 | 否 | 是 | OpenAI 兼容 |
-| 百度千帆 | 是 | 是 | 是 | 是 | 否 | 否 | 是 | OpenAI 兼容 |
-| 硅基流动 | 是 | 是 | 是 | 是 | 否 | 否 | 是 | OpenAI 兼容 |
-| Moonshot / Kimi | 是 | 是 | 是 | 是 | 否 | 否 | 否 | OpenAI 兼容 |
-| OpenAI | 是 | 是 | 是 | 是 | 否 | 是 | 是 | OpenAI 兼容 |
-| Anthropic / Claude | 是 | 是 | 是 | 是 | 是 | 否 | 否 | 原生 HTTP |
-| Google Gemini | 是 | 是 | 是 | 是 | 是 | 否 | 是 | 原生 HTTP |
-| Ollama | 是 | 是 | 否 | 否 | 否 | 否 | 否 | 原生 HTTP |
-| xAI / Grok | 是 | 是 | 是 | 是 | 否 | 否 | 否 | OpenAI 兼容 |
-| Groq | 是 | 是 | 是 | 是 | 否 | 否 | 否 | OpenAI 兼容 |
-| Mistral AI | 是 | 是 | 是 | 是 | 否 | 否 | 是 | OpenAI 兼容 |
-| Cohere | 是 | 是 | 是 | 是 | 否 | 否 | 是 | OpenAI 兼容 |
-| Azure OpenAI | 是 | 是 | 是 | 是 | 取决于部署模型 | 取决于部署模型 | 可自定义 | Azure OpenAI |
-| Amazon Bedrock | 是 | 是 | 是 | 是 | 取决于模型 | 取决于模型 | 可自定义 | OpenAI 兼容 |
+| 平台 | Chat | Streaming | Tools | Structured Output | Vision | File | Reasoning | Embedding | Web Search | 协议 |
+|------|------|-----------|-------|-------------------|--------|------|-----------|-----------|------------|------|
+| DeepSeek | 是 | 是 | 是 | 是 | 否 | 否 | 是 | 否 | 否 | OpenAI 兼容 |
+| 通义千问（百炼） | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 是 | 否 | OpenAI 兼容 |
+| 智谱 AI / GLM | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 是 | 否 | OpenAI 兼容 |
+| 百度千帆 | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 是 | 否 | OpenAI 兼容 |
+| 硅基流动 | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 是 | 否 | OpenAI 兼容 |
+| Moonshot / Kimi | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 否 | 否 | OpenAI 兼容 |
+| OpenAI | 是 | 是 | 是 | 是 | 否 | 否 | 是 | 是 | 否 | OpenAI 兼容 |
+| Anthropic / Claude | 是 | 是 | 是 | 是 | 是 | 是 | 否 | 否 | 是 | 原生 HTTP |
+| Google Gemini | 是 | 是 | 是 | 是 | 是 | 是 | 否 | 是 | 是 | 原生 HTTP |
+| Ollama | 是 | 是 | 否 | 否 | 否 | 否 | 否 | 否 | 否 | 原生 HTTP |
+| xAI / Grok | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 否 | 否 | OpenAI 兼容 |
+| Groq | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 否 | 否 | OpenAI 兼容 |
+| Mistral AI | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 是 | 否 | OpenAI 兼容 |
+| Cohere | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 是 | 否 | OpenAI 兼容 |
+| Azure OpenAI | 是 | 是 | 是 | 是 | 取决于部署模型 | 取决于部署模型 | 取决于部署模型 | 可自定义 | 否 | Azure OpenAI |
+| Amazon Bedrock | 是 | 是 | 是 | 是 | 取决于模型 | 取决于模型 | 取决于模型 | 可自定义 | 否 | OpenAI 兼容 |
 
-> 矩阵描述当前内置 preset 默认模型和本库已映射能力；如果覆盖 `Model`，请以具体模型官方文档为准。
+> 矩阵有两个口径，注意区分：**协议映射能力**（本库把请求字段翻译到该平台协议的能力，如图像 ContentPart 在 OpenAI 兼容平台会映射下发；文件 ContentPart 仅 Anthropic / Gemini 原生路径支持，OpenAI 兼容路径返回 `ErrInvalidRequest`）与**预设默认模型能力**（上表 Vision / File / Reasoning 等列描述的是各 preset 默认模型的已知能力，即 `ModelCapabilitiesFromPreset` 的返回值）。如果覆盖 `Model`，请以具体模型官方文档为准——协议映射仍然生效，模型不支持时由平台返回错误。
 
 ### 关于 Claude / Google Gemini
 
@@ -197,7 +198,8 @@ go run main.go
 | 推理输出 | 只暴露最终 `Content` | 新增 `ChatResponse.Reasoning`、`StreamChunk.ReasoningDelta`、`Usage.ReasoningTokens` |
 | 确定性与多候选 | 不支持 | `Seed` / `CandidateCount` |
 | Prompt caching | 不支持 | `WithCacheControl(..., CacheControlEphemeral())`，当前映射 Anthropic |
-| Token counting | 不支持 | `TokenCounter` / `CountTokens`，当前 Gemini 原生支持 |
+| Token counting | 不支持 | `TokenCounter` / `CountTokens`，当前 Gemini / Anthropic 原生支持 |
+| 原生联网搜索 | 不支持 | `WebSearchTool`，当前映射 Anthropic / Gemini，搜索用量计入 `Usage.WebSearchRequests` / `Usage.WebSearchGroundedPrompts`，元数据见 `ChatResponse.Search` |
 | 本地推理 | 不支持 | `ProviderOllama` |
 | 企业入口 | 不支持 | `NewAzureOpenAIProvider` / `NewBedrockOpenAIProvider` |
 | 典型升级动作 | 原样继续用即可 | 需要改 import 路径、消息构造方式、thinking 配置方式 |
@@ -720,6 +722,93 @@ provider.ParamSchema{
 }
 ```
 
+### 原生联网搜索（Web Search）
+
+Anthropic 与 Gemini 提供平台服务端执行的联网搜索工具：模型自行决定何时搜索、搜索结果直接参与生成，无需自建搜索 API 与工具循环。用 `WebSearchTool()` 声明：
+
+```go
+resp, err := p.Chat(ctx, &provider.ChatRequest{
+    Messages: []provider.Message{provider.UserText("Go 1.26 有哪些新特性？")},
+    Tools: []provider.Tool{
+        provider.WebSearchTool(),
+        // 需要限制搜索行为时（仅 Anthropic 支持；Gemini 收到非零选项返回
+        // ErrInvalidRequest，不会静默忽略你的安全与费用约束）：
+        // provider.WebSearchToolWithOptions(provider.WebSearchOptions{
+        //     MaxUses:        3,
+        //     AllowedDomains: []string{"go.dev"}, // 与 BlockedDomains 互斥
+        // }),
+    },
+})
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(resp.Content)
+if resp.Search != nil {
+    fmt.Println("搜索查询:", resp.Search.Queries)
+    for _, source := range resp.Search.Sources {
+        fmt.Println("来源:", source.Title, source.URL)
+    }
+}
+```
+
+要点：
+
+- **平台映射**：Anthropic 映射为 `web_search_20250305` server tool；Gemini 映射为 `google_search`（Grounding with Google Search）。其他 provider（含全部 OpenAI 兼容平台与 Ollama）收到该工具返回 `ErrInvalidRequest`，不静默丢弃；切换平台前可用 `caps.Supports(provider.CapabilityWebSearch)` 预检。
+- **不能与函数工具混用**：Anthropic 的服务端工具块尚不支持跨轮往返、Gemini 2.5 系平台不支持 `google_search` 与函数声明同用，两条路径都在客户端返回 `ErrInvalidRequest`；Anthropic 侧同理禁止与结构化输出组合。纯搜索场景与 `RunToolLoop` 兼容（服务端执行，不产生客户端 `ToolCall`）。
+- **pause_turn**：Anthropic 在服务端工具长时间运行时可能暂停回合（`stop_reason: "pause_turn"`），续跑需要回传服务端工具块，当前不支持——此时返回 `ErrUnsupportedCapability` 明确报错，而不是把截断的响应当正常结果。
+- **搜索元数据**：查询、来源与 Google Search 入口通过 `ChatResponse.Search` / 最终 `StreamChunk.Search` 返回（`SearchMetadata`）。**合规提示**：Gemini 响应携带 `SearchEntryPoint` 时，Google 要求向终端用户展示 Search Suggestions；回复文本级的引用区间暂不透出。
+- **计费口径（双口径二选一）**：`Usage.WebSearchRequests` 承载"按次数"口径（Anthropic 实际搜索次数 / Gemini 的 query 数），`Usage.WebSearchGroundedPrompts` 承载"按 grounded prompt"口径（Gemini，0 或 1）。费率按平台计费规则在 `ModelRate.WebSearchPer1K` 与 `ModelRate.GroundedPromptPer1K` 中**二选一**配置（微元/1000 次）：Anthropic 与 Gemini 3 系按次数配前者，Gemini 2.5 系按 grounded prompt 配后者。双配返回 `ErrInvalidPricing`（防重复计费），全缺或口径与用量不符返回 `ErrModelNotPriced`，不静默漏账。
+- **流式**：搜索过程中的服务端工具事件不会出现在 `StreamChunk.ToolCalls` 中，搜索计次与元数据随最终 chunk（`FinishReason` 非空）给出。
+
+#### 国内平台的联网搜索接入（函数工具模式，推荐）
+
+国内平台（智谱、千帆、百炼等）的内置联网搜索依赖各家私有请求字段，无法经
+OpenAI 兼容协议透传，本库不做映射（`CapabilityWebSearch` 表示"库内置的厂商
+原生搜索映射"，不代表业务侧不能接搜索）。推荐做法是把搜索定义成**标准函数
+工具**，由业务侧 `ToolHandler` 调用搜索 API（智谱独立 Web Search API
+`/api/paas/v4/web_search`、千帆 AI Search `/v2/ai_search/web_search` 等），
+搜索结果与来源链接作为工具结果回传模型：
+
+```go
+searchTool := provider.Tool{
+    Function: provider.FunctionDef{
+        Name:        "web_search",
+        Description: "搜索互联网并返回相关资料与来源链接",
+        Parameters: provider.ParamSchema{
+            Type: "object",
+            Properties: map[string]provider.ParamSchema{
+                "query": {Type: "string", Description: "搜索关键词"},
+            },
+            Required: []string{"query"},
+        },
+    },
+}
+
+resp, err := provider.RunToolLoop(ctx, p, &provider.ChatRequest{
+    Messages: []provider.Message{provider.UserText("搜索并介绍 Go 1.26 的主要变化")},
+    Tools:    []provider.Tool{searchTool},
+}, 5, func(ctx context.Context, name, arguments string) (string, error) {
+    if name != "web_search" {
+        return "", fmt.Errorf("不支持的工具：%s", name)
+    }
+    // 解析 arguments 后调用智谱 / 千帆 / 博查等搜索客户端，
+    // 返回 JSON 字符串（含标题、URL、摘要）。
+    return searchService.SearchJSON(ctx, arguments)
+})
+```
+
+这种模式的优点：不修改统一 `Provider` API、所有平台共用同一个 `web_search`
+工具、域名白名单/超时/结果数量/缓存/费用全部由业务层统一控制、来源链接
+完整保留可返回给终端用户。实践注意：
+
+- 工具结果**保留标题与 URL**，不要只回摘要——模型引用与用户溯源都依赖来源；
+- **限制条数与单条摘要长度**，不要塞整页正文，避免大量占用输入 token；
+- 千帆若需要"搜索＋回答"一步完成，可直接调用其 AI Search Chat Completions，
+  无需进入 `RunToolLoop`；
+- 确需使用厂商 Chat API 内置搜索（如智谱私有 `web_search` 工具、百炼
+  `enable_search`）时，在业务侧单独实现原生 HTTP 客户端，不要把私有字段
+  扩散进统一的 `ChatRequest`。
+
 ### 多模态输入（图像 / 文件）
 
 当模型支持视觉输入时，可以把文本和图片组合成同一条消息。纯文本场景仍然推荐用 `UserText` / `SystemText` 保持最简心智。
@@ -940,7 +1029,7 @@ format, err := provider.JSONSchemaFormatFor[CitySummary]("") // 返回 *Response
 
 ### Token counting
 
-支持原生 token counting 的 provider 会实现 `TokenCounter`。当前 Gemini 原生 provider 支持 `CountTokens`；其他 provider 会返回 `ErrUnsupportedCapability`。
+支持原生 token counting 的 provider 会实现 `TokenCounter`。当前 Gemini（`countTokens`）与 Anthropic（`/v1/messages/count_tokens`，免费端点）原生 provider 支持 `CountTokens`；其他 provider 会返回 `ErrUnsupportedCapability`。注意：Anthropic 官方将该计数定义为**估算值**，与实际计费 token 可能有少量偏差——适合摘要压缩阈值（`CompactOptions.TriggerTokens`）与额度预检，不应作为无安全余量的硬额度判定，结算一律以响应 `Usage` 为准。无原生支持时退回误差更大的 `EstimateTokens` 本地启发式。
 
 ```go
 count, err := provider.CountTokens(ctx, gemini, &provider.ChatRequest{
@@ -1650,7 +1739,11 @@ fmt.Println(provider.FormatMicros(micros), currency) // 如 "0.0123 CNY"
 
 计费公式先减子集再分档乘价（`ReasoningTokens ⊆ CompletionTokens`、
 `CacheReadTokens + CacheWriteTokens ≤ PromptTokens`），不会重复计费；
-未配价模型返回 `ErrModelNotPriced`。负费率、负 token、子集关系不成立、费率越界或
+原生联网搜索按次计价并与 token 项一并累加，两种口径的费率
+（`WebSearchPer1K` / `GroundedPromptPer1K`，微元/1000 次）**二选一**配置，
+规则见"原生联网搜索"一节。未配价模型、存在搜索用量但未配搜索价、
+或配置口径与用量口径不符时返回 `ErrModelNotPriced`。
+负费率、负 token、子集关系不成立、费率越界、搜索双费率同时配置或
 最终金额超出 `int64` 时返回 `ErrInvalidPricing`，不回绕为错误金额。
 仅支持线性单价，分时折扣、阶梯定价请在业务层处理。
 底层成本价与对用户售价维护两份表即可。

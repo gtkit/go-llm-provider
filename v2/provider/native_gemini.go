@@ -3,6 +3,7 @@ package provider
 import (
 	"encoding/base64"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/gtkit/json/v2"
@@ -74,8 +75,64 @@ type geminiResponse struct {
 }
 
 type geminiCandidate struct {
-	Content      geminiContent `json:"content"`
-	FinishReason string        `json:"finishReason"`
+	Content           geminiContent            `json:"content"`
+	FinishReason      string                   `json:"finishReason"`
+	GroundingMetadata *geminiGroundingMetadata `json:"groundingMetadata"`
+}
+
+type geminiGroundingMetadata struct {
+	WebSearchQueries []string                `json:"webSearchQueries"`
+	SearchEntryPoint *geminiSearchEntryPoint `json:"searchEntryPoint"`
+	GroundingChunks  []geminiGroundingChunk  `json:"groundingChunks"`
+}
+
+type geminiSearchEntryPoint struct {
+	RenderedContent string `json:"renderedContent"`
+}
+
+type geminiGroundingChunk struct {
+	Web *geminiGroundingWeb `json:"web"`
+}
+
+type geminiGroundingWeb struct {
+	URI   string `json:"uri"`
+	Title string `json:"title"`
+}
+
+// geminiGrounding 返回响应中第一个携带搜索查询的 groundingMetadata，
+// 未触发 grounding 时返回 nil。
+func geminiGrounding(resp geminiResponse) *geminiGroundingMetadata {
+	for _, candidate := range resp.Candidates {
+		if candidate.GroundingMetadata != nil && len(candidate.GroundingMetadata.WebSearchQueries) > 0 {
+			return candidate.GroundingMetadata
+		}
+	}
+	return nil
+}
+
+// applyGeminiGrounding 把 grounding 结果写入 usage（双口径：query 数与
+// grounded prompt 0/1，计价时二选一）并归一化为 SearchMetadata。
+func applyGeminiGrounding(gm *geminiGroundingMetadata, usage *Usage) *SearchMetadata {
+	if gm == nil {
+		return nil
+	}
+	usage.WebSearchRequests = len(gm.WebSearchQueries)
+	usage.WebSearchGroundedPrompts = 1
+
+	search := &SearchMetadata{Queries: slices.Clone(gm.WebSearchQueries)}
+	if gm.SearchEntryPoint != nil {
+		search.SearchEntryPoint = gm.SearchEntryPoint.RenderedContent
+	}
+	for _, chunk := range gm.GroundingChunks {
+		if chunk.Web == nil {
+			continue
+		}
+		search.Sources = append(search.Sources, SearchSource{
+			URL:   chunk.Web.URI,
+			Title: chunk.Web.Title,
+		})
+	}
+	return search
 }
 
 type geminiUsage struct {
@@ -138,7 +195,12 @@ type geminiCountTokensResponse struct {
 
 type geminiTool struct {
 	FunctionDeclarations []geminiFunctionDeclaration `json:"functionDeclarations,omitempty"`
+	GoogleSearch         *geminiGoogleSearch         `json:"google_search,omitempty"`
 }
+
+// geminiGoogleSearch 是 Gemini 原生联网搜索（Grounding with Google Search）工具，
+// 无配置项。
+type geminiGoogleSearch struct{}
 
 type geminiFunctionDeclaration struct {
 	Name        string `json:"name"`
@@ -359,19 +421,42 @@ func applyGeminiResponseFormat(cfg *geminiGenerationConfig, format *ResponseForm
 	return cfg, nil
 }
 
-func geminiTools(tools []Tool) []geminiTool {
+func geminiTools(tools []Tool) ([]geminiTool, error) {
 	if len(tools) == 0 {
-		return nil
+		return nil, nil
 	}
 	declarations := make([]geminiFunctionDeclaration, 0, len(tools))
+	webSearch := false
 	for _, tool := range tools {
+		if tool.WebSearch != nil {
+			// MaxUses 与域名过滤具有成本/访问范围约束语义，Gemini 的
+			// google_search 不支持这些配置——拒绝而非静默忽略，
+			// 否则会绕过调用方的安全与费用策略。
+			if tool.WebSearch.MaxUses > 0 ||
+				len(tool.WebSearch.AllowedDomains) > 0 ||
+				len(tool.WebSearch.BlockedDomains) > 0 {
+				return nil, fmt.Errorf(
+					"%w: gemini google_search does not support MaxUses or domain filters", ErrInvalidRequest)
+			}
+			webSearch = true
+			continue
+		}
 		declarations = append(declarations, geminiFunctionDeclaration{
 			Name:        tool.Function.Name,
 			Description: tool.Function.Description,
 			Parameters:  tool.Function.Parameters,
 		})
 	}
-	return []geminiTool{{FunctionDeclarations: declarations}}
+	// Gemini 2.5 系（含默认模型）不支持 google_search 与函数声明同用，
+	// 平台会直接拒绝请求；在客户端给出明确错误。
+	if webSearch && len(declarations) > 0 {
+		return nil, fmt.Errorf(
+			"%w: gemini does not support combining google_search with function tools", ErrInvalidRequest)
+	}
+	if webSearch {
+		return []geminiTool{{GoogleSearch: &geminiGoogleSearch{}}}, nil
+	}
+	return []geminiTool{{FunctionDeclarations: declarations}}, nil
 }
 
 func buildGeminiToolConfig(req *ChatRequest) (*geminiToolConfig, error) {

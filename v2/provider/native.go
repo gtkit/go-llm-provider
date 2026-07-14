@@ -124,7 +124,10 @@ func (p *anthropicProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRe
 		return nil, err
 	}
 
-	content, finishReason, toolCalls, err := anthropicResponseContent(resp)
+	if resp.StopReason == "pause_turn" {
+		return nil, anthropicPauseTurnError()
+	}
+	content, finishReason, toolCalls, search, err := anthropicResponseContent(resp)
 	if err != nil {
 		return nil, err
 	}
@@ -146,6 +149,7 @@ func (p *anthropicProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRe
 		FinishReason: finishReason,
 		Usage:        usageFromAnthropic(resp.Usage),
 		Metadata:     metadata,
+		Search:       search,
 		ToolCalls:    toolCalls,
 	}, nil
 }
@@ -185,10 +189,53 @@ func (p *anthropicProvider) ChatStream(ctx context.Context, req *ChatRequest) (*
 	}
 	// usage 分散在 message_start（输入侧）与 message_delta（输出侧）事件中，
 	// 在读取过程中累积，最终随 FinishReason 非空的 chunk 一次性给出。
-	var usageAcc anthropicUsage
+	state := &anthropicStreamState{}
 	return NewStreamReaderWithMetadata(func() (*StreamChunk, error) {
-		return recvAnthropicStreamChunk(reader, &usageAcc)
+		return recvAnthropicStreamChunk(reader, state)
 	}, reader.Close, metadata), nil
+}
+
+// CountTokens 调用 Anthropic /v1/messages/count_tokens 统计请求的输入 token 数
+// （实现 TokenCounter 接口）。该端点免费；注意 Anthropic 官方将结果定义为
+// 估算值，与实际计费 token 可能有少量偏差——适合摘要压缩阈值与额度预检，
+// 不应作为无安全余量的硬额度判定，结算一律以响应 Usage 为准。
+func (p *anthropicProvider) CountTokens(ctx context.Context, req *ChatRequest) (*TokenCountResponse, error) {
+	if p == nil {
+		return nil, ErrNilProvider
+	}
+	if req == nil {
+		return nil, ErrNilChatRequest
+	}
+
+	nativeReq, model, err := p.buildRequest(req, false)
+	if err != nil {
+		return nil, err
+	}
+	countReq := anthropicCountTokensRequest{
+		Model:      nativeReq.Model,
+		Messages:   nativeReq.Messages,
+		System:     nativeReq.System,
+		Tools:      nativeReq.Tools,
+		ToolChoice: nativeReq.ToolChoice,
+	}
+
+	resp, metadata, err := doNativeJSON[anthropicCountTokensResponse](ctx, p.httpClient, nativeHTTPRequest{
+		Method:      http.MethodPost,
+		URL:         p.baseURL + "/v1/messages/count_tokens",
+		Body:        countReq,
+		Provider:    ProviderAnthropic,
+		Model:       model,
+		SetHeaders:  p.setHeaders,
+		DecodeError: decodeAnthropicError,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &TokenCountResponse{
+		Model:       model,
+		TotalTokens: resp.InputTokens,
+		Metadata:    metadata,
+	}, nil
 }
 
 func (p *anthropicProvider) setHeaders(req *http.Request) {
@@ -212,13 +259,23 @@ func (p *anthropicProvider) buildRequest(req *ChatRequest, stream bool) (anthrop
 	if err != nil {
 		return anthropicRequest{}, "", err
 	}
+	// 结构化输出通过内部工具 + 强制 tool_choice 实现，与服务端搜索工具
+	// 属于同一类不可往返的组合，禁止而非静默失效。
+	if structuredTool != nil && hasWebSearchTool(req.Tools) {
+		return anthropicRequest{}, "", fmt.Errorf(
+			"%w: anthropic web search cannot be combined with structured output", ErrInvalidRequest)
+	}
+	tools, err := anthropicTools(req.Tools)
+	if err != nil {
+		return anthropicRequest{}, "", err
+	}
 
 	model := firstString(req.Model, p.model)
 	out := anthropicRequest{
 		Model:      model,
 		MaxTokens:  defaultNativeMaxTokens,
 		Stream:     stream,
-		Tools:      anthropicTools(req.Tools),
+		Tools:      tools,
 		ToolChoice: toolChoice,
 	}
 	if structuredTool != nil {
@@ -341,12 +398,15 @@ func (p *geminiProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRespo
 	if metadata.Model == "" {
 		metadata.Model = firstString(resp.ModelVersion, model)
 	}
+	usage := usageFromGemini(resp.UsageMetadata)
+	search := applyGeminiGrounding(geminiGrounding(resp), &usage)
 	return &ChatResponse{
 		Content:      content,
 		FinishReason: finishReason,
-		Usage:        usageFromGemini(resp.UsageMetadata),
+		Usage:        usage,
 		Metadata:     metadata,
 		Parts:        parts,
+		Search:       search,
 		ToolCalls:    toolCalls,
 	}, nil
 }
@@ -392,9 +452,9 @@ func (p *geminiProvider) ChatStream(ctx context.Context, req *ChatRequest) (*Str
 	if err != nil {
 		return nil, err
 	}
-	var usageAcc geminiUsage
+	state := &geminiStreamState{}
 	return NewStreamReaderWithMetadata(func() (*StreamChunk, error) {
-		return recvGeminiStreamChunk(reader, &usageAcc)
+		return recvGeminiStreamChunk(reader, state)
 	}, reader.Close, metadata), nil
 }
 
@@ -469,11 +529,15 @@ func (p *geminiProvider) buildRequest(req *ChatRequest) (geminiRequest, string, 
 	if err != nil {
 		return geminiRequest{}, "", err
 	}
+	tools, err := geminiTools(req.Tools)
+	if err != nil {
+		return geminiRequest{}, "", err
+	}
 
 	model := firstString(req.Model, p.model)
 	out := geminiRequest{
 		GenerationConfig: generation,
-		Tools:            geminiTools(req.Tools),
+		Tools:            tools,
 		ToolConfig:       toolConfig,
 	}
 	if err := fillGeminiContents(&out, req.Messages); err != nil {
@@ -685,7 +749,7 @@ func (r *sseReader) Close() error {
 	return nil
 }
 
-func recvAnthropicStreamChunk(reader *sseReader, usageAcc *anthropicUsage) (*StreamChunk, error) {
+func recvAnthropicStreamChunk(reader *sseReader, state *anthropicStreamState) (*StreamChunk, error) {
 	for {
 		data, err := reader.Next()
 		if err != nil {
@@ -694,7 +758,7 @@ func recvAnthropicStreamChunk(reader *sseReader, usageAcc *anthropicUsage) (*Str
 			}
 			return nil, err
 		}
-		chunk, ok, err := anthropicStreamChunk(data, usageAcc)
+		chunk, ok, err := anthropicStreamChunk(data, state)
 		if err != nil {
 			return nil, err
 		}
@@ -704,13 +768,21 @@ func recvAnthropicStreamChunk(reader *sseReader, usageAcc *anthropicUsage) (*Str
 	}
 }
 
-func recvGeminiStreamChunk(reader *sseReader, usageAcc *geminiUsage) (*StreamChunk, error) {
+// geminiStreamState 保存流式解析的跨事件状态：usage 随流累计更新，
+// grounding 保存最近一次携带搜索查询的元数据（Gemini 在流上给出的
+// groundingMetadata 为全量快照，整体替换即聚合）。
+type geminiStreamState struct {
+	usage     geminiUsage
+	grounding *geminiGroundingMetadata
+}
+
+func recvGeminiStreamChunk(reader *sseReader, state *geminiStreamState) (*StreamChunk, error) {
 	for {
 		data, err := reader.Next()
 		if err != nil {
 			return nil, err
 		}
-		chunk, ok, err := geminiStreamChunk(data, usageAcc)
+		chunk, ok, err := geminiStreamChunk(data, state)
 		if errors.Is(err, errSkipNativeStreamEvent) {
 			continue
 		}
@@ -723,14 +795,17 @@ func recvGeminiStreamChunk(reader *sseReader, usageAcc *geminiUsage) (*StreamChu
 	}
 }
 
-func geminiStreamChunk(data []byte, usageAcc *geminiUsage) (*StreamChunk, bool, error) {
+func geminiStreamChunk(data []byte, state *geminiStreamState) (*StreamChunk, bool, error) {
 	var event geminiResponse
 	if err := json.Unmarshal(data, &event); err != nil {
 		return nil, false, errSkipNativeStreamEvent
 	}
 	// usageMetadata 随流累计更新，最终值随 FinishReason 非空的 chunk 给出。
 	if event.UsageMetadata != (geminiUsage{}) {
-		*usageAcc = event.UsageMetadata
+		state.usage = event.UsageMetadata
+	}
+	if gm := geminiGrounding(event); gm != nil {
+		state.grounding = gm
 	}
 	content, finishReason, toolCalls, parts, err := geminiResponseContent(event)
 	if err != nil {
@@ -750,21 +825,32 @@ func geminiStreamChunk(data []byte, usageAcc *geminiUsage) (*StreamChunk, bool, 
 		ToolCalls:    toolCallDeltas(toolCalls),
 	}
 	if finishReason != "" {
-		chunk.Usage = usageFromGemini(*usageAcc)
+		chunk.Usage = usageFromGemini(state.usage)
+		chunk.Search = applyGeminiGrounding(state.grounding, &chunk.Usage)
 	}
 	return chunk, true, nil
 }
 
-func anthropicStreamChunk(data []byte, usageAcc *anthropicUsage) (*StreamChunk, bool, error) {
+func anthropicStreamChunk(data []byte, state *anthropicStreamState) (*StreamChunk, bool, error) {
 	var event anthropicStreamEvent
 	if err := json.Unmarshal(data, &event); err != nil {
 		return nil, false, errSkipNativeStreamEvent
 	}
 	switch event.Type {
 	case "message_start":
-		mergeAnthropicStreamUsage(usageAcc, event.Message.Usage)
+		mergeAnthropicStreamUsage(&state.usage, event.Message.Usage)
 		return &StreamChunk{Model: event.Message.Model}, true, nil
 	case "content_block_start":
+		// 服务端工具块（如原生 web search）由平台执行，其增量不外露为客户端
+		// 工具调用；记录索引以抑制后续 input_json_delta。搜索结果块随
+		// start 事件完整到达，就地提取来源。
+		if anthropicServerToolBlock(event.ContentBlock.Type) {
+			state.markServerToolBlock(event.Index)
+			if event.ContentBlock.Type == "web_search_tool_result" {
+				state.search = appendSearchSources(state.search, anthropicSearchResultSources(event.ContentBlock.Content))
+			}
+			return nil, false, nil
+		}
 		if event.ContentBlock.Type == "tool_use" {
 			return &StreamChunk{ToolCalls: []ToolCallDelta{{
 				Index: event.Index,
@@ -779,6 +865,10 @@ func anthropicStreamChunk(data []byte, usageAcc *anthropicUsage) (*StreamChunk, 
 			return &StreamChunk{Delta: event.Delta.Text}, true, nil
 		}
 		if event.Delta.Type == "input_json_delta" && event.Delta.PartialJSON != "" {
+			if state.isServerToolBlock(event.Index) {
+				state.appendServerToolInput(event.Index, event.Delta.PartialJSON)
+				return nil, false, nil
+			}
 			return &StreamChunk{ToolCalls: []ToolCallDelta{{
 				Index: event.Index,
 				Function: FunctionCallDelta{
@@ -787,7 +877,10 @@ func anthropicStreamChunk(data []byte, usageAcc *anthropicUsage) (*StreamChunk, 
 			}}}, true, nil
 		}
 	case "message_delta":
-		mergeAnthropicStreamUsage(usageAcc, event.Usage)
+		mergeAnthropicStreamUsage(&state.usage, event.Usage)
+		if event.Delta.StopReason == "pause_turn" {
+			return nil, false, anthropicPauseTurnError()
+		}
 		if event.Delta.StopReason != "" {
 			finishReason := event.Delta.StopReason
 			if finishReason == "tool_use" {
@@ -795,7 +888,8 @@ func anthropicStreamChunk(data []byte, usageAcc *anthropicUsage) (*StreamChunk, 
 			}
 			return &StreamChunk{
 				FinishReason: finishReason,
-				Usage:        usageFromAnthropic(*usageAcc),
+				Usage:        usageFromAnthropic(state.usage),
+				Search:       state.finalizeSearch(),
 			}, true, nil
 		}
 	case "message_stop":
