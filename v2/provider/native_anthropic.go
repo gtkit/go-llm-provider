@@ -394,14 +394,28 @@ func anthropicRole(role Role) string {
 // anthropicWebSearchToolType 是 Anthropic 服务端联网搜索工具的版本化类型标识。
 const anthropicWebSearchToolType = "web_search_20250305"
 
-// anthropicPauseTurnError 是 stop_reason == "pause_turn" 的统一错误：
-// 服务端工具长时间运行时 Anthropic 会暂停回合，官方要求把响应内容
-// （含服务端工具块）原样回传续跑；本库尚未支持服务端工具块跨轮往返，
-// 报明确错误而不是返回被截断的响应。
-func anthropicPauseTurnError() error {
-	return fmt.Errorf(
-		"%w: anthropic paused the turn while running a server tool (stop_reason \"pause_turn\"); resuming paused turns is not supported yet, retry the request or lower web search usage",
-		ErrUnsupportedCapability)
+// PauseTurnError 表示 Anthropic 在服务端工具（如原生 web search）运行中
+// 暂停了回合（stop_reason "pause_turn"）。官方要求把暂停响应的内容块原样
+// 回传续跑；本库尚未支持服务端工具块跨轮往返，因此以错误形式返回。
+//
+// Usage 与 Search 携带暂停前已真实产生的用量与搜索元数据——服务端已执行
+// 的搜索会被平台计费，观测/计费层会从本错误提取用量，调用方不得按零消耗
+// 处理。注意：不要原样重发请求"重试"——那会重新执行搜索、产生二次费用；
+// 应降低搜索用量（如 MaxUses）或改用函数工具模式。
+//
+// errors.Is(err, ErrUnsupportedCapability) 为 true。
+type PauseTurnError struct {
+	Usage  Usage
+	Search *SearchMetadata
+}
+
+func (e *PauseTurnError) Error() string {
+	return `anthropic paused the turn while running a server tool (stop_reason "pause_turn"); resuming paused turns is not supported yet — do not resend the same request, it would re-run the search and incur charges again`
+}
+
+// Is 使 errors.Is(err, ErrUnsupportedCapability) 成立，兼容既有错误判定。
+func (e *PauseTurnError) Is(target error) bool {
+	return target == ErrUnsupportedCapability
 }
 
 func anthropicTools(tools []Tool) ([]anthropicTool, error) {
@@ -546,7 +560,9 @@ func anthropicResponseContent(resp anthropicResponse) (content, finishReason str
 				search = appendSearchQuery(search, query)
 			}
 		case "web_search_tool_result":
-			search = appendSearchSources(search, anthropicSearchResultSources(part.Content))
+			sources, searchErr := anthropicSearchResultContent(part.Content)
+			search = appendSearchSources(search, sources)
+			search = appendSearchError(search, searchErr)
 		}
 	}
 	if len(toolCalls) > 0 || resp.StopReason == "tool_use" {
@@ -578,34 +594,48 @@ type anthropicWebSearchResult struct {
 	Title string `json:"title"`
 }
 
-// anthropicSearchResultSources 解析 web_search_tool_result 块的 content
-// （形如 [{type:"web_search_result",url,title,...}]），无法解析时返回 nil。
-func anthropicSearchResultSources(content any) []SearchSource {
+// anthropicSearchResultContent 解析 web_search_tool_result 块的 content：
+// 成功时为结果数组（[{type:"web_search_result",url,title,...}]），
+// 失败时为错误对象（{type:"web_search_tool_result_error",error_code:...}），
+// 后者经 HTTP 200 到达，必须透出而非静默丢弃。两种形态都无法解析时返回双 nil。
+func anthropicSearchResultContent(content any) ([]SearchSource, *SearchError) {
 	raw, err := json.Marshal(content)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	var results []anthropicWebSearchResult
-	if err := json.Unmarshal(raw, &results); err != nil {
-		return nil
-	}
-	sources := make([]SearchSource, 0, len(results))
-	for _, result := range results {
-		if result.Type != "" && result.Type != "web_search_result" {
-			continue
+	if err := json.Unmarshal(raw, &results); err == nil {
+		sources := make([]SearchSource, 0, len(results))
+		for _, result := range results {
+			if result.Type != "" && result.Type != "web_search_result" {
+				continue
+			}
+			sources = append(sources, SearchSource{URL: result.URL, Title: result.Title})
 		}
-		sources = append(sources, SearchSource{URL: result.URL, Title: result.Title})
+		if len(sources) == 0 {
+			return nil, nil
+		}
+		return sources, nil
 	}
-	if len(sources) == 0 {
-		return nil
+	var errBody struct {
+		ErrorCode string `json:"error_code"`
 	}
-	return sources
+	if err := json.Unmarshal(raw, &errBody); err == nil && errBody.ErrorCode != "" {
+		return nil, &SearchError{Code: errBody.ErrorCode}
+	}
+	return nil, nil
+}
+
+// ensureSearch 惰性初始化 SearchMetadata，供各 append helper 复用。
+func ensureSearch(search *SearchMetadata) *SearchMetadata {
+	if search == nil {
+		return &SearchMetadata{}
+	}
+	return search
 }
 
 func appendSearchQuery(search *SearchMetadata, query string) *SearchMetadata {
-	if search == nil {
-		search = &SearchMetadata{}
-	}
+	search = ensureSearch(search)
 	search.Queries = append(search.Queries, query)
 	return search
 }
@@ -614,10 +644,17 @@ func appendSearchSources(search *SearchMetadata, sources []SearchSource) *Search
 	if len(sources) == 0 {
 		return search
 	}
-	if search == nil {
-		search = &SearchMetadata{}
-	}
+	search = ensureSearch(search)
 	search.Sources = append(search.Sources, sources...)
+	return search
+}
+
+func appendSearchError(search *SearchMetadata, searchErr *SearchError) *SearchMetadata {
+	if searchErr == nil {
+		return search
+	}
+	search = ensureSearch(search)
+	search.Errors = append(search.Errors, *searchErr)
 	return search
 }
 

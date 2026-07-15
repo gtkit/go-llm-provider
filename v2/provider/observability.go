@@ -351,6 +351,13 @@ func applyErrorToObserveEvent(event *ObserveEvent, err error) {
 		event.StatusCode = providerErr.StatusCode
 		event.Retryable = providerErr.Retryable
 	}
+	// pause_turn 等携带部分用量的失败：服务端已产生真实消耗（如已执行的
+	// 搜索），把错误携带的用量提取进事件，计费层才不会按零消耗漏账。
+	// 仅在事件尚无用量时填充——流式路径上已读到的 usage 优先。
+	var pauseErr *PauseTurnError
+	if errors.As(err, &pauseErr) && event.Usage == (Usage{}) {
+		event.Usage = pauseErr.Usage
+	}
 }
 
 func requestChatModel(req *ChatRequest) string {

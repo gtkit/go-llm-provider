@@ -1,9 +1,12 @@
 package provider
 
 import (
+	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"math/bits"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -19,8 +22,9 @@ type ModelRate struct {
 
 	// WebSearchPer1K 是"按搜索次数"口径的原生联网搜索单价（微元 / 1000 次），
 	// 对应 Usage.WebSearchRequests（Anthropic 全系、Gemini 3 系按 query 计费）。
-	// 与 GroundedPromptPer1K 互斥：存在搜索用量时必须且只能配置其中一个，
-	// 双配返回 ErrInvalidPricing（口径冲突会重复计费），全缺返回 ErrModelNotPriced。
+	// 与 GroundedPromptPer1K 无条件互斥：一个模型只可能按一种口径计费，
+	// 双配即配置错误（ErrInvalidPricing，Validate 与 Cost 均拒绝）；
+	// 存在搜索用量但全缺时 Cost 返回 ErrModelNotPriced。
 	WebSearchPer1K int64
 
 	// GroundedPromptPer1K 是"按触发 grounding 的请求"口径的搜索单价（微元 / 1000 次），
@@ -54,8 +58,9 @@ type PricingTable map[string]ModelRate
 // 原生搜索按次计价（微元/1000 次），换算到统一的 1M 基数后与 token 项一并累加。
 // 两种搜索口径（WebSearchRequests / WebSearchGroundedPrompts）按费率配置二选一：
 // 配置 WebSearchPer1K 按次数计、配置 GroundedPromptPer1K 按 grounded prompt 计；
-// 存在搜索用量时双配返回 ErrInvalidPricing（防重复计费），全缺或配置口径
-// 与实际用量口径不符返回 ErrModelNotPriced，不静默漏账。
+// 双配无条件返回 ErrInvalidPricing（配置错误，启动期可用 Validate 提前发现），
+// 存在搜索用量但费率全缺、或配置口径与实际用量口径不符时返回
+// ErrModelNotPriced，不静默漏账。
 // 末尾一次整除向零截断，尾差对用户让利。乘加使用 128 位无符号中间值，
 // 最终微元金额超出 int64 时返回 ErrInvalidPricing，不发生回绕错账。
 // 模型不在表中时返回 ErrModelNotPriced，不静默按零计费。
@@ -122,17 +127,14 @@ const searchUnitScale = 1000
 const maxRatePer1M = 1_000_000_000_000
 
 // webSearchCostTerm 按费率配置在两种搜索口径中选定计费项：
-// 返回 (用量, 单价)。无搜索用量时恒返回 (0, 0)；有用量时执行互斥与漏账校验，
-// 规则见 Cost 与 ModelRate 的字段文档。
+// 返回 (用量, 单价)。无搜索用量时恒返回 (0, 0)；有用量时执行漏账校验，
+// 双费率互斥已在 validateRate 中无条件拒绝。规则见 Cost 与 ModelRate 的字段文档。
 func webSearchCostTerm(model string, usage Usage, rate ModelRate) (units int, per1K int64, err error) {
 	hasUsage := usage.WebSearchRequests > 0 || usage.WebSearchGroundedPrompts > 0
 	if !hasUsage {
 		return 0, 0, nil
 	}
 	switch {
-	case rate.WebSearchPer1K > 0 && rate.GroundedPromptPer1K > 0:
-		return 0, 0, fmt.Errorf(
-			"%w: model %q configures both WebSearchPer1K and GroundedPromptPer1K", ErrInvalidPricing, model)
 	case rate.WebSearchPer1K > 0:
 		if usage.WebSearchRequests == 0 {
 			return 0, 0, fmt.Errorf(
@@ -159,7 +161,26 @@ func validateRate(model string, rate ModelRate) error {
 			return fmt.Errorf("%w: model %q rate %d out of [0, %d]", ErrInvalidPricing, model, per1M, int64(maxRatePer1M))
 		}
 	}
+	// 双搜索费率无条件互斥：一个模型只可能按一种口径计费，双配是配置错误，
+	// 应在首次计价（或启动期 Validate）即暴露，而不是等出现搜索用量才发现。
+	if rate.WebSearchPer1K > 0 && rate.GroundedPromptPer1K > 0 {
+		return fmt.Errorf(
+			"%w: model %q configures both WebSearchPer1K and GroundedPromptPer1K", ErrInvalidPricing, model)
+	}
 	return nil
+}
+
+// Validate 在启动期整表校验费率合法性（范围与搜索双费率互斥），
+// 返回按模型名排序聚合的全部问题；表为空或全部合法返回 nil。
+// 建议在服务启动、价格表热更新时调用，把配置错误挡在计价之前。
+func (t PricingTable) Validate() error {
+	var errs []error
+	for _, model := range slices.Sorted(maps.Keys(t)) {
+		if err := validateRate(model, t[model]); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func validateUsage(usage Usage) error {

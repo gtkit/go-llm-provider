@@ -124,12 +124,14 @@ func (p *anthropicProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRe
 		return nil, err
 	}
 
-	if resp.StopReason == "pause_turn" {
-		return nil, anthropicPauseTurnError()
-	}
 	content, finishReason, toolCalls, search, err := anthropicResponseContent(resp)
 	if err != nil {
 		return nil, err
+	}
+	if resp.StopReason == "pause_turn" {
+		// 暂停前服务端已执行的搜索会计费：错误携带真实用量与搜索元数据，
+		// 供观测/计费层提取，不得按零消耗处理。
+		return nil, &PauseTurnError{Usage: usageFromAnthropic(resp.Usage), Search: search}
 	}
 	if req.ResponseFormat != nil && req.ResponseFormat.Type != ResponseFormatText {
 		if structured, ok, err := anthropicStructuredContent(resp); err != nil {
@@ -249,6 +251,9 @@ func (p *anthropicProvider) buildRequest(req *ChatRequest, stream bool) (anthrop
 		return anthropicRequest{}, "", fmt.Errorf("%w: messages are required", ErrInvalidRequest)
 	}
 	if err := requireTextOnlyOutput(ProviderAnthropic, req.OutputModalities); err != nil {
+		return anthropicRequest{}, "", err
+	}
+	if err := validateWebSearchRequest(req); err != nil {
 		return anthropicRequest{}, "", err
 	}
 	toolChoice, err := buildAnthropicToolChoice(req)
@@ -525,9 +530,24 @@ func (p *geminiProvider) buildRequest(req *ChatRequest) (geminiRequest, string, 
 		}
 		generation.ResponseModalities = modalities
 	}
-	toolConfig, err := buildGeminiToolConfig(req)
-	if err != nil {
+	if err := validateWebSearchRequest(req); err != nil {
 		return geminiRequest{}, "", err
+	}
+	// 多候选与 grounding 的组合下各 candidate 的搜索归属不明确，
+	// 无法给出可靠的计费与元数据归一，拒绝而非按首个 candidate 近似。
+	webSearch := hasWebSearchTool(req.Tools)
+	if req.CandidateCount > 1 && webSearch {
+		return geminiRequest{}, "", fmt.Errorf(
+			"%w: gemini web search does not support candidate count > 1", ErrInvalidRequest)
+	}
+	// 纯搜索场景（validateWebSearchRequest 已保证只剩 nil / Auto）不下发
+	// functionCallingConfig——它只对函数工具有意义，对 google_search 无意义。
+	var toolConfig *geminiToolConfig
+	if !webSearch {
+		toolConfig, err = buildGeminiToolConfig(req)
+		if err != nil {
+			return geminiRequest{}, "", err
+		}
 	}
 	tools, err := geminiTools(req.Tools)
 	if err != nil {
@@ -769,8 +789,8 @@ func recvAnthropicStreamChunk(reader *sseReader, state *anthropicStreamState) (*
 }
 
 // geminiStreamState 保存流式解析的跨事件状态：usage 随流累计更新，
-// grounding 保存最近一次携带搜索查询的元数据（Gemini 在流上给出的
-// groundingMetadata 为全量快照，整体替换即聚合）。
+// grounding 对流上出现的各次 groundingMetadata 做去重合并
+// （Gemini 未承诺快照的累积语义，合并可兼容累积与增量两种形态）。
 type geminiStreamState struct {
 	usage     geminiUsage
 	grounding *geminiGroundingMetadata
@@ -805,7 +825,7 @@ func geminiStreamChunk(data []byte, state *geminiStreamState) (*StreamChunk, boo
 		state.usage = event.UsageMetadata
 	}
 	if gm := geminiGrounding(event); gm != nil {
-		state.grounding = gm
+		state.grounding = mergeGeminiGrounding(state.grounding, gm)
 	}
 	content, finishReason, toolCalls, parts, err := geminiResponseContent(event)
 	if err != nil {
@@ -847,7 +867,9 @@ func anthropicStreamChunk(data []byte, state *anthropicStreamState) (*StreamChun
 		if anthropicServerToolBlock(event.ContentBlock.Type) {
 			state.markServerToolBlock(event.Index)
 			if event.ContentBlock.Type == "web_search_tool_result" {
-				state.search = appendSearchSources(state.search, anthropicSearchResultSources(event.ContentBlock.Content))
+				sources, searchErr := anthropicSearchResultContent(event.ContentBlock.Content)
+				state.search = appendSearchSources(state.search, sources)
+				state.search = appendSearchError(state.search, searchErr)
 			}
 			return nil, false, nil
 		}
@@ -879,7 +901,10 @@ func anthropicStreamChunk(data []byte, state *anthropicStreamState) (*StreamChun
 	case "message_delta":
 		mergeAnthropicStreamUsage(&state.usage, event.Usage)
 		if event.Delta.StopReason == "pause_turn" {
-			return nil, false, anthropicPauseTurnError()
+			return nil, false, &PauseTurnError{
+				Usage:  usageFromAnthropic(state.usage),
+				Search: state.finalizeSearch(),
+			}
 		}
 		if event.Delta.StopReason != "" {
 			finishReason := event.Delta.StopReason

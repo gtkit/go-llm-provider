@@ -158,17 +158,13 @@ func TestPricingTableCostWebSearch(t *testing.T) {
 		assert.Equal(t, int64(140_000), micros)
 	})
 
-	t.Run("双费率同时配置返回 ErrInvalidPricing 防重复计费", func(t *testing.T) {
+	t.Run("双费率同时配置无条件返回 ErrInvalidPricing", func(t *testing.T) {
 		t.Parallel()
 		_, _, err := table.Cost("both-rates", Usage{WebSearchRequests: 1, WebSearchGroundedPrompts: 1})
 		require.ErrorIs(t, err, ErrInvalidPricing)
-	})
-
-	t.Run("双费率同时配置但无搜索用量不报错", func(t *testing.T) {
-		t.Parallel()
-		micros, _, err := table.Cost("both-rates", Usage{PromptTokens: 1_000_000})
-		require.NoError(t, err)
-		assert.Equal(t, int64(2_000_000), micros)
+		// 配置错误不等出现搜索用量才暴露：无搜索用量同样拒绝。
+		_, _, err = table.Cost("both-rates", Usage{PromptTokens: 1_000_000})
+		require.ErrorIs(t, err, ErrInvalidPricing)
 	})
 
 	t.Run("配置口径与用量口径不符返回 ErrModelNotPriced", func(t *testing.T) {
@@ -205,6 +201,34 @@ func TestPricingTableCostWebSearch(t *testing.T) {
 		t.Parallel()
 		_, _, err := table.Cost("per-request", Usage{WebSearchRequests: math.MaxInt})
 		require.ErrorIs(t, err, ErrInvalidPricing)
+	})
+}
+
+func TestPricingTableValidate(t *testing.T) {
+	t.Parallel()
+
+	t.Run("合法表与空表返回 nil", func(t *testing.T) {
+		t.Parallel()
+		require.NoError(t, PricingTable{}.Validate())
+		require.NoError(t, PricingTable{
+			"m1": {InputPer1M: 2_000_000, OutputPer1M: 8_000_000, WebSearchPer1K: 70_000_000, Currency: "CNY"},
+			"m2": {InputPer1M: 1_000_000, OutputPer1M: 3_000_000, GroundedPromptPer1K: 245_000_000, Currency: "CNY"},
+		}.Validate())
+	})
+
+	t.Run("聚合报告所有问题模型", func(t *testing.T) {
+		t.Parallel()
+		err := PricingTable{
+			"bad-negative": {InputPer1M: -1, Currency: "CNY"},
+			"bad-both-search-rates": {
+				InputPer1M: 1, WebSearchPer1K: 1, GroundedPromptPer1K: 1, Currency: "CNY",
+			},
+			"good": {InputPer1M: 1, OutputPer1M: 1, Currency: "CNY"},
+		}.Validate()
+		require.ErrorIs(t, err, ErrInvalidPricing)
+		assert.Contains(t, err.Error(), "bad-negative")
+		assert.Contains(t, err.Error(), "bad-both-search-rates")
+		assert.NotContains(t, err.Error(), `"good"`)
 	})
 }
 

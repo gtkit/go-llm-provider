@@ -106,6 +106,18 @@ func ExampleWebSearchToolWithOptions() {
 	// go.dev
 }
 
+func ExamplePricingTable_Validate() {
+	table := provider.PricingTable{
+		"good":            {InputPer1M: 2_000_000, OutputPer1M: 8_000_000, Currency: "CNY"},
+		"conflict-search": {WebSearchPer1K: 1, GroundedPromptPer1K: 1, Currency: "CNY"},
+	}
+	// 启动期整表校验：把配置错误挡在计价之前。
+	if err := table.Validate(); err != nil {
+		fmt.Println("invalid pricing table")
+	}
+	// Output: invalid pricing table
+}
+
 func ExampleModelCapabilitiesFromPreset() {
 	caps, ok := provider.ModelCapabilitiesFromPreset(provider.ProviderOpenAI)
 	fmt.Println(ok)

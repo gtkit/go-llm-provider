@@ -112,11 +112,15 @@ func geminiGrounding(resp geminiResponse) *geminiGroundingMetadata {
 
 // applyGeminiGrounding 把 grounding 结果写入 usage（双口径：query 数与
 // grounded prompt 0/1，计价时二选一）并归一化为 SearchMetadata。
+//
+// 计费计数取去空、去重后的查询数——Google 计费口径为"响应中非空的唯一
+// 搜索查询"，按原始长度计会高估并多收费；SearchMetadata.Queries 保留
+// 平台原始返回值供展示。
 func applyGeminiGrounding(gm *geminiGroundingMetadata, usage *Usage) *SearchMetadata {
 	if gm == nil {
 		return nil
 	}
-	usage.WebSearchRequests = len(gm.WebSearchQueries)
+	usage.WebSearchRequests = uniqueNonEmptyQueryCount(gm.WebSearchQueries)
 	usage.WebSearchGroundedPrompts = 1
 
 	search := &SearchMetadata{Queries: slices.Clone(gm.WebSearchQueries)}
@@ -133,6 +137,51 @@ func applyGeminiGrounding(gm *geminiGroundingMetadata, usage *Usage) *SearchMeta
 		})
 	}
 	return search
+}
+
+// uniqueNonEmptyQueryCount 统计去空白、去重后的查询数（Google 计费口径）。
+func uniqueNonEmptyQueryCount(queries []string) int {
+	seen := make(map[string]struct{}, len(queries))
+	for _, query := range queries {
+		trimmed := strings.TrimSpace(query)
+		if trimmed == "" {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+	}
+	return len(seen)
+}
+
+// mergeGeminiGrounding 合并流式事件中的 grounding 快照：查询与来源去重合并，
+// searchEntryPoint 取最后一个非空值。Gemini 未承诺流上快照的累积语义，
+// 合并去重同时兼容"累积快照"与"增量片段"两种形态，避免覆盖丢失。
+func mergeGeminiGrounding(acc, event *geminiGroundingMetadata) *geminiGroundingMetadata {
+	if acc == nil {
+		merged := *event
+		merged.WebSearchQueries = slices.Clone(event.WebSearchQueries)
+		merged.GroundingChunks = slices.Clone(event.GroundingChunks)
+		return &merged
+	}
+	for _, query := range event.WebSearchQueries {
+		if !slices.Contains(acc.WebSearchQueries, query) {
+			acc.WebSearchQueries = append(acc.WebSearchQueries, query)
+		}
+	}
+	for _, chunk := range event.GroundingChunks {
+		if chunk.Web == nil {
+			continue
+		}
+		exists := slices.ContainsFunc(acc.GroundingChunks, func(existing geminiGroundingChunk) bool {
+			return existing.Web != nil && existing.Web.URI == chunk.Web.URI
+		})
+		if !exists {
+			acc.GroundingChunks = append(acc.GroundingChunks, chunk)
+		}
+	}
+	if event.SearchEntryPoint != nil && event.SearchEntryPoint.RenderedContent != "" {
+		acc.SearchEntryPoint = event.SearchEntryPoint
+	}
+	return acc
 }
 
 type geminiUsage struct {

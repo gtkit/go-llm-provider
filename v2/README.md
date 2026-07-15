@@ -754,17 +754,21 @@ if resp.Search != nil {
 要点：
 
 - **平台映射**：Anthropic 映射为 `web_search_20250305` server tool；Gemini 映射为 `google_search`（Grounding with Google Search）。其他 provider（含全部 OpenAI 兼容平台与 Ollama）收到该工具返回 `ErrInvalidRequest`，不静默丢弃；切换平台前可用 `caps.Supports(provider.CapabilityWebSearch)` 预检。
-- **不能与函数工具混用**：Anthropic 的服务端工具块尚不支持跨轮往返、Gemini 2.5 系平台不支持 `google_search` 与函数声明同用，两条路径都在客户端返回 `ErrInvalidRequest`；Anthropic 侧同理禁止与结构化输出组合。纯搜索场景与 `RunToolLoop` 兼容（服务端执行，不产生客户端 `ToolCall`）。
-- **pause_turn**：Anthropic 在服务端工具长时间运行时可能暂停回合（`stop_reason: "pause_turn"`），续跑需要回传服务端工具块，当前不支持——此时返回 `ErrUnsupportedCapability` 明确报错，而不是把截断的响应当正常结果。
-- **搜索元数据**：查询、来源与 Google Search 入口通过 `ChatResponse.Search` / 最终 `StreamChunk.Search` 返回（`SearchMetadata`）。**合规提示**：Gemini 响应携带 `SearchEntryPoint` 时，Google 要求向终端用户展示 Search Suggestions；回复文本级的引用区间暂不透出。
-- **计费口径（双口径二选一）**：`Usage.WebSearchRequests` 承载"按次数"口径（Anthropic 实际搜索次数 / Gemini 的 query 数），`Usage.WebSearchGroundedPrompts` 承载"按 grounded prompt"口径（Gemini，0 或 1）。费率按平台计费规则在 `ModelRate.WebSearchPer1K` 与 `ModelRate.GroundedPromptPer1K` 中**二选一**配置（微元/1000 次）：Anthropic 与 Gemini 3 系按次数配前者，Gemini 2.5 系按 grounded prompt 配后者。双配返回 `ErrInvalidPricing`（防重复计费），全缺或口径与用量不符返回 `ErrModelNotPriced`，不静默漏账。
+- **仅保证单轮**：Anthropic 的 `AssistantMessage()` 不保存服务端工具块、引用与 `encrypted_content`，无法无损回传续跑，因此原生搜索当前**仅保证单轮**（一次 `Chat`/`ChatStream`）；多轮追问请每轮重新发起，或改用函数工具模式。
+- **不能与函数工具混用**：Anthropic 的服务端工具块尚不支持跨轮往返、Gemini 2.5 系平台不支持 `google_search` 与函数声明同用，两条路径都在客户端返回 `ErrInvalidRequest`；Anthropic 侧同理禁止与结构化输出组合。Gemini 3 官方已支持搜索与函数工具组合，但本库当前不做模型嗅探、统一按 2.5 系口径拒绝，该组合待后续版本支持。纯搜索场景与 `RunToolLoop` 兼容（服务端执行，不产生客户端 `ToolCall`）。
+- **输入约束**：纯搜索请求的 `ToolChoice` 只接受 `nil` / `ToolChoiceAuto`（由模型决定是否搜索，Gemini 侧此时不下发 `functionCallingConfig`）；重复声明搜索工具、同一 `Tool` 同时设 `Function` 与 `WebSearch`、`ToolChoiceRequired`/`ToolChoiceFunction`/`ToolChoiceNone` 与服务端搜索工具组合、Gemini 搜索叠加 `CandidateCount > 1`，均返回 `ErrInvalidRequest`。
+- **pause_turn**：Anthropic 在服务端工具长时间运行时可能暂停回合（`stop_reason: "pause_turn"`），续跑需要回传服务端工具块，当前不支持——返回 `*PauseTurnError`（`errors.Is` 命中 `ErrUnsupportedCapability`）。**不要原样重发请求**，那会重新执行搜索、二次计费；应降低 `MaxUses` 或改用函数工具模式。该错误携带暂停前已产生的 `Usage` 与 `Search`，观测/计费层会自动提取用量，不会漏账。
+- **搜索元数据与错误**：查询、来源、Google Search 入口通过 `ChatResponse.Search` / 最终 `StreamChunk.Search` 返回（`SearchMetadata`）；平台经 HTTP 200 报告的搜索失败（如 `max_uses_exceeded`、`too_many_requests`）进入 `SearchMetadata.Errors`，调用方据此区分"未搜索"与"搜索失败"，本库不静默丢弃。**合规提示**：Gemini 响应携带 `SearchEntryPoint` 时，Google 要求向终端用户展示 Search Suggestions；回复文本级的引用区间暂不透出。
+- **计费口径（双口径二选一）**：`Usage.WebSearchRequests` 承载"按次数"口径（Anthropic 实际搜索次数 / Gemini 去空去重后的 query 数），`Usage.WebSearchGroundedPrompts` 承载"按 grounded prompt"口径（Gemini，0 或 1）。费率按平台计费规则在 `ModelRate.WebSearchPer1K` 与 `ModelRate.GroundedPromptPer1K` 中**二选一**配置（微元/1000 次）：Anthropic 与 Gemini 3 系按次数配前者，Gemini 2.5 系按 grounded prompt 配后者。双配无条件返回 `ErrInvalidPricing`（配置错误，启动期可用 `PricingTable.Validate()` 提前发现），全缺或口径与用量不符返回 `ErrModelNotPriced`，不静默漏账。
 - **流式**：搜索过程中的服务端工具事件不会出现在 `StreamChunk.ToolCalls` 中，搜索计次与元数据随最终 chunk（`FinishReason` 非空）给出。
 
 #### 国内平台的联网搜索接入（函数工具模式，推荐）
 
-国内平台（智谱、千帆、百炼等）的内置联网搜索依赖各家私有请求字段，无法经
-OpenAI 兼容协议透传，本库不做映射（`CapabilityWebSearch` 表示"库内置的厂商
-原生搜索映射"，不代表业务侧不能接搜索）。推荐做法是把搜索定义成**标准函数
+国内平台（智谱、千帆、百炼等）的内置联网搜索依赖各家私有请求字段，当前
+`go-openai v1.41.2` 的请求结构没有承载这些字段的位置，本库不做映射（OpenAI
+兼容协议本身允许厂商扩展字段，限制来自客户端结构体而非协议本身；
+`CapabilityWebSearch` 表示"库内置的厂商原生搜索映射"，不代表业务侧不能接搜索）。
+推荐做法是把搜索定义成**标准函数
 工具**，由业务侧 `ToolHandler` 调用搜索 API（智谱独立 Web Search API
 `/api/paas/v4/web_search`、千帆 AI Search `/v2/ai_search/web_search` 等），
 搜索结果与来源链接作为工具结果回传模型：
@@ -1719,6 +1723,9 @@ RequestID（对账，流式与非流式均有值）、响应侧实际模型名�
 `example/billingstore/` 提供 Redis + GORM 的参考实现（独立 go.mod，reference 级），
 含 `EntryID` 幂等的 Redis Lua 原子累计、流水异步落库与 `QuotaChecker` 限额；
 Redis Cluster 部署需启用其 `Config.RedisCluster`，让同一用户的多 key 固定到同一 slot。
+它是 **best-effort 参考实现**：计价失败仍以 `costMicros == 0` 落账并经 `OnError` 上抛
+（原始用量入库、可事后重算），刷库不重试、进程崩溃丢缓冲——资金敏感的生产账务
+不可直接照搬，须按业务要求强化（持久化 outbox、失败重试、对账兜底）。
 
 #### 费用计算（PricingTable）
 
@@ -1746,7 +1753,8 @@ fmt.Println(provider.FormatMicros(micros), currency) // 如 "0.0123 CNY"
 负费率、负 token、子集关系不成立、费率越界、搜索双费率同时配置或
 最终金额超出 `int64` 时返回 `ErrInvalidPricing`，不回绕为错误金额。
 仅支持线性单价，分时折扣、阶梯定价请在业务层处理。
-底层成本价与对用户售价维护两份表即可。
+底层成本价与对用户售价维护两份表即可。可在服务启动或价格表热更新时调用
+`PricingTable.Validate()` 整表校验（范围与搜索双费率互斥），把配置错误挡在计价之前。
 
 #### 配额拦截（QuotaChecker）
 

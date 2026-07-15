@@ -124,6 +124,10 @@ func oraclePricingCost(usage Usage, rate ModelRate) (int64, error) {
 			return 0, ErrInvalidPricing
 		}
 	}
+	// 双搜索费率无条件互斥（validateRate 阶段拒绝，先于用量校验）。
+	if rate.WebSearchPer1K > 0 && rate.GroundedPromptPer1K > 0 {
+		return 0, ErrInvalidPricing
+	}
 	for _, n := range []int{
 		usage.PromptTokens, usage.CompletionTokens, usage.ReasoningTokens,
 		usage.CacheReadTokens, usage.CacheWriteTokens, usage.TotalTokens,
@@ -143,8 +147,6 @@ func oraclePricingCost(usage Usage, rate ModelRate) (int64, error) {
 	searchUnits, searchRate := 0, int64(0)
 	if usage.WebSearchRequests > 0 || usage.WebSearchGroundedPrompts > 0 {
 		switch {
-		case rate.WebSearchPer1K > 0 && rate.GroundedPromptPer1K > 0:
-			return 0, ErrInvalidPricing
 		case rate.WebSearchPer1K > 0:
 			if usage.WebSearchRequests == 0 {
 				return 0, ErrModelNotPriced
