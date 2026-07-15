@@ -4,19 +4,7 @@
 
 ## [Unreleased]
 
-> 建议随本组变更发布 **v2.8.0**（向后兼容的新功能，MINOR）。
-> 兼容性说明：`Usage`、`Tool`、`ModelRate`、`ChatResponse`、`StreamChunk` 新增了字段，
-> 常规 keyed struct literal 调用方不受影响；使用跨包 unkeyed struct literal 构造
-> 这些类型的下游会编译失败，需改为 keyed 写法。
-
 ### Added
-
-- 新增厂商原生联网搜索工具透传：`WebSearchTool` / `WebSearchToolWithOptions` 声明后，Anthropic 映射为 `web_search_20250305` server tool、Gemini 映射为 `google_search`（grounding）；不支持的 provider 返回 `ErrInvalidRequest`，不静默丢弃。当前限制：不能与函数工具混用（Anthropic 服务端工具块尚不支持跨轮往返、Gemini 2.5 系平台不支持该组合），Anthropic 侧亦不能与结构化输出组合，均在客户端返回 `ErrInvalidRequest`；Anthropic 返回 `pause_turn` 时报 `ErrUnsupportedCapability` 明确错误
-- 新增 `SearchMetadata`：搜索查询、来源与 Google Search Suggestions 入口通过 `ChatResponse.Search` 与最终 `StreamChunk.Search` 返回，支撑下游的来源展示与 Gemini 合规要求（回复文本级引用区间暂不透出）
-- `Usage` 新增双口径搜索用量：`WebSearchRequests`（按次数：Anthropic 实际搜索次数 / Gemini 的 query 数）与 `WebSearchGroundedPrompts`（按触发 grounding 的请求：Gemini，0/1）；`ModelRate` 新增 `WebSearchPer1K` 与 `GroundedPromptPer1K` 费率，按平台计费规则二选一配置——双配返回 `ErrInvalidPricing` 防重复计费，全缺或口径与用量不符返回 `ErrModelNotPriced` 防漏账
-- Anthropic 原生 provider 实现 `TokenCounter`：`CountTokens` 调用免费的 `/v1/messages/count_tokens` 端点（官方口径为估算值），适配摘要压缩阈值与额度预检
-- 新增 `CapabilityFile` 与 `CapabilityWebSearch` 能力维度：Anthropic / Gemini 预设标注文件输入与原生搜索能力，切换平台前可用 `ModelCapabilities.Supports` 预检（OpenAI Chat Completions 路径不支持文件输入，故不标注 File）
-- billingstore 参考实现：`usage_record` 流水新增 `web_search_requests` / `web_search_grounded_prompts` 两列（`AutoMigrate` 自动补齐），历史流水可重算与核对搜索费用
 
 ### Changed
 
@@ -27,6 +15,25 @@
 ### Fixed
 
 ### Security
+
+## [2.8.0] - 2026-07-15
+
+> 向后兼容的新功能（MINOR）。
+> 兼容性说明：`Usage`、`Tool`、`ModelRate`、`ChatResponse`、`StreamChunk` 新增了字段，
+> 常规 keyed struct literal 调用方不受影响；使用跨包 unkeyed struct literal 构造
+> 这些类型的下游会编译失败，需改为 keyed 写法。
+
+### Added
+
+- 新增厂商原生联网搜索工具透传：`WebSearchTool` / `WebSearchToolWithOptions` 声明后，Anthropic 映射为 `web_search_20250305` server tool、Gemini 映射为 `google_search`（grounding）；不支持的 provider 返回 `ErrInvalidRequest`，不静默丢弃。当前限制：不能与函数工具混用（Anthropic 服务端工具块尚不支持跨轮往返、Gemini 2.5 系平台不支持该组合），Anthropic 侧亦不能与结构化输出组合，均在客户端返回 `ErrInvalidRequest`；Anthropic 返回 `pause_turn` 时报 `ErrUnsupportedCapability` 明确错误
+- 新增 `SearchMetadata`：搜索查询、来源、Google Search Suggestions 入口与搜索错误通过 `ChatResponse.Search` 与最终 `StreamChunk.Search` 返回，支撑下游的来源展示与 Gemini 合规要求；平台经 HTTP 200 报告的搜索失败（如 `max_uses_exceeded`）进入 `SearchMetadata.Errors`，不静默丢弃（回复文本级引用区间暂不透出）。Anthropic 原生搜索当前仅保证单轮
+- 新增 `PauseTurnError`：Anthropic `stop_reason: "pause_turn"` 以类型化错误返回（`errors.Is` 命中 `ErrUnsupportedCapability`），携带暂停前已产生的 `Usage` 与 `Search`，观测/计费层自动提取用量避免漏账；不可原样重发请求（会二次执行搜索计费）
+- `Usage` 新增双口径搜索用量：`WebSearchRequests`（按次数：Anthropic 实际搜索次数 / Gemini 去空去重后的 query 数）与 `WebSearchGroundedPrompts`（按触发 grounding 的请求：Gemini，0/1）；`ModelRate` 新增 `WebSearchPer1K` 与 `GroundedPromptPer1K` 费率，按平台计费规则二选一配置——双配无条件返回 `ErrInvalidPricing`（配置错误），全缺或口径与用量不符返回 `ErrModelNotPriced` 防漏账
+- 新增 `PricingTable.Validate()`：启动期整表校验费率范围与搜索双费率互斥，把配置错误挡在计价之前
+- Anthropic 原生 provider 实现 `TokenCounter`：`CountTokens` 调用免费的 `/v1/messages/count_tokens` 端点（官方口径为估算值），适配摘要压缩阈值与额度预检
+- 新增 `CapabilityFile` 与 `CapabilityWebSearch` 能力维度：Anthropic / Gemini 预设标注文件输入与原生搜索能力，切换平台前可用 `ModelCapabilities.Supports` 预检（OpenAI Chat Completions 路径不支持文件输入，故不标注 File）
+- billingstore 参考实现：`usage_record` 流水新增 `web_search_requests` / `web_search_grounded_prompts` 两列（`AutoMigrate` 自动补齐），历史流水可重算与核对搜索费用
+- 搜索工具输入约束：重复声明搜索工具、同一 `Tool` 同时设 `Function` 与 `WebSearch`、`ToolChoiceRequired`/`ToolChoiceFunction`/`ToolChoiceNone` 与服务端搜索工具组合、Gemini 搜索叠加 `CandidateCount > 1`，均返回 `ErrInvalidRequest`；纯搜索请求仅接受 `nil`/`ToolChoiceAuto`，Gemini 侧不再下发无意义的 `functionCallingConfig`
 
 ## [2.7.0] - 2026-07-13
 

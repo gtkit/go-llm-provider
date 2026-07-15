@@ -2,4 +2,4 @@
 package llmprovider
 
 // Version is the released module version.
-const Version = "v2.7.0"
+const Version = "v2.8.0"
