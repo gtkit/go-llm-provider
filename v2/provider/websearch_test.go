@@ -249,6 +249,88 @@ func TestStreamPauseTurnBillsThroughRecorder(t *testing.T) {
 	assert.Equal(t, 3, totals.Usage.WebSearchRequests)
 }
 
+func TestStreamWebSearchSuccessBillsThroughRecorder(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"搜索中\"}]},\"groundingMetadata\":{\"webSearchQueries\":[\"go 1.26\",\"go release\"]}}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"，完成。\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":9,\"candidatesTokenCount\":5,\"totalTokenCount\":14}}\n\n")
+	}))
+	t.Cleanup(srv.Close)
+
+	p, err := NewGeminiProvider(NativeProviderConfig{APIKey: "test-key", BaseURL: srv.URL, Model: "gemini-2.5-flash"})
+	require.NoError(t, err)
+
+	// 成功路径的完整计费链路：ChatStream → observedStream → stream_complete →
+	// NewBillingHook → UsageRecorder，搜索双口径用量都必须落到存储。
+	store := NewMemoryUsageStore()
+	billed := WithObservability(p, ObserveOptions{OnEvent: NewBillingHook(store)})
+
+	ctx := WithUserID(t.Context(), "u1")
+	stream, err := billed.ChatStream(ctx, &ChatRequest{
+		Messages: []Message{UserText("搜一下")},
+		Tools:    []Tool{WebSearchTool()},
+	})
+	require.NoError(t, err)
+	for {
+		if _, recvErr := stream.Recv(); recvErr != nil {
+			require.ErrorIs(t, recvErr, io.EOF)
+			break
+		}
+	}
+	require.NoError(t, stream.Close())
+
+	totals, ok := store.UserTotals("u1")
+	require.True(t, ok, "成功的流式搜索用量必须记入计费存储")
+	assert.Equal(t, 9, totals.Usage.PromptTokens)
+	assert.Equal(t, 5, totals.Usage.CompletionTokens)
+	assert.Equal(t, 2, totals.Usage.WebSearchRequests)
+	assert.Equal(t, 1, totals.Usage.WebSearchGroundedPrompts)
+}
+
+func TestWebSearchToolChoiceContract(t *testing.T) {
+	t.Parallel()
+
+	// 纯搜索请求下 nil / Auto 是仅有的合法 ToolChoice：请求成功，
+	// 且 Gemini 不下发只对函数工具有意义的 functionCallingConfig。
+	for _, choice := range []struct {
+		name       string
+		toolChoice ToolChoiceOption
+	}{
+		{"nil", nil},
+		{"auto", ToolChoiceAuto},
+	} {
+		t.Run(choice.name, func(t *testing.T) {
+			t.Parallel()
+
+			var captured map[string]any
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.NoError(t, json.NewDecoder(r.Body).Decode(&captured))
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`))
+			}))
+			t.Cleanup(srv.Close)
+
+			p, err := NewGeminiProvider(NativeProviderConfig{APIKey: "test-key", BaseURL: srv.URL, Model: "gemini-2.5-flash"})
+			require.NoError(t, err)
+
+			_, err = p.Chat(t.Context(), &ChatRequest{
+				Messages:   []Message{UserText("搜一下")},
+				Tools:      []Tool{WebSearchTool()},
+				ToolChoice: choice.toolChoice,
+			})
+			require.NoError(t, err)
+
+			tools, ok := captured["tools"].([]any)
+			require.True(t, ok)
+			require.Len(t, tools, 1)
+			assert.Contains(t, tools[0], "google_search")
+			assert.NotContains(t, captured, "toolConfig", "纯搜索不应下发 functionCallingConfig")
+		})
+	}
+}
+
 func TestObservabilityExtractsUsageFromPauseTurnError(t *testing.T) {
 	t.Parallel()
 
