@@ -6,6 +6,22 @@
 
 ### Added
 
+### Changed
+
+### Deprecated
+
+### Removed
+
+### Fixed
+
+### Security
+
+## [2.9.0] - 2026-07-20
+
+> 向后兼容的新功能（MINOR）。新增导出 API 与能力位，keyed struct literal 调用方不受影响。
+
+### Added
+
 - 新增 `FileService` 文件管理接口（`UploadFile` / `FileContent` / `DeleteFile`）：OpenAI 兼容 provider（含 Azure / Bedrock 构造器）通过类型断言获取，覆盖国内平台"上传文件 → 文档问答"流程；文件操作错误与 Chat 走同一 `ProviderError` 体系。注意 `WithRetry` / `WithMiddlewares` / `NewFallbackProvider` 包装后的 Provider 不透传该接口，需在包装前保留原始句柄
 - 新增 `FileIDSystemMessage`：按阿里百炼 qwen-long 约定构造 `fileid://` 文件引用 system 消息，多文件以英文逗号分隔
 - 新增文件用途常量：`FilePurposeFileExtract`（Moonshot / 千问 / 智谱文档抽取）、`FilePurposeUserData`、`FilePurposeAssistants`、`FilePurposeBatch`
