@@ -18,6 +18,10 @@ const (
 	CapabilityVision Capability = "vision"
 	// CapabilityFile indicates document/file input support (Message ContentTypeFile parts).
 	CapabilityFile Capability = "file"
+	// CapabilityFileUpload 表示平台提供 OpenAI 兼容 Files API（上传/抽取/删除，
+	// 即 FileService 接口对应的平台端点）。注意区分：CapabilityFile 描述消息内
+	// 文件片段的协议映射，CapabilityFileUpload 描述独立的文件管理端点。
+	CapabilityFileUpload Capability = "file_upload"
 	// CapabilityReasoning indicates provider-side reasoning or thinking controls.
 	CapabilityReasoning Capability = "reasoning"
 	// CapabilityEmbedding indicates text embedding support.

@@ -58,6 +58,29 @@ func ExampleFileDataPart() {
 	// brief.pdf
 }
 
+func ExampleFileIDSystemMessage() {
+	msg := provider.FileIDSystemMessage("file-fe-abc", "file-fe-def")
+	fmt.Println(msg.Role)
+	fmt.Println(msg.Content[0].Text)
+	// Output:
+	// system
+	// fileid://file-fe-abc,fileid://file-fe-def
+}
+
+func ExampleFileService() {
+	p, err := provider.NewProviderFromPreset(provider.ProviderMoonshot, "sk-your-key", "")
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+
+	// OpenAI 兼容 provider 通过类型断言获取文件管理接口；
+	// 注意在 WithRetry / WithMiddlewares 包装前保留原始句柄。
+	fs, ok := p.(provider.FileService)
+	fmt.Println(ok, fs != nil)
+	// Output: true true
+}
+
 func ExampleWithCacheControl() {
 	part := provider.WithCacheControl(
 		provider.TextPart("高成本上下文"),

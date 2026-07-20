@@ -46,6 +46,8 @@ var (
 	ErrEmptyEmbeddingInput = errors.New("embedding input is empty")
 	// ErrInvalidEmbedderConfig indicates that EmbedderConfig is missing required fields.
 	ErrInvalidEmbedderConfig = errors.New("invalid embedder config")
+	// ErrNilFileUploadRequest 表示调用方传入了 nil 的文件上传请求。
+	ErrNilFileUploadRequest = errors.New("file upload request is nil")
 	// ErrNilStructuredTarget indicates that GenerateJSONInto received a nil target.
 	ErrNilStructuredTarget = errors.New("structured target is nil")
 	// ErrStructuredDecode indicates that structured response content could not be decoded.
@@ -984,7 +986,7 @@ func buildOpenAIMessage(m Message) (openai.ChatCompletionMessage, error) {
 
 	for _, part := range m.Content {
 		if part.Type == ContentTypeFile {
-			return openai.ChatCompletionMessage{}, fmt.Errorf("%w: openai compatible chat completions do not support file parts", ErrInvalidRequest)
+			return openai.ChatCompletionMessage{}, fmt.Errorf("%w: openai compatible chat completions do not support file parts; upload via FileService and reference the file per platform convention (FileIDSystemMessage or FileContent)", ErrInvalidRequest)
 		}
 	}
 

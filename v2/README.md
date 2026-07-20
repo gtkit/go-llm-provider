@@ -14,6 +14,7 @@ Go 语言统一多模型 LLM 调用库。一套代码接入 OpenAI 以及 DeepSe
 - 支持非流式和流式两种调用模式
 - 完整的 Tool Use / Function Calling 支持，包含自动循环执行的 `RunToolLoop`
 - 厂商原生联网搜索工具透传（`WebSearchTool`，当前映射 Anthropic / Gemini），搜索次数进入统一计费口径
+- OpenAI 兼容 Files API 文件管理（`FileService`：上传 / 内容抽取 / 删除），覆盖 Moonshot、通义千问、智谱的文档问答流程
 - 主包保持轻量，零额外厂商 SDK 依赖；OpenAI 兼容路径复用 `sashabaranov/go-openai`，非兼容路径用标准库 `net/http`
 
 ## 项目结构
@@ -26,6 +27,7 @@ llm-provider/
 ├── provider/
 │   ├── provider.go            # 核心：Provider 接口、Registry、请求/响应、Tool Use 类型
 │   ├── content.go             # Message 多模态 ContentPart 与便捷构造器
+│   ├── files.go               # FileService：OpenAI 兼容 Files API（上传/抽取/删除）
 │   ├── presets.go             # 各平台预设配置（BaseURL + Chat/Embedding 默认模型）
 │   ├── helpers.go             # Chat 便捷函数：SimpleChat、CollectStream
 │   ├── toolrun.go             # RunToolLoop：Tool Use 自动循环执行器
@@ -93,26 +95,28 @@ go get github.com/gtkit/go-llm-provider/v2
 
 ### 能力矩阵
 
-| 平台 | Chat | Streaming | Tools | Structured Output | Vision | File | Reasoning | Embedding | Web Search | 协议 |
-|------|------|-----------|-------|-------------------|--------|------|-----------|-----------|------------|------|
-| DeepSeek | 是 | 是 | 是 | 是 | 否 | 否 | 是 | 否 | 否 | OpenAI 兼容 |
-| 通义千问（百炼） | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 是 | 否 | OpenAI 兼容 |
-| 智谱 AI / GLM | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 是 | 否 | OpenAI 兼容 |
-| 百度千帆 | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 是 | 否 | OpenAI 兼容 |
-| 硅基流动 | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 是 | 否 | OpenAI 兼容 |
-| Moonshot / Kimi | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 否 | 否 | OpenAI 兼容 |
-| OpenAI | 是 | 是 | 是 | 是 | 否 | 否 | 是 | 是 | 否 | OpenAI 兼容 |
-| Anthropic / Claude | 是 | 是 | 是 | 是 | 是 | 是 | 否 | 否 | 是 | 原生 HTTP |
-| Google Gemini | 是 | 是 | 是 | 是 | 是 | 是 | 否 | 是 | 是 | 原生 HTTP |
-| Ollama | 是 | 是 | 否 | 否 | 否 | 否 | 否 | 否 | 否 | 原生 HTTP |
-| xAI / Grok | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 否 | 否 | OpenAI 兼容 |
-| Groq | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 否 | 否 | OpenAI 兼容 |
-| Mistral AI | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 是 | 否 | OpenAI 兼容 |
-| Cohere | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 是 | 否 | OpenAI 兼容 |
-| Azure OpenAI | 是 | 是 | 是 | 是 | 取决于部署模型 | 取决于部署模型 | 取决于部署模型 | 可自定义 | 否 | Azure OpenAI |
-| Amazon Bedrock | 是 | 是 | 是 | 是 | 取决于模型 | 取决于模型 | 取决于模型 | 可自定义 | 否 | OpenAI 兼容 |
+| 平台 | Chat | Streaming | Tools | Structured Output | Vision | File | File Upload | Reasoning | Embedding | Web Search | 协议 |
+|------|------|-----------|-------|-------------------|--------|------|-------------|-----------|-----------|------------|------|
+| DeepSeek | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 是 | 否 | 否 | OpenAI 兼容 |
+| 通义千问（百炼） | 是 | 是 | 是 | 是 | 否 | 否 | 是 | 否 | 是 | 否 | OpenAI 兼容 |
+| 智谱 AI / GLM | 是 | 是 | 是 | 是 | 否 | 否 | 是 | 否 | 是 | 否 | OpenAI 兼容 |
+| 百度千帆 | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 否 | 是 | 否 | OpenAI 兼容 |
+| 硅基流动 | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 否 | 是 | 否 | OpenAI 兼容 |
+| Moonshot / Kimi | 是 | 是 | 是 | 是 | 否 | 否 | 是 | 否 | 否 | 否 | OpenAI 兼容 |
+| OpenAI | 是 | 是 | 是 | 是 | 否 | 否 | 是 | 是 | 是 | 否 | OpenAI 兼容 |
+| Anthropic / Claude | 是 | 是 | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 是 | 原生 HTTP |
+| Google Gemini | 是 | 是 | 是 | 是 | 是 | 是 | 否 | 否 | 是 | 是 | 原生 HTTP |
+| Ollama | 是 | 是 | 否 | 否 | 否 | 否 | 否 | 否 | 否 | 否 | 原生 HTTP |
+| xAI / Grok | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 否 | 否 | 否 | OpenAI 兼容 |
+| Groq | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 否 | 否 | 否 | OpenAI 兼容 |
+| Mistral AI | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 否 | 是 | 否 | OpenAI 兼容 |
+| Cohere | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 否 | 是 | 否 | OpenAI 兼容 |
+| Azure OpenAI | 是 | 是 | 是 | 是 | 取决于部署模型 | 取决于部署模型 | 未验证 | 取决于部署模型 | 可自定义 | 否 | Azure OpenAI |
+| Amazon Bedrock | 是 | 是 | 是 | 是 | 取决于模型 | 取决于模型 | 未验证 | 取决于模型 | 可自定义 | 否 | OpenAI 兼容 |
 
 > 矩阵有两个口径，注意区分：**协议映射能力**（本库把请求字段翻译到该平台协议的能力，如图像 ContentPart 在 OpenAI 兼容平台会映射下发；文件 ContentPart 仅 Anthropic / Gemini 原生路径支持，OpenAI 兼容路径返回 `ErrInvalidRequest`）与**预设默认模型能力**（上表 Vision / File / Reasoning 等列描述的是各 preset 默认模型的已知能力，即 `ModelCapabilitiesFromPreset` 的返回值）。如果覆盖 `Model`，请以具体模型官方文档为准——协议映射仍然生效，模型不支持时由平台返回错误。
+>
+> **File 与 File Upload 是两个独立能力**：File 描述消息内文件片段的协议映射；File Upload（`CapabilityFileUpload`）描述平台是否提供 OpenAI 兼容 Files API（对应 `FileService` 接口，见[文件上传与文档问答](#文件上传与文档问答files-api)）。`FileService` 在所有 OpenAI 兼容 provider 上都可断言获取，实际能否调通取决于平台端点；标"未验证"的平台请以官方文档实测为准。
 
 ### 关于 Claude / Google Gemini
 
@@ -848,7 +852,7 @@ resp, err := p.Chat(ctx, &provider.ChatRequest{
 })
 ```
 
-如果模型支持文件输入，可以使用文件 part。Claude 原生 provider 会把 `FileDataPart` 映射为 document block；Gemini 原生 provider 会把 inline file 映射为 `inline_data`。OpenAI 兼容 Chat Completions 路径目前会对 file part 返回 `ErrInvalidRequest`，避免发送未定义格式。
+如果模型支持文件输入，可以使用文件 part。Claude 原生 provider 会把 `FileDataPart` 映射为 document block；Gemini 原生 provider 会把 inline file 映射为 `inline_data`。OpenAI 兼容 Chat Completions 路径会对 file part 返回 `ErrInvalidRequest`，避免发送未定义格式——OpenAI 兼容平台的文档问答请使用下文的 [Files API 流程](#文件上传与文档问答files-api)。
 
 ```go
 pdfBytes, _ := os.ReadFile("brief.pdf")
@@ -878,6 +882,83 @@ resp, err := claude.Chat(ctx, &provider.ChatRequest{
     },
 })
 ```
+
+### 文件上传与文档问答（Files API）
+
+OpenAI 兼容 Chat Completions 的消息里没有标准的文件片段，国内平台的文档问答走"先上传、再引用"：文件通过平台 Files API 上传，再按各平台约定进入对话。本库在 OpenAI 兼容 provider 上提供 `FileService` 文件管理接口：
+
+```go
+// NewProvider / NewProviderFromPreset / NewAzureOpenAIProvider /
+// NewBedrockOpenAIProvider 返回的 Provider 都实现 FileService
+fs, ok := p.(provider.FileService)
+if !ok {
+    // 原生 provider（Anthropic / Gemini / Ollama）不提供 Files API
+}
+
+type FileService interface {
+    UploadFile(ctx context.Context, req *FileUploadRequest) (*FileObject, error)
+    FileContent(ctx context.Context, fileID string) (string, error)
+    DeleteFile(ctx context.Context, fileID string) error
+}
+```
+
+> 注意：`WithRetry` / `WithMiddlewares` / `NewFallbackProvider` 等包装后的 Provider 不再实现 `FileService`，请在包装前保留原始句柄用于文件操作。平台是否提供 Files API 以能力矩阵 File Upload 列与平台官方文档为准（如 DeepSeek 无此接口，调用会返回平台侧错误）。
+
+**流程一：内容抽取（Moonshot / 智谱）**——上传后用 `FileContent` 拉取平台抽取好的文档文本，作为 system 消息传入：
+
+```go
+fs := p.(provider.FileService)
+
+file, err := fs.UploadFile(ctx, &provider.FileUploadRequest{
+    Filename: "brief.pdf",
+    Data:     pdfBytes,
+    Purpose:  provider.FilePurposeFileExtract,
+})
+if err != nil {
+    log.Fatal(err)
+}
+defer fs.DeleteFile(ctx, file.ID) // 平台限制文件保有量，抽取完成后及时清理
+
+content, err := fs.FileContent(ctx, file.ID) // 平台抽取后的文档文本
+if err != nil {
+    log.Fatal(err)
+}
+
+resp, err := p.Chat(ctx, &provider.ChatRequest{
+    Messages: []provider.Message{
+        provider.SystemText(content),
+        provider.UserText("总结这份文件的要点"),
+    },
+})
+```
+
+**流程二：fileid:// 引用（通义千问 qwen-long）**——上传后把文件 ID 写进 system 消息，由平台侧按需读取，无需拉回全文：
+
+```go
+file, err := fs.UploadFile(ctx, &provider.FileUploadRequest{
+    Filename: "report.docx",
+    Data:     docBytes,
+    Purpose:  provider.FilePurposeFileExtract,
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+resp, err := p.Chat(ctx, &provider.ChatRequest{
+    Model: "qwen-long", // 千问文档问答需使用 qwen-long 系列模型
+    Messages: []provider.Message{
+        provider.FileIDSystemMessage(file.ID), // 多文件：FileIDSystemMessage(id1, id2, ...)
+        provider.UserText("这份报告的结论是什么？"),
+    },
+})
+```
+
+行为约定：
+
+- `FileUploadRequest.Purpose` 必填：国内文档问答平台使用 `FilePurposeFileExtract`；OpenAI 官方按场景选择 `FilePurposeUserData` / `FilePurposeAssistants` / `FilePurposeBatch`
+- 文件操作的错误与 Chat 走同一错误体系（`ProviderError`，可用 `errors.Is(err, provider.ErrAuth)` 等判断类别）
+- 消息内文件片段（`FileDataPart` / `FileURLPart` / `FileIDPart`）仍仅支持 Claude / Gemini 原生路径；OpenAI 兼容路径返回 `ErrInvalidRequest`
+- 切换平台前可用 `ModelCapabilitiesFromPreset(name).Supports(provider.CapabilityFileUpload)` 预检
 
 ### 多模态输出（图像 / 文件）
 
