@@ -126,6 +126,26 @@ var presetCatalog = map[ProviderName]Preset{
 			},
 		},
 	},
+	ProviderArk: {
+		// 火山方舟 OpenAI 兼容端点（豆包等模型）
+		BaseURL:        "https://ark.cn-beijing.volces.com/api/v3",
+		DefaultModel:   "doubao-seed-2-0-pro-260215",
+		EmbeddingModel: "doubao-embedding-text-240515",
+		Capabilities: ModelCapabilities{
+			Provider:       ProviderArk,
+			ChatModel:      "doubao-seed-2-0-pro-260215",
+			EmbeddingModel: "doubao-embedding-text-240515",
+			Capabilities: []Capability{
+				CapabilityChat,
+				CapabilityStreaming,
+				CapabilityTools,
+				CapabilityStructuredOutput,
+				CapabilityReasoning,
+				CapabilityVision,
+				CapabilityEmbedding,
+			},
+		},
+	},
 	ProviderOpenAI: {
 		BaseURL:        "https://api.openai.com/v1",
 		DefaultModel:   "gpt-5.4-mini",

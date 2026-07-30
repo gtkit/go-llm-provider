@@ -1,6 +1,6 @@
 # llm-provider
 
-Go 语言统一多模型 LLM 调用库。一套代码接入 OpenAI 以及 DeepSeek、通义千问、智谱、百度千帆、硅基流动、Moonshot 等 OpenAI 兼容平台。
+Go 语言统一多模型 LLM 调用库。一套代码接入 OpenAI 以及 DeepSeek、通义千问、智谱、百度千帆、硅基流动、Moonshot、火山方舟等 OpenAI 兼容平台。
 
 ## 为什么做这个
 
@@ -80,6 +80,7 @@ go get github.com/gtkit/go-llm-provider/v2
 | 百度千帆 | `qianfan` | `https://qianfan.baidubce.com/v2` | `ernie-4.5-turbo-32k` | `embedding-v1` | [千帆控制台](https://console.bce.baidu.com/qianfan/) |
 | 硅基流动 | `siliconflow` | `https://api.siliconflow.cn/v1` | `deepseek-ai/DeepSeek-V3` | `BAAI/bge-m3` | [siliconflow.cn](https://siliconflow.cn/) |
 | Moonshot / Kimi | `moonshot`（别名：`ProviderKimi`） | `https://api.moonshot.cn/v1` | `kimi-k2-turbo-preview` | — | [platform.moonshot.cn](https://platform.moonshot.cn/) |
+| 火山方舟 / 豆包 | `ark` | `https://ark.cn-beijing.volces.com/api/v3` | `doubao-seed-2-0-pro-260215` | `doubao-embedding-text-240515` | [方舟控制台](https://console.volcengine.com/ark) |
 | OpenAI | `openai` | `https://api.openai.com/v1` | `gpt-5.4-mini` | `text-embedding-3-small` | [platform.openai.com](https://platform.openai.com/) |
 | Anthropic / Claude | `anthropic` | `https://api.anthropic.com` | `claude-sonnet-4-5` | — | [console.anthropic.com](https://console.anthropic.com/) |
 | Google Gemini | `gemini` | `https://generativelanguage.googleapis.com/v1beta` | `gemini-2.5-flash` | `gemini-embedding-001` | [aistudio.google.com](https://aistudio.google.com/) |
@@ -103,6 +104,7 @@ go get github.com/gtkit/go-llm-provider/v2
 | 百度千帆 | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 否 | 是 | 否 | OpenAI 兼容 |
 | 硅基流动 | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 否 | 是 | 否 | OpenAI 兼容 |
 | Moonshot / Kimi | 是 | 是 | 是 | 是 | 否 | 否 | 是 | 否 | 否 | 否 | OpenAI 兼容 |
+| 火山方舟 / 豆包 | 是 | 是 | 是 | 是 | 是 | 否 | 否 | 是 | 是 | 否 | OpenAI 兼容 |
 | OpenAI | 是 | 是 | 是 | 是 | 否 | 否 | 是 | 是 | 是 | 否 | OpenAI 兼容 |
 | Anthropic / Claude | 是 | 是 | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 是 | 原生 HTTP |
 | Google Gemini | 是 | 是 | 是 | 是 | 是 | 是 | 否 | 否 | 是 | 是 | 原生 HTTP |
@@ -953,6 +955,8 @@ resp, err := p.Chat(ctx, &provider.ChatRequest{
 })
 ```
 
+**方舟（Ark）适用边界**——方舟提供 OpenAI 兼容的 `/files` 端点（上传 / 元数据检索 / 列表 / 删除，purpose 仅接受 `user_data` / `agent`），`UploadFile` / `DeleteFile` 协议上可以调通；但平台没有 `/files/{id}/content` 内容抽取端点（`FileContent` 会返回平台侧错误），Chat Completions 消息中也无法引用已上传的文件——方舟的文件输入挂在其 Responses API 下，本库不覆盖。因此上述两种文档问答流程均不适用于方舟，能力矩阵中方舟的 File Upload 列标注"否"即此含义。
+
 行为约定：
 
 - `FileUploadRequest.Purpose` 必填：国内文档问答平台使用 `FilePurposeFileExtract`；OpenAI 官方按场景选择 `FilePurposeUserData` / `FilePurposeAssistants` / `FilePurposeBatch`
@@ -1015,6 +1019,7 @@ fmt.Println(resp.Usage.ReasoningTokens)
 
 - DeepSeek：优先识别 `Enabled`
 - OpenAI：优先识别 `Effort`
+- 火山方舟：`Enabled` 映射请求体顶层 `thinking` 字段（`enabled` / `disabled`，nil 时跟随平台默认的 auto），`Effort` 映射 `reasoning_effort`
 - 其他 OpenAI 兼容 provider：当前静默忽略，不报错
 
 ### Structured Output（结构化输出）
@@ -2321,6 +2326,18 @@ curl -X POST http://localhost:8080/chat \
 | `kimi-k2-thinking` | K2 思考模式，深度推理 |
 | `kimi-latest` | 自动选择最新模型 |
 | `moonshot-v1-128k` | 经典 V1 系列 128K |
+
+**火山方舟 / 豆包**
+
+| 模型名 | 说明 |
+|--------|------|
+| `doubao-seed-2-0-pro-260215` | Seed 2.0 Pro，深度推理与长链任务 |
+| `doubao-seed-2-0-lite-260215` | Seed 2.0 Lite，性能/成本平衡，全模态理解 |
+| `doubao-seed-2-0-mini-260215` | Seed 2.0 Mini，低延迟高并发 |
+| `doubao-seed-1-8-251228` | Seed 1.8 |
+| `doubao-embedding-text-240515` | 文本向量化 |
+
+> 方舟的 `model` 同时接受模型 ID（如上）与推理接入点 ID（`ep-` 开头），两种写法都可直接传入 `Model` 字段。
 
 **OpenAI**
 

@@ -66,6 +66,7 @@ func TestNewProviderFromPresetUsesApprovedDefaultModels(t *testing.T) {
 		{name: "qianfan", providerName: ProviderQianfan, expectedModel: "ernie-4.5-turbo-32k"},
 		{name: "siliconflow", providerName: ProviderSiliconFlow, expectedModel: "deepseek-ai/DeepSeek-V3"},
 		{name: "moonshot", providerName: ProviderMoonshot, expectedModel: "kimi-k2-turbo-preview"},
+		{name: "ark", providerName: ProviderArk, expectedModel: "doubao-seed-2-0-pro-260215"},
 		{name: "openai", providerName: ProviderOpenAI, expectedModel: "gpt-5.4-mini"},
 		{name: "xai", providerName: ProviderXAI, expectedModel: "grok-4-1-fast-non-reasoning"},
 		{name: "groq", providerName: ProviderGroq, expectedModel: "llama-3.3-70b-versatile"},

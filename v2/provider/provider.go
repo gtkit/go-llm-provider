@@ -147,6 +147,7 @@ const (
 	ProviderQianfan     ProviderName = "qianfan"     // 百度千帆 (OpenAI 兼容 V2)
 	ProviderSiliconFlow ProviderName = "siliconflow" // 硅基流动
 	ProviderMoonshot    ProviderName = "moonshot"    // Moonshot / Kimi
+	ProviderArk         ProviderName = "ark"         // 火山方舟 / 豆包，OpenAI 兼容
 	ProviderKimi        ProviderName = ProviderMoonshot
 	ProviderOpenAI      ProviderName = "openai"    // 原版 OpenAI，兼容自部署
 	ProviderAnthropic   ProviderName = "anthropic" // Anthropic Claude native Messages API
@@ -663,11 +664,16 @@ func NewProvider(cfg ProviderConfig) (Provider, error) {
 	if cfg.OrgID != "" {
 		ocfg.OrgID = cfg.OrgID
 	}
-	if cfg.HTTPClient == nil {
-		ocfg.HTTPClient = DefaultHTTPClient()
-	} else {
-		ocfg.HTTPClient = cfg.HTTPClient
+	httpClient := cfg.HTTPClient
+	if httpClient == nil {
+		httpClient = DefaultHTTPClient()
 	}
+	if cfg.Name == ProviderArk {
+		// 方舟的 thinking 开关是 go-openai 无法表达的顶层扩展字段，
+		// 通过包装 HTTPDoer 在发送前注入（见 ark.go）。
+		httpClient = &arkThinkingDoer{next: httpClient}
+	}
+	ocfg.HTTPClient = httpClient
 
 	return &openaiProvider{
 		name:   cfg.Name,
@@ -705,6 +711,7 @@ func (p *openaiProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRespo
 		return nil, err
 	}
 
+	ctx = arkThinkingContext(ctx, p.name, req.Thinking)
 	resp, err := p.client.CreateChatCompletion(ctx, oReq)
 	if err != nil {
 		return nil, WrapProviderError(p.name, err)
@@ -759,6 +766,7 @@ func (p *openaiProvider) ChatStream(ctx context.Context, req *ChatRequest) (*Str
 		oReq.StreamOptions = &openai.StreamOptions{IncludeUsage: true}
 	}
 
+	ctx = arkThinkingContext(ctx, p.name, req.Thinking)
 	stream, err := p.client.CreateChatCompletionStream(ctx, oReq)
 	if err != nil {
 		return nil, WrapProviderError(p.name, err)
@@ -935,6 +943,11 @@ func applyThinking(req *openai.ChatCompletionRequest, providerName ProviderName,
 	}
 
 	if providerName == ProviderOpenAI && thinking.Effort != "" {
+		req.ReasoningEffort = thinking.Effort
+	}
+
+	// 方舟支持顶层 reasoning_effort 字段（Enabled 的注入见 ark.go）。
+	if providerName == ProviderArk && thinking.Effort != "" {
 		req.ReasoningEffort = thinking.Effort
 	}
 }
