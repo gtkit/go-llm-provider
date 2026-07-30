@@ -1019,7 +1019,7 @@ fmt.Println(resp.Usage.ReasoningTokens)
 
 - DeepSeek：优先识别 `Enabled`
 - OpenAI：优先识别 `Effort`
-- 火山方舟：`Enabled` 映射请求体顶层 `thinking` 字段（`enabled` / `disabled`，nil 时跟随平台默认的 auto），`Effort` 映射 `reasoning_effort`
+- 火山方舟：`Enabled` 映射请求体顶层 `thinking` 字段（`enabled` / `disabled`，nil 时不下发该字段，由方舟按模型的默认行为决定），`Effort` 映射 `reasoning_effort`。两者互相独立：同时设置 `Enabled: false` 与非空 `Effort` 时，`thinking.disabled` 与 `reasoning_effort` 都会原样下发，本库不做取舍，最终以方舟侧的裁决为准
 - 其他 OpenAI 兼容 provider：当前静默忽略，不报错
 
 ### Structured Output（结构化输出）

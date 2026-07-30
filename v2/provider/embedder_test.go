@@ -1071,6 +1071,7 @@ func TestPresetsEmbeddingModelDefaults(t *testing.T) {
 		ProviderZhipu:       "embedding-3",
 		ProviderQianfan:     "embedding-v1",
 		ProviderSiliconFlow: "BAAI/bge-m3",
+		ProviderArk:         "doubao-embedding-text-240515",
 		ProviderDeepSeek:    "", // 明确无 embedding 模型
 		ProviderMoonshot:    "", // 明确无 embedding 模型
 		ProviderAnthropic:   "", // 明确无 embedding 模型

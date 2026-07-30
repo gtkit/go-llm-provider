@@ -7,7 +7,7 @@
 ### Added
 
 - 新增火山方舟（Ark）平台预设 `ProviderArk`：预置 OpenAI 兼容端点 `https://ark.cn-beijing.volces.com/api/v3`、默认 Chat 模型 `doubao-seed-2-0-pro-260215` 与 embedding 模型 `doubao-embedding-text-240515`，传 APIKey 即可通过 `NewProviderFromPreset` / `NewEmbedderFromPreset` / `QuickRegistry` 接入；`Model` 同时接受方舟模型 ID 与推理接入点 ID（`ep-` 开头）
-- `Thinking` 现已映射方舟深度思考控制：`Enabled` 下发请求体顶层 `thinking` 字段（`enabled` / `disabled`，nil 跟随平台默认），`Effort` 下发 `reasoning_effort`；非流式与流式调用均生效
+- `Thinking` 现已映射方舟深度思考控制：`Enabled` 下发请求体顶层 `thinking` 字段（`enabled` / `disabled`，nil 时不下发该字段，由方舟按模型的默认行为决定），`Effort` 下发 `reasoning_effort`；两者互相独立下发，本库不做取舍；非流式与流式调用均生效
 
 ### Changed
 

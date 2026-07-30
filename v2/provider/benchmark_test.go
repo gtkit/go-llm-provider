@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"io"
+	"strings"
 	"testing"
 )
 
@@ -150,5 +151,33 @@ func BenchmarkAnthropicStreamChunk(b *testing.B) {
 		if _, ok, err := anthropicStreamChunk(frame, state); err != nil || !ok {
 			b.Fatal("unexpected parse result")
 		}
+	}
+}
+
+// BenchmarkInjectArkThinking 基准化方舟 thinking 注入热路径：显式设置 Enabled 的
+// 每次请求都会执行一次，请求体越大（长上下文、base64 图片）越要避免全量解析重编码。
+func BenchmarkInjectArkThinking(b *testing.B) {
+	const prefix = `{"model":"doubao-seed-2-0-pro-260215","messages":[{"role":"user","content":`
+
+	benchmarks := []struct {
+		name string
+		body []byte
+	}{
+		{name: "small", body: []byte(prefix + `"你好"}]}`)},
+		{name: "large_context", body: []byte(prefix + `"` + strings.Repeat("这是一段用于压测长上下文的中文文本。", 2000) + `"}]}`)},
+		{name: "image_part", body: []byte(prefix + `[{"type":"image_url","image_url":{"url":"data:image/png;base64,` +
+			strings.Repeat("iVBORw0KGgoAAAANSUhEUg", 20000) + `"}}]}]}`)},
+	}
+
+	for _, bm := range benchmarks {
+		b.Run(bm.name, func(b *testing.B) {
+			b.ReportAllocs()
+			b.SetBytes(int64(len(bm.body)))
+			for b.Loop() {
+				if _, err := injectArkThinking(bm.body, arkThinkingTypeEnabled); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }
