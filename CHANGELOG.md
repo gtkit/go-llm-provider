@@ -6,13 +6,7 @@
 
 ### Added
 
-- 新增内置熔断器 `Breaker`（与 v2 同源回移）：滑动窗口失败计数达阈值即跳闸，冷却期内请求以 `ErrBreakerOpen` 在本地快速失败、不发往平台；冷却到期放行半开探测，探测成功即闭合、失败则冷却时长翻倍（上限 `MaxOpenDuration`）。配套 `WithBreaker` / `BreakerMiddleware` / `BreakerStreamMiddleware` / `WithEmbedderBreaker` / `BreakerEmbedMiddleware`，`State()`、`Stats()`、`Reset()` 供健康检查与人工放行使用
-- 新增加权负载均衡 `BalancedProvider`（与 v2 同源回移）：按权重把流量分摊到多个成员（多 key 分摊配额、多地域就近、按成本混流），支持平滑加权轮询、加权随机、加权最少在途三种策略；成员可各带独立熔断器，熔断打开的成员自动被跳过并在冷却到期后恢复接流；`Stats()` 暴露每个成员的权重、在途数与熔断状态
-- 新增 sentinel：`ErrBreakerOpen`、`ErrNilBreaker`、`ErrInvalidBalanceStrategy`
-
 ### Changed
-
-- 降级链 `FallbackProvider` 的默认切换判定从"仅平台侧可重试错误"扩展为"平台侧可重试错误 + `ErrBreakerOpen`"：熔断打开意味着当前成员正在冷却，留在原地重试必然继续失败。新错误只在使用内置熔断器后才可能出现，既有调用方行为不变；显式传入 `FallbackOptions.ShouldFallback` 的调用方完全不受影响
 
 ### Deprecated
 
@@ -21,6 +15,18 @@
 ### Fixed
 
 ### Security
+
+## [1.6.0] - 2026-08-21
+
+### Added
+
+- 新增内置熔断器 `Breaker`（与 v2 同源回移）：滑动窗口失败计数达阈值即跳闸，冷却期内请求以 `ErrBreakerOpen` 在本地快速失败、不发往平台；冷却到期放行半开探测，探测成功即闭合、失败则冷却时长翻倍（上限 `MaxOpenDuration`）。配套 `WithBreaker` / `BreakerMiddleware` / `BreakerStreamMiddleware` / `WithEmbedderBreaker` / `BreakerEmbedMiddleware`，`State()`、`Stats()`、`Reset()` 供健康检查与人工放行使用
+- 新增加权负载均衡 `BalancedProvider`（与 v2 同源回移）：按权重把流量分摊到多个成员（多 key 分摊配额、多地域就近、按成本混流），支持平滑加权轮询、加权随机、加权最少在途三种策略；成员可各带独立熔断器，熔断打开的成员自动被跳过并在冷却到期后恢复接流；`Stats()` 暴露每个成员的权重、在途数与熔断状态
+- 新增 sentinel：`ErrBreakerOpen`、`ErrNilBreaker`、`ErrInvalidBalanceStrategy`
+
+### Changed
+
+- 降级链 `FallbackProvider` 的默认切换判定从"仅平台侧可重试错误"扩展为"平台侧可重试错误 + `ErrBreakerOpen`"：熔断打开意味着当前成员正在冷却，留在原地重试必然继续失败。新错误只在使用内置熔断器后才可能出现，既有调用方行为不变；显式传入 `FallbackOptions.ShouldFallback` 的调用方完全不受影响
 
 ## [1.5.0] - 2026-07-10
 
