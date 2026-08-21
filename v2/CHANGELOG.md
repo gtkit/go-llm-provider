@@ -6,6 +6,22 @@
 
 ### Added
 
+### Changed
+
+### Deprecated
+
+### Removed
+
+### Fixed
+
+### Security
+
+## [2.10.0] - 2026-08-21
+
+> 向后兼容的新功能（MINOR）。新增导出 API 与能力位，keyed struct literal 调用方不受影响。
+
+### Added
+
 - 新增火山方舟（Ark）平台预设 `ProviderArk`：预置 OpenAI 兼容端点 `https://ark.cn-beijing.volces.com/api/v3`、默认 Chat 模型 `doubao-seed-2-0-pro-260215` 与 embedding 模型 `doubao-embedding-text-240515`，传 APIKey 即可通过 `NewProviderFromPreset` / `NewEmbedderFromPreset` / `QuickRegistry` 接入；`Model` 同时接受方舟模型 ID 与推理接入点 ID（`ep-` 开头）
 - `Thinking` 现已映射方舟深度思考控制：`Enabled` 下发请求体顶层 `thinking` 字段（`enabled` / `disabled`，nil 时不下发该字段，由方舟按模型的默认行为决定），`Effort` 下发 `reasoning_effort`；两者互相独立下发，本库不做取舍；非流式与流式调用均生效
 - 新增内置熔断器 `Breaker`：滑动窗口失败计数达阈值即跳闸，冷却期内请求以 `ErrBreakerOpen` 在本地快速失败、不发往平台；冷却到期放行半开探测，探测成功即闭合、失败则冷却时长翻倍（上限 `MaxOpenDuration`）。配套 `WithBreaker` / `BreakerMiddleware` / `BreakerStreamMiddleware` / `WithEmbedderBreaker` / `BreakerEmbedMiddleware`，`State()`、`Stats()`、`Reset()` 供健康检查与人工放行使用
