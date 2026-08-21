@@ -104,6 +104,36 @@ var (
 	// ErrInvalidPricing 表示 PricingTable 中的费率或传入的用量数据非法，
 	// 包括负值、费率越界、token 子集关系不成立或最终金额溢出。
 	ErrInvalidPricing = errors.New("invalid pricing rate or usage")
+
+	// ErrBreakerOpen 表示熔断器处于打开状态，请求未发往平台。
+	ErrBreakerOpen = errors.New("circuit breaker is open")
+
+	// ErrNilBreaker 表示调用方传入了 nil 的熔断器。
+	ErrNilBreaker = errors.New("breaker is nil")
+
+	// ErrLocalRateLimited 表示请求被客户端侧限流器拦下，未发往平台。
+	// 与平台回传的 ErrRateLimit 区分：后者是平台已经拒绝了请求。
+	ErrLocalRateLimited = errors.New("local rate limit exceeded")
+
+	// ErrNilRateLimiter 表示调用方传入了 nil 的限流器。
+	ErrNilRateLimiter = errors.New("rate limiter is nil")
+
+	// ErrInvalidBalanceStrategy 表示 BalanceOptions.Strategy 取值不被支持。
+	ErrInvalidBalanceStrategy = errors.New("invalid balance strategy")
+
+	// ErrNilPricingRegistry 表示在 nil 的 *PricingRegistry 上执行了替换操作。
+	ErrNilPricingRegistry = errors.New("pricing registry is nil")
+
+	// ErrNilReranker 表示调用方传入了 nil 的 Reranker。
+	ErrNilReranker = errors.New("reranker is nil")
+	// ErrNilRerankRequest 表示调用方传入了 nil 的重排序请求。
+	ErrNilRerankRequest = errors.New("rerank request is nil")
+	// ErrEmptyRerankQuery 表示 RerankRequest.Query 为空。
+	ErrEmptyRerankQuery = errors.New("rerank query is empty")
+	// ErrEmptyRerankDocuments 表示 RerankRequest.Documents 为空。
+	ErrEmptyRerankDocuments = errors.New("rerank documents are empty")
+	// ErrInvalidRerankerConfig 表示 RerankerConfig 缺少必填字段。
+	ErrInvalidRerankerConfig = errors.New("invalid reranker config")
 )
 
 func providerIsNil(p Provider) bool {

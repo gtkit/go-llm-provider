@@ -1,0 +1,526 @@
+package provider
+
+import (
+	"context"
+	"errors"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// countingProvider 记录调用次数，并按 chat 回调决定成功或失败。
+func countingProvider(name ProviderName, counter *atomic.Int64, err error) *stubProvider {
+	return &stubProvider{
+		name: name,
+		chat: func(context.Context, *ChatRequest) (*ChatResponse, error) {
+			counter.Add(1)
+			if err != nil {
+				return nil, err
+			}
+			return &ChatResponse{Content: string(name)}, nil
+		},
+		chatStream: func(context.Context, *ChatRequest) (*StreamReader, error) {
+			counter.Add(1)
+			if err != nil {
+				return nil, err
+			}
+			return NewStreamReader(func() (*StreamChunk, error) {
+				return &StreamChunk{Delta: string(name), FinishReason: "stop"}, nil
+			}, func() error { return nil }), nil
+		},
+	}
+}
+
+func chatRequest() *ChatRequest {
+	return &ChatRequest{Messages: []Message{{Role: RoleUser, Content: "hi"}}}
+}
+
+func TestBalancedProviderSmoothWeightedDistribution(t *testing.T) {
+	t.Parallel()
+
+	var a, bCount atomic.Int64
+	lb, err := NewBalancedProvider(
+		BalanceMember{Provider: countingProvider(ProviderDeepSeek, &a, nil), Weight: 3},
+		BalanceMember{Provider: countingProvider(ProviderZhipu, &bCount, nil), Weight: 1},
+	)
+	require.NoError(t, err)
+
+	for range 8 {
+		_, err := lb.Chat(t.Context(), chatRequest())
+		require.NoError(t, err)
+	}
+
+	assert.EqualValues(t, 6, a.Load())
+	assert.EqualValues(t, 2, bCount.Load())
+}
+
+func TestBalancedProviderSmoothWeightedOrderIsSpread(t *testing.T) {
+	t.Parallel()
+
+	var order []ProviderName
+	var mu sync.Mutex
+	record := func(name ProviderName) *stubProvider {
+		return &stubProvider{
+			name: name,
+			chat: func(context.Context, *ChatRequest) (*ChatResponse, error) {
+				mu.Lock()
+				order = append(order, name)
+				mu.Unlock()
+				return &ChatResponse{Content: string(name)}, nil
+			},
+		}
+	}
+
+	lb, err := NewBalancedProvider(
+		BalanceMember{Provider: record(ProviderDeepSeek), Weight: 3},
+		BalanceMember{Provider: record(ProviderZhipu), Weight: 1},
+	)
+	require.NoError(t, err)
+
+	for range 4 {
+		_, err := lb.Chat(t.Context(), chatRequest())
+		require.NoError(t, err)
+	}
+
+	// 平滑加权轮询把低权重成员插在中间，而非攒到最后连续命中。
+	assert.Equal(t, []ProviderName{ProviderDeepSeek, ProviderDeepSeek, ProviderZhipu, ProviderDeepSeek}, order)
+}
+
+func TestBalancedProviderEqualWeightsAlternate(t *testing.T) {
+	t.Parallel()
+
+	var a, bCount atomic.Int64
+	lb, err := NewBalancedProvider(
+		BalanceMember{Provider: countingProvider(ProviderDeepSeek, &a, nil)},
+		BalanceMember{Provider: countingProvider(ProviderZhipu, &bCount, nil)},
+	)
+	require.NoError(t, err)
+
+	for range 10 {
+		_, err := lb.Chat(t.Context(), chatRequest())
+		require.NoError(t, err)
+	}
+
+	assert.EqualValues(t, 5, a.Load())
+	assert.EqualValues(t, 5, bCount.Load())
+}
+
+func TestBalancedProviderFailsOverToNextMember(t *testing.T) {
+	t.Parallel()
+
+	var a, bCount atomic.Int64
+	lb, err := NewBalancedProvider(
+		BalanceMember{Provider: countingProvider(ProviderDeepSeek, &a, retryableErr()), Weight: 10},
+		BalanceMember{Provider: countingProvider(ProviderZhipu, &bCount, nil), Weight: 1},
+	)
+	require.NoError(t, err)
+
+	resp, err := lb.Chat(t.Context(), chatRequest())
+	require.NoError(t, err)
+	assert.Equal(t, string(ProviderZhipu), resp.Content)
+	assert.EqualValues(t, 1, a.Load())
+	assert.EqualValues(t, 1, bCount.Load())
+}
+
+func TestBalancedProviderDoesNotFailOverOnNonRetryableError(t *testing.T) {
+	t.Parallel()
+
+	var a, bCount atomic.Int64
+	lb, err := NewBalancedProvider(
+		BalanceMember{Provider: countingProvider(ProviderDeepSeek, &a, nonRetryableErr()), Weight: 10},
+		BalanceMember{Provider: countingProvider(ProviderZhipu, &bCount, nil), Weight: 1},
+	)
+	require.NoError(t, err)
+
+	_, err = lb.Chat(t.Context(), chatRequest())
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrInvalidRequest)
+	assert.EqualValues(t, 1, a.Load())
+	assert.EqualValues(t, 0, bCount.Load())
+}
+
+func TestBalancedProviderAggregatesAllErrors(t *testing.T) {
+	t.Parallel()
+
+	var a, bCount atomic.Int64
+	lb, err := NewBalancedProvider(
+		BalanceMember{Provider: countingProvider(ProviderDeepSeek, &a, retryableErr())},
+		BalanceMember{Provider: countingProvider(ProviderZhipu, &bCount, retryableErr())},
+	)
+	require.NoError(t, err)
+
+	_, err = lb.Chat(t.Context(), chatRequest())
+	require.Error(t, err)
+	require.ErrorContains(t, err, string(ProviderDeepSeek))
+	require.ErrorContains(t, err, string(ProviderZhipu))
+	assert.EqualValues(t, 1, a.Load())
+	assert.EqualValues(t, 1, bCount.Load())
+}
+
+func TestBalancedProviderMaxAttemptsLimitsFailover(t *testing.T) {
+	t.Parallel()
+
+	var a, bCount atomic.Int64
+	lb, err := NewBalancedProviderWithOptions([]BalanceMember{
+		{Provider: countingProvider(ProviderDeepSeek, &a, retryableErr())},
+		{Provider: countingProvider(ProviderZhipu, &bCount, nil)},
+	}, BalanceOptions{MaxAttempts: 1})
+	require.NoError(t, err)
+
+	_, err = lb.Chat(t.Context(), chatRequest())
+	require.Error(t, err)
+	assert.EqualValues(t, 1, a.Load())
+	assert.EqualValues(t, 0, bCount.Load(), "MaxAttempts=1 时不做故障转移")
+}
+
+func TestBalancedProviderStopsOnCanceledContext(t *testing.T) {
+	t.Parallel()
+
+	var a, bCount atomic.Int64
+	lb, err := NewBalancedProvider(
+		BalanceMember{Provider: &stubProvider{
+			name: ProviderDeepSeek,
+			chat: func(context.Context, *ChatRequest) (*ChatResponse, error) {
+				a.Add(1)
+				return nil, retryableErr()
+			},
+		}},
+		BalanceMember{Provider: countingProvider(ProviderZhipu, &bCount, nil)},
+	)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	_, err = lb.Chat(ctx, chatRequest())
+	require.Error(t, err)
+	assert.EqualValues(t, 0, bCount.Load(), "ctx 已取消时不再尝试后续成员")
+}
+
+func TestBalancedProviderSkipsTrippedMember(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	breaker := newBreakerWithClock(BreakerOptions{
+		Name:             "primary",
+		FailureThreshold: 1,
+		OpenDuration:     time.Minute,
+	}, clock.Now)
+
+	var a, bCount atomic.Int64
+	lb, err := NewBalancedProvider(
+		BalanceMember{
+			Provider: countingProvider(ProviderDeepSeek, &a, retryableErr()),
+			Weight:   9,
+			Breaker:  breaker,
+		},
+		BalanceMember{Provider: countingProvider(ProviderZhipu, &bCount, nil), Weight: 1},
+	)
+	require.NoError(t, err)
+
+	// 第一次调用打到主成员并失败，主成员随即熔断。
+	resp, err := lb.Chat(t.Context(), chatRequest())
+	require.NoError(t, err)
+	require.Equal(t, string(ProviderZhipu), resp.Content)
+	require.Equal(t, BreakerOpen, breaker.State())
+	require.EqualValues(t, 1, a.Load())
+
+	// 熔断期内主成员不再被真正调用，流量全部落到备用成员。
+	for range 5 {
+		resp, err := lb.Chat(t.Context(), chatRequest())
+		require.NoError(t, err)
+		require.Equal(t, string(ProviderZhipu), resp.Content)
+	}
+	assert.EqualValues(t, 1, a.Load(), "熔断期内不应触达主成员")
+	assert.EqualValues(t, 6, bCount.Load())
+
+	// 冷却到期后放行探测。
+	clock.Advance(time.Minute)
+	_, err = lb.Chat(t.Context(), chatRequest())
+	require.NoError(t, err)
+	assert.EqualValues(t, 2, a.Load())
+}
+
+func TestBalancedProviderAllMembersTrippedReturnsBreakerOpen(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	var a, bCount atomic.Int64
+	members := []BalanceMember{
+		{
+			Provider: countingProvider(ProviderDeepSeek, &a, retryableErr()),
+			Breaker:  newBreakerWithClock(BreakerOptions{FailureThreshold: 1, OpenDuration: time.Hour}, clock.Now),
+		},
+		{
+			Provider: countingProvider(ProviderZhipu, &bCount, retryableErr()),
+			Breaker:  newBreakerWithClock(BreakerOptions{FailureThreshold: 1, OpenDuration: time.Hour}, clock.Now),
+		},
+	}
+	lb, err := NewBalancedProvider(members...)
+	require.NoError(t, err)
+
+	_, err = lb.Chat(t.Context(), chatRequest())
+	require.Error(t, err)
+
+	_, err = lb.Chat(t.Context(), chatRequest())
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrBreakerOpen)
+	assert.EqualValues(t, 1, a.Load())
+	assert.EqualValues(t, 1, bCount.Load())
+}
+
+func TestBalancedProviderLeastPendingPrefersIdleMember(t *testing.T) {
+	t.Parallel()
+
+	release := make(chan struct{})
+	entered := make(chan struct{}, 1)
+	var slow, fast atomic.Int64
+
+	lb, err := NewBalancedProviderWithOptions([]BalanceMember{
+		{Provider: &stubProvider{
+			name: ProviderDeepSeek,
+			chat: func(context.Context, *ChatRequest) (*ChatResponse, error) {
+				slow.Add(1)
+				entered <- struct{}{}
+				<-release
+				return &ChatResponse{Content: "slow"}, nil
+			},
+		}},
+		{Provider: countingProvider(ProviderZhipu, &fast, nil)},
+	}, BalanceOptions{Strategy: BalanceLeastPending})
+	require.NoError(t, err)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+
+		_, chatErr := lb.Chat(t.Context(), chatRequest())
+		assert.NoError(t, chatErr)
+	}()
+
+	<-entered
+	// 慢成员在途，下一次调用应落到空闲成员。
+	resp, err := lb.Chat(t.Context(), chatRequest())
+	require.NoError(t, err)
+	assert.Equal(t, string(ProviderZhipu), resp.Content)
+
+	close(release)
+	<-done
+	assert.EqualValues(t, 1, slow.Load())
+	assert.EqualValues(t, 1, fast.Load())
+}
+
+func TestBalancedProviderWeightedRandomFollowsWeights(t *testing.T) {
+	t.Parallel()
+
+	var a, bCount atomic.Int64
+	lb, err := NewBalancedProviderWithOptions([]BalanceMember{
+		{Provider: countingProvider(ProviderDeepSeek, &a, nil), Weight: 9},
+		{Provider: countingProvider(ProviderZhipu, &bCount, nil), Weight: 1},
+	}, BalanceOptions{Strategy: BalanceWeightedRandom})
+	require.NoError(t, err)
+
+	const rounds = 3000
+	for range rounds {
+		_, err := lb.Chat(t.Context(), chatRequest())
+		require.NoError(t, err)
+	}
+
+	require.EqualValues(t, rounds, a.Load()+bCount.Load())
+	// 期望 9:1，放宽到 [80%, 98%] 以避免偶发抖动导致的 flaky。
+	ratio := float64(a.Load()) / float64(rounds)
+	assert.Greater(t, ratio, 0.80)
+	assert.Less(t, ratio, 0.98)
+}
+
+func TestBalancedProviderStreamFailsOver(t *testing.T) {
+	t.Parallel()
+
+	var a, bCount atomic.Int64
+	lb, err := NewBalancedProvider(
+		BalanceMember{Provider: countingProvider(ProviderDeepSeek, &a, retryableErr()), Weight: 10},
+		BalanceMember{Provider: countingProvider(ProviderZhipu, &bCount, nil), Weight: 1},
+	)
+	require.NoError(t, err)
+
+	stream, err := lb.ChatStream(t.Context(), chatRequest())
+	require.NoError(t, err)
+	defer stream.Close()
+
+	chunk, err := stream.Recv()
+	require.NoError(t, err)
+	assert.Equal(t, string(ProviderZhipu), chunk.Delta)
+}
+
+func TestBalancedProviderStats(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	breaker := newBreakerWithClock(BreakerOptions{Name: "primary", FailureThreshold: 1}, clock.Now)
+	var a, bCount atomic.Int64
+	lb, err := NewBalancedProvider(
+		BalanceMember{Provider: countingProvider(ProviderDeepSeek, &a, nil), Weight: 3, Breaker: breaker},
+		BalanceMember{Provider: countingProvider(ProviderZhipu, &bCount, nil)},
+	)
+	require.NoError(t, err)
+
+	stats := lb.Stats()
+	require.Len(t, stats, 2)
+	assert.Equal(t, ProviderDeepSeek, stats[0].Provider)
+	assert.Equal(t, 3, stats[0].Weight)
+	assert.Equal(t, 0, stats[0].Pending)
+	assert.Equal(t, "primary", stats[0].Breaker.Name)
+	assert.Equal(t, BreakerClosed, stats[0].Breaker.State)
+	assert.Equal(t, 1, stats[1].Weight, "未设置权重按 1 计")
+	assert.Equal(t, BreakerClosed, stats[1].Breaker.State, "未配置熔断器时报告闭合")
+}
+
+func TestBalancedProviderNameAndNilReceiver(t *testing.T) {
+	t.Parallel()
+
+	var a atomic.Int64
+	lb, err := NewBalancedProvider(
+		BalanceMember{Provider: countingProvider(ProviderDeepSeek, &a, nil)},
+		BalanceMember{Provider: countingProvider(ProviderZhipu, &a, nil)},
+	)
+	require.NoError(t, err)
+
+	assert.Equal(t, ProviderDeepSeek, lb.Name())
+
+	var nilLB *BalancedProvider
+	assert.Empty(t, nilLB.Name())
+	assert.Nil(t, nilLB.Stats())
+	_, err = nilLB.Chat(t.Context(), chatRequest())
+	require.ErrorIs(t, err, ErrNilProvider)
+	_, err = nilLB.ChatStream(t.Context(), chatRequest())
+	require.ErrorIs(t, err, ErrNilProvider)
+}
+
+func TestNewBalancedProviderValidatesInput(t *testing.T) {
+	t.Parallel()
+
+	_, err := NewBalancedProvider()
+	require.ErrorIs(t, err, ErrNilProvider)
+
+	_, err = NewBalancedProvider(BalanceMember{Provider: nil})
+	require.ErrorIs(t, err, ErrNilProvider)
+
+	var typedNil *openaiProvider
+	_, err = NewBalancedProvider(BalanceMember{Provider: typedNil})
+	require.NoError(t, err, "typed nil 与 Registry 口径一致，由成员自身处理")
+
+	var a atomic.Int64
+	_, err = NewBalancedProviderWithOptions([]BalanceMember{
+		{Provider: countingProvider(ProviderDeepSeek, &a, nil)},
+	}, BalanceOptions{Strategy: "round_robin"})
+	require.ErrorIs(t, err, ErrInvalidBalanceStrategy)
+	require.ErrorContains(t, err, "round_robin")
+}
+
+func TestBalancedProviderClampsWeight(t *testing.T) {
+	t.Parallel()
+
+	var a atomic.Int64
+	lb, err := NewBalancedProvider(
+		BalanceMember{Provider: countingProvider(ProviderDeepSeek, &a, nil), Weight: maxBalanceWeight + 1},
+		BalanceMember{Provider: countingProvider(ProviderZhipu, &a, nil), Weight: -5},
+	)
+	require.NoError(t, err)
+
+	stats := lb.Stats()
+	assert.Equal(t, maxBalanceWeight, stats[0].Weight)
+	assert.Equal(t, 1, stats[1].Weight)
+}
+
+func TestBalancedProviderCustomShouldFallback(t *testing.T) {
+	t.Parallel()
+
+	var a, bCount atomic.Int64
+	lb, err := NewBalancedProviderWithOptions([]BalanceMember{
+		{Provider: countingProvider(ProviderDeepSeek, &a, nonRetryableErr()), Weight: 10},
+		{Provider: countingProvider(ProviderZhipu, &bCount, nil), Weight: 1},
+	}, BalanceOptions{
+		ShouldFallback: func(err error) bool { return errors.Is(err, ErrInvalidRequest) },
+	})
+	require.NoError(t, err)
+
+	resp, err := lb.Chat(t.Context(), chatRequest())
+	require.NoError(t, err)
+	assert.Equal(t, string(ProviderZhipu), resp.Content)
+}
+
+func TestBalancedProviderConcurrentChat(t *testing.T) {
+	t.Parallel()
+
+	var a, bCount atomic.Int64
+	lb, err := NewBalancedProvider(
+		BalanceMember{Provider: countingProvider(ProviderDeepSeek, &a, nil), Weight: 2},
+		BalanceMember{Provider: countingProvider(ProviderZhipu, &bCount, nil), Weight: 1},
+	)
+	require.NoError(t, err)
+
+	const calls = 90
+	var wg sync.WaitGroup
+	for range calls {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			_, chatErr := lb.Chat(t.Context(), chatRequest())
+			assert.NoError(t, chatErr)
+		}()
+	}
+	wg.Wait()
+
+	assert.EqualValues(t, calls, a.Load()+bCount.Load())
+	assert.EqualValues(t, 60, a.Load())
+	assert.EqualValues(t, 30, bCount.Load())
+}
+
+func BenchmarkBalancedProviderChat(b *testing.B) {
+	var counter atomic.Int64
+	lb, err := NewBalancedProvider(
+		BalanceMember{Provider: countingProvider(ProviderDeepSeek, &counter, nil), Weight: 3},
+		BalanceMember{Provider: countingProvider(ProviderZhipu, &counter, nil), Weight: 1},
+	)
+	if err != nil {
+		b.Fatal(err)
+	}
+	ctx := context.Background()
+	req := chatRequest()
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for b.Loop() {
+		if _, err := lb.Chat(ctx, req); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkBalancedProviderChatParallel(b *testing.B) {
+	var counter atomic.Int64
+	lb, err := NewBalancedProviderWithOptions([]BalanceMember{
+		{Provider: countingProvider(ProviderDeepSeek, &counter, nil), Weight: 3},
+		{Provider: countingProvider(ProviderZhipu, &counter, nil), Weight: 1},
+	}, BalanceOptions{Strategy: BalanceLeastPending})
+	if err != nil {
+		b.Fatal(err)
+	}
+	ctx := context.Background()
+	req := chatRequest()
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			if _, err := lb.Chat(ctx, req); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}

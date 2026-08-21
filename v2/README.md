@@ -39,6 +39,11 @@ llm-provider/
 │   ├── middleware.go          # Middleware / Handler 类型 + WithMiddlewares 装饰器
 │   ├── retry.go               # WithRetry / RetryMiddleware / BackoffFunc
 │   ├── fallback.go            # FallbackProvider 多 provider 失败切换
+│   ├── breaker.go             # Breaker 熔断器：滑动窗口计数 + 指数退避冷却 + 半开探测
+│   ├── ratelimit.go           # RateLimiter 客户端限流：RPM / TPM 令牌桶 + 响应头自适应
+│   ├── balance.go             # BalancedProvider 加权负载均衡 + 故障转移
+│   ├── pricing_registry.go    # PricingRegistry 价格表原子热替换
+│   ├── reranker.go            # Reranker 接口：OpenAI 兼容 /rerank 端点
 │   ├── observability.go       # WithObservability / ObserveEvent 观测 hook
 │   ├── provider_test.go       # Chat / Tool Use 单测
 │   ├── embedder_test.go       # Embedding 单测
@@ -47,6 +52,11 @@ llm-provider/
 │   ├── response_format_test.go # Structured Output 构造器与映射测试
 │   ├── errors_test.go         # ProviderError / ErrorCode / WrapProviderError 单测
 │   ├── middleware_test.go     # Middleware 装饰器 + 洋葱顺序测试
+│   ├── breaker_test.go        # 熔断状态机 / 退避 / 中间件单测
+│   ├── ratelimit_test.go      # 令牌桶 / 预扣结算 / 头自适应单测
+│   ├── balance_test.go        # 权重分布 / 故障转移 / 策略单测
+│   ├── pricing_registry_test.go # 价格热替换与并发计价单测
+│   ├── reranker_test.go       # rerank 协议映射与边界单测
 │   ├── observability_test.go  # 观测 hook 单测
 │   └── runtime_test.go        # 运行时集成测试
 └── example/
@@ -96,25 +106,25 @@ go get github.com/gtkit/go-llm-provider/v2
 
 ### 能力矩阵
 
-| 平台 | Chat | Streaming | Tools | Structured Output | Vision | File | File Upload | Reasoning | Embedding | Web Search | 协议 |
-|------|------|-----------|-------|-------------------|--------|------|-------------|-----------|-----------|------------|------|
-| DeepSeek | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 是 | 否 | 否 | OpenAI 兼容 |
-| 通义千问（百炼） | 是 | 是 | 是 | 是 | 否 | 否 | 是 | 否 | 是 | 否 | OpenAI 兼容 |
-| 智谱 AI / GLM | 是 | 是 | 是 | 是 | 否 | 否 | 是 | 否 | 是 | 否 | OpenAI 兼容 |
-| 百度千帆 | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 否 | 是 | 否 | OpenAI 兼容 |
-| 硅基流动 | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 否 | 是 | 否 | OpenAI 兼容 |
-| Moonshot / Kimi | 是 | 是 | 是 | 是 | 否 | 否 | 是 | 否 | 否 | 否 | OpenAI 兼容 |
-| 火山方舟 / 豆包 | 是 | 是 | 是 | 是 | 是 | 否 | 否 | 是 | 是 | 否 | OpenAI 兼容 |
-| OpenAI | 是 | 是 | 是 | 是 | 否 | 否 | 是 | 是 | 是 | 否 | OpenAI 兼容 |
-| Anthropic / Claude | 是 | 是 | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 是 | 原生 HTTP |
-| Google Gemini | 是 | 是 | 是 | 是 | 是 | 是 | 否 | 否 | 是 | 是 | 原生 HTTP |
-| Ollama | 是 | 是 | 否 | 否 | 否 | 否 | 否 | 否 | 否 | 否 | 原生 HTTP |
-| xAI / Grok | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 否 | 否 | 否 | OpenAI 兼容 |
-| Groq | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 否 | 否 | 否 | OpenAI 兼容 |
-| Mistral AI | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 否 | 是 | 否 | OpenAI 兼容 |
-| Cohere | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 否 | 是 | 否 | OpenAI 兼容 |
-| Azure OpenAI | 是 | 是 | 是 | 是 | 取决于部署模型 | 取决于部署模型 | 未验证 | 取决于部署模型 | 可自定义 | 否 | Azure OpenAI |
-| Amazon Bedrock | 是 | 是 | 是 | 是 | 取决于模型 | 取决于模型 | 未验证 | 取决于模型 | 可自定义 | 否 | OpenAI 兼容 |
+| 平台 | Chat | Streaming | Tools | Structured Output | Vision | File | File Upload | Reasoning | Embedding | Rerank | Web Search | 协议 |
+|------|------|-----------|-------|-------------------|--------|------|-------------|-----------|-----------|------|------------|------|
+| DeepSeek | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 是 | 否 | 否 | 否 | OpenAI 兼容 |
+| 通义千问（百炼） | 是 | 是 | 是 | 是 | 否 | 否 | 是 | 否 | 是 | 否 | 否 | OpenAI 兼容 |
+| 智谱 AI / GLM | 是 | 是 | 是 | 是 | 否 | 否 | 是 | 否 | 是 | 否 | 否 | OpenAI 兼容 |
+| 百度千帆 | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 否 | 是 | 否 | 否 | OpenAI 兼容 |
+| 硅基流动 | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 否 | 是 | 是 | 否 | OpenAI 兼容 |
+| Moonshot / Kimi | 是 | 是 | 是 | 是 | 否 | 否 | 是 | 否 | 否 | 否 | 否 | OpenAI 兼容 |
+| 火山方舟 / 豆包 | 是 | 是 | 是 | 是 | 是 | 否 | 否 | 是 | 是 | 否 | 否 | OpenAI 兼容 |
+| OpenAI | 是 | 是 | 是 | 是 | 否 | 否 | 是 | 是 | 是 | 否 | 否 | OpenAI 兼容 |
+| Anthropic / Claude | 是 | 是 | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 否 | 是 | 原生 HTTP |
+| Google Gemini | 是 | 是 | 是 | 是 | 是 | 是 | 否 | 否 | 是 | 否 | 是 | 原生 HTTP |
+| Ollama | 是 | 是 | 否 | 否 | 否 | 否 | 否 | 否 | 否 | 否 | 否 | 原生 HTTP |
+| xAI / Grok | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 否 | 否 | 否 | 否 | OpenAI 兼容 |
+| Groq | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 否 | 否 | 否 | 否 | OpenAI 兼容 |
+| Mistral AI | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 否 | 是 | 否 | 否 | OpenAI 兼容 |
+| Cohere | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 否 | 是 | 否 | 否 | OpenAI 兼容 |
+| Azure OpenAI | 是 | 是 | 是 | 是 | 取决于部署模型 | 取决于部署模型 | 未验证 | 取决于部署模型 | 可自定义 | 否 | 否 | Azure OpenAI |
+| Amazon Bedrock | 是 | 是 | 是 | 是 | 取决于模型 | 取决于模型 | 未验证 | 取决于模型 | 可自定义 | 否 | 否 | OpenAI 兼容 |
 
 > 矩阵有两个口径，注意区分：**协议映射能力**（本库把请求字段翻译到该平台协议的能力，如图像 ContentPart 在 OpenAI 兼容平台会映射下发；文件 ContentPart 仅 Anthropic / Gemini 原生路径支持，OpenAI 兼容路径返回 `ErrInvalidRequest`）与**预设默认模型能力**（上表 Vision / File / Reasoning 等列描述的是各 preset 默认模型的已知能力，即 `ModelCapabilitiesFromPreset` 的返回值）。如果覆盖 `Model`，请以具体模型官方文档为准——协议映射仍然生效，模型不支持时由平台返回错误。
 >
@@ -1498,13 +1508,72 @@ emb, err = provider.NewEmbedder(provider.EmbedderConfig{
 })
 ```
 
-### 边界：本库不做什么
+### 职责边界：库负责与平台的交互
 
-- ❌ 向量存储（业务侧选向量数据库：pgvector / Milvus / Qdrant / Chroma 等）
-- ❌ 文档切片 / chunking 策略
-- ❌ 完整 RAG 框架（LangChain / LlamaIndex 的定位）
+`Embedder` 负责把文本变成向量、`Reranker` 负责按相关性精排，两者都是对平台端点的
+调用封装。向量落到哪里（pgvector / Milvus / Qdrant / Chroma）、文档怎么切片、
+检索链路怎么编排，由调用方按业务选型决定——这与对话历史由调用方持有是同一个口径：
+库只负责与 LLM 平台的交互，存储与业务逻辑留在调用方手里。
 
-这和"不管理对话历史"是同一个设计哲学 —— 库只负责与 LLM 平台的交互，存储与业务逻辑交给调用方。
+## Rerank（重排序）
+
+向量检索的召回结果按余弦相似度排序，语义精度有限。rerank 模型直接对
+`(query, document)` 打分，把召回的几十条候选重新排序，只把最相关的几条送进上下文——
+既提升相关性，又省 token。
+
+```go
+reranker, err := provider.NewRerankerFromPreset(provider.ProviderSiliconFlow, apiKey, "")
+if err != nil {
+    log.Fatal(err)
+}
+
+documents := []string{
+    "卡森城是内华达州的首府。",
+    "华盛顿特区是美国的首都。",
+    "塞班岛是北马里亚纳群岛的首府。",
+}
+topN := 2
+resp, err := reranker.Rerank(ctx, &provider.RerankRequest{
+    Query:     "美国的首都是哪里？",
+    Documents: documents,
+    TopN:      &topN,
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+for _, r := range resp.Results {
+    fmt.Printf("index=%d score=%.4f\n", r.Index, r.RelevanceScore)
+}
+// 直接把精排结果接回本地候选集
+fmt.Println(resp.SortedDocuments(documents))
+```
+
+自定义平台（预设未覆盖时显式给出地址与模型）：
+
+```go
+reranker, err := provider.NewReranker(provider.RerankerConfig{
+    Name:    provider.ProviderSiliconFlow,
+    BaseURL: "https://api.siliconflow.cn/v1",  // 实际请求 POST {BaseURL}/rerank
+    APIKey:  apiKey,
+    Model:   "BAAI/bge-reranker-v2-m3",
+})
+```
+
+- **协议**：`POST {BaseURL}/rerank`，请求体 `model` / `query` / `documents` /
+  `top_n` / `return_documents`，响应体 `results[].index` 与
+  `results[].relevance_score`。硅基流动、Jina、Cohere 等平台的 rerank 端点均为
+  这一形态；用量字段各家口径不同（`tokens.input_tokens` / `usage.total_tokens`），
+  本库统一归一到 `RerankResponse.Usage`，缺失的项为 0，不猜测用量。
+- **`Index` 恒可用于索引请求的 `Documents`**：平台返回越界下标时直接报错，
+  不会把越界值透给调用方。
+- **`RelevanceScore` 只用于同一次调用内的排序比较**，不同模型、不同调用之间的
+  绝对值不可直接比较。
+- **`ReturnDocuments` 多数场景不必开启**——用 `Index` 回查本地 `Documents` 即可，
+  能省一份回传流量；未开启时 `RerankResult.Document` 为空串。
+- **`TopN ≤ 0` 按未设置处理**（返回全部），不发送该字段。
+- 典型 RAG 装配：向量检索召回 50 条 → rerank 精排取前 5 条 → 拼进 prompt。
+  向量检索部分见 [Embedding](#embedding文本向量化) 一节。
 
 ## 模型能力元数据
 
@@ -1519,6 +1588,12 @@ if ok && caps.Supports(provider.CapabilityEmbedding) {
 embedders := provider.ModelCapabilitiesByCapability(provider.CapabilityEmbedding)
 for name := range embedders {
     fmt.Println("可用于 embedding:", name)
+}
+
+// rerank 同理：CapabilityRerank + caps.RerankModel
+rerankers := provider.ModelCapabilitiesByCapability(provider.CapabilityRerank)
+for name := range rerankers {
+    fmt.Println("可用于 rerank:", name)
 }
 ```
 
@@ -1595,13 +1670,24 @@ reg.EmbedderNames()                            // 列出所有已注册 embedder
 
 ## Middleware（中间件扩展）
 
-当你需要日志、重试、限流、断路器、token 统计、审计、缓存这类横切关注点时，本库**不内置任何具体策略**，只提供扩展口子——装饰器 + Handler 类型。调用方用 30 行以内就能自行实现任一能力，策略完全由你控制。
+横切关注点走统一的装饰器 + Handler 抽象。本库内置了一组与业务口径无关的策略，
+开箱可用；口径因项目而异的部分（日志格式、指标后端、审计存储、脱敏字段、缓存键）
+由调用方用同一套 Middleware 类型自行实现，30 行以内即可。
 
-### 为什么不内置？
+内置策略：
 
-- 限流的阈值、断路器的窗口、日志的格式、审计的存储、脱敏的字段 —— **每家项目口径不同**
-- 一旦内置某种实现，就会产生滑坡："为什么不内置 Prometheus？为什么不内置 OTel？"
-- Middleware 抽象只有几个函数类型，学习成本极低，却能让调用方完全自主
+| 能力 | 入口 | 说明 |
+|------|------|------|
+| 重试 | `WithRetry` / `RetryMiddleware` | 按 `ProviderError.Retryable` 判定，支持指数退避与全抖动，优先采用平台的 `Retry-After` |
+| 熔断 | `WithBreaker` / `BreakerMiddleware` | 滑动窗口计数 + 指数退避冷却 + 半开探测 |
+| 限流 | `WithRateLimit` / `RateLimitMiddleware` | RPM / TPM 令牌桶，token 预扣 + 真实用量结算 |
+| 降级 | `NewFallbackProvider` | 多成员按序切换 |
+| 负载均衡 | `NewBalancedProvider` | 加权轮询 / 加权随机 / 加权最少在途 |
+| 观测 | `WithObservability` | 零依赖事件 hook，不绑定 slog / Prometheus / OTel |
+| 计费与配额 | `NewBillingHook` / `QuotaMiddleware` / `TokenBudgetMiddleware` / `CostBudgetMiddleware` | 按用户与会话归账，额度硬限 |
+
+策略参数一律由调用方注入（熔断阈值、限流额度、价格表、退避曲线），本库不预设
+业务口径；观测与计费只提供事件与接口，落地到哪个后端由调用方决定。
 
 ### 核心类型
 
@@ -1671,61 +1757,122 @@ resp, err := retrying.Chat(ctx, req)
 
 > 生产注意（重复计费风险）：重试与降级是 **at-least-once** 语义。当供应商已处理请求、但响应在网络中丢失（服务端已产生用量，客户端超时未收到）时，重试会再次发起真实调用，造成供应商侧重复执行与重复计费——Chat Completions 类接口通常不提供幂等键，本库无法在客户端去重。成本敏感场景应保守设置 `MaxAttempts` 与请求超时，并以供应商账单为准做对账。
 
-### 熔断集成（Circuit Breaker）
+### 熔断（Circuit Breaker）
 
-熔断器是通用弹性组件（保护任意外部调用，且实现各有取舍），本库不内置——
-与日志、限流同理，通过 Middleware 挂接你选定的熔断实现（如基于
-`sony/gobreaker/v2` 的封装）只需几行胶水：
+`Breaker` 是内置的进程内熔断器：滑动窗口累计失败达阈值即跳闸，冷却期内的请求
+在本地被挡下、不发往平台；冷却到期放行少量探测请求，探测成功即闭合，失败则
+延长冷却（指数退避）。
 
 ```go
-// b := breaker.New[*provider.ChatResponse]("llm-deepseek")   // 你的熔断器，每个上游一个实例
-func breakerMiddleware(b *breaker.Breaker[*provider.ChatResponse]) provider.Middleware {
-    return func(next provider.Handler) provider.Handler {
-        return func(ctx context.Context, req *provider.ChatRequest) (*provider.ChatResponse, error) {
-            return b.Execute(func() (*provider.ChatResponse, error) { return next(ctx, req) })
-        }
-    }
+breaker := provider.NewBreaker(provider.BreakerOptions{
+    Name:             "deepseek",         // 仅用于错误消息与 Stats，便于定位
+    FailureThreshold: 5,                  // 窗口内失败 5 次跳闸，默认 5
+    Window:           time.Minute,        // 滑动窗口，默认 1 分钟
+    OpenDuration:     30 * time.Second,   // 首次冷却时长，默认 30 秒
+    MaxOpenDuration:  5 * time.Minute,    // 冷却上限，默认 5 分钟
+    BackoffReset:     10 * time.Minute,   // 距上次跳闸超过该时长则退避重新起算
+    HalfOpenProbes:   1,                  // 半开态在途探测数，默认 1
+})
+
+guarded := provider.WithBreaker(base, breaker)
+
+resp, err := guarded.Chat(ctx, req)
+if errors.Is(err, provider.ErrBreakerOpen) {
+    // 熔断期内的快速失败，请求没有发出
 }
+```
 
-// 流式：熔断包在"流创建"阶段
-func breakerStreamMiddleware(b *breaker.Breaker[*provider.StreamReader]) provider.StreamMiddleware {
-    return func(next provider.StreamHandler) provider.StreamHandler {
-        return func(ctx context.Context, req *provider.ChatRequest) (*provider.StreamReader, error) {
-            return b.Execute(func() (*provider.StreamReader, error) { return next(ctx, req) })
-        }
-    }
+状态机与计数口径：
+
+```text
+closed    ──窗口内失败达阈值──▶ open       （冷却 = OpenDuration × 2^(连续跳闸-1)，上限 MaxOpenDuration）
+open      ──冷却到期───────────▶ half_open  （放行至多 HalfOpenProbes 个探测）
+half_open ──探测成功───────────▶ closed     （清空失败窗口）
+half_open ──探测失败───────────▶ open       （冷却翻倍）
+```
+
+- **计入失败的错误**由 `ShouldTrip` 判定，默认与重试口径一致（`IsRetryableError`：
+  限流 / 超时 / 5xx / 网络）。鉴权失败、参数非法不计入——换上游也修不了；
+  ctx 取消同样不计入。要把 key 失效也纳入熔断，显式传入判定函数：
+
+  ```go
+  provider.BreakerOptions{ShouldTrip: func(err error) bool {
+      return provider.IsRetryableError(err) || errors.Is(err, provider.ErrAuth)
+  }}
+  ```
+
+- **成功不清空窗口**：失败记录只随时间滑出窗口，语义是"最近 Window 内累计
+  FailureThreshold 次失败即视为该上游不可用"。
+- **连续跳闸退避**：`BackoffReset` 内再次跳闸视为连续故障，冷却时长翻倍；
+  超过 `BackoffReset` 才跳闸则退回 `OpenDuration` 重新起算。
+- **流式只统计创建阶段**：`BreakerStreamMiddleware` 以"流是否创建成功"为口径。
+  平台故障有时表现为"建流成功但立刻断流"，要覆盖这类失败，用 `stream_complete`
+  观测事件回喂一次失败：
+
+  ```go
+  provider.ObserveOptions{OnEvent: func(_ context.Context, e provider.ObserveEvent) {
+      if e.Operation == provider.ObserveOperationStreamComplete &&
+          e.StreamFinish == provider.StreamFinishError {
+          breaker.Report(e.Err)
+      }
+  }}
+  ```
+
+- **与降级链联动**：`ErrBreakerOpen` 已在默认切换判定内，熔断打开会立刻切到
+  下一个成员，无需自定义 `ShouldFallback`。
+- **装配位置**：熔断放在**每个上游成员**上（各自独立跳闸、独立恢复），
+  不要包在整条降级链外——那样一个上游故障会把整条链熔断。
+- **状态查询**：`breaker.State()` 与 `breaker.Stats()` 供健康检查与监控读取；
+  确认上游已恢复（如换了新 key）时用 `breaker.Reset()` 手动放行。
+- 状态保存在进程内存，不跨进程共享；多副本部署时每个副本独立熔断。
+- `Embedder` 侧用 `WithEmbedderBreaker` / `BreakerEmbedMiddleware`，语义相同。
+- **与观测的装配顺序**：把观测装在熔断**外层**
+  （`WithObservability(WithBreaker(base, breaker), opts)`），本地拦下的请求也会产生
+  观测事件（`Err` 为 `ErrBreakerOpen`、`Usage` 为零），熔断触发频率才可监控；
+  反过来装则看不到被拦下的量。限流同理。
+
+### 客户端限流（RPM / TPM）
+
+`RateLimiter` 把超额请求挡在发出之前，减少平台 429。请求数与 token 数各走一个
+令牌桶，两者在同一把锁内同时满足才放行。
+
+```go
+limiter := provider.NewRateLimiter(provider.RateLimitOptions{
+    Name:              "qwen",
+    RequestsPerMinute: 1200,        // RPM，≤0 表示不限请求数
+    TokensPerMinute:   1_000_000,   // TPM，≤0 表示不限 token
+    Wait:              true,        // 额度不足时阻塞等待（受 ctx 与 MaxWait 约束）
+    MaxWait:           2 * time.Second,
+    AdaptFromHeaders:  true,        // 用响应头回传的剩余配额校准本地桶
+})
+
+limited := provider.WithRateLimit(base, limiter)
+
+resp, err := limited.Chat(ctx, req)
+if errors.Is(err, provider.ErrLocalRateLimited) {
+    // 本地限流拦下，请求没有发出；区别于平台回传的 ErrRateLimit
 }
 ```
 
-**与降级链联动**：熔断开启时快速失败的错误不是库的可重试错误，默认不会触发
-降级切换——在 `FallbackOptions.ShouldFallback` 里显式识别它，熔断开启即刻切换
-到下一个厂商，这正是"熔断 + 降级"配套的意义：
-
-```go
-provider.FallbackOptions{ShouldFallback: func(err error) bool {
-    return provider.IsRetryableError(err) || errors.Is(err, gobreaker.ErrOpenState)
-}}
-```
-
-**流式注意点**：上面的流式熔断只统计**创建阶段**的失败——平台故障有时表现为
-"建流成功但立刻断流"，这类失败熔断器感知不到。要覆盖它，用 `stream_complete`
-观测事件回喂熔断器，无需改动 Recv 循环：
-
-```go
-var errStreamAborted = errors.New("stream aborted mid-flight")
-
-provider.ObserveOptions{OnEvent: func(_ context.Context, e provider.ObserveEvent) {
-    if e.Operation == provider.ObserveOperationStreamComplete &&
-        e.StreamFinish == provider.StreamFinishError {
-        // gobreaker 类实现没有手动上报接口，用空执行喂入一次失败即可。
-        _, _ = b.Execute(func() (*provider.StreamReader, error) { return nil, errStreamAborted })
-    }
-}}
-```
-
-装配位置建议：熔断在**每个降级链成员**上（每个上游独立熔断、独立恢复），
-不要包在整条链外（一个上游故障会把整条链熔断）。熔断实现建议做成团队级
-独立包复用，不要锁在单个业务仓库的 `internal/` 里。
+- **桶容量默认值**：请求桶默认取"1 秒额度"（`RPM/60` 向上取整，至少 1），
+  让流量匀速铺开，避免整分钟额度被瞬间打出去触发平台的秒级限流；token 桶默认取
+  整分钟额度（长上下文单请求需要的额度可能远超 1 秒额度，桶太小会永远拿不到令牌）。
+  两者都可用 `RequestBurst` / `TokenBurst` 覆盖。
+- **token 采用"预扣 + 结算"**：请求前按 `EstimateTokens` 口径预扣
+  （`EstimateChatRequestTokens`：输入估算 + `MaxTokens`，未设 `MaxTokens` 时用
+  `ReserveOutputTokens`），响应返回后用真实 `Usage` 结算差额；流式的结算延后到
+  流终止（读到 `io.EOF`、读出错或提前 `Close`）。请求失败时保留预扣不返还，
+  宁可保守也不放大超额风险。
+- **单请求需求超过 token 桶容量时按容量收敛**，避免请求因永远凑不齐额度而饿死。
+- **响应头自适应**：开启 `AdaptFromHeaders` 后，`x-ratelimit-remaining-requests`
+  与 `x-ratelimit-remaining-tokens` 会把本地可用额度**下调**到平台口径（只下调不上调——
+  本地偏保守是安全的，跟着平台放宽可能立刻超额）。也可手动调用
+  `limiter.Observe(resp.Metadata)`。
+- **与降级链联动**：`ErrLocalRateLimited` 已在默认切换判定内。给每个 key 配独立
+  限流器，额度用尽即切到下一个 key，是多 key 分摊配额的常见组合。
+- `limiter.Stats()` 返回两个桶的可用额度与容量（负值表示已透支）；
+  `Embedder` 侧用 `WithEmbedderRateLimit`，token 预扣按输入文本估算。
+- 额度保存在进程内存，不跨进程共享；多副本部署时按副本数拆分配额。
 
 ### 观测 Hook（日志 / 指标 / Trace）
 
@@ -1842,6 +1989,32 @@ fmt.Println(provider.FormatMicros(micros), currency) // 如 "0.0123 CNY"
 底层成本价与对用户售价维护两份表即可。可在服务启动或价格表热更新时调用
 `PricingTable.Validate()` 整表校验（范围与搜索双费率互斥），把配置错误挡在计价之前。
 
+#### 价格表热替换（PricingRegistry）
+
+直接持有 `PricingTable` 时，调价只能靠调用方自己保证"整表替换"——有人在线改条目
+就会与计价路径的读发生 data race。`PricingRegistry` 把这个约束变成 API 保证：
+
+```go
+registry, err := provider.NewPricingRegistry(table, "2026-08-21") // 构造即校验 + 整表拷贝
+if err != nil {
+    log.Fatal(err) // 非法费率不会进入生效状态
+}
+
+micros, currency, err := registry.Cost("deepseek-chat", resp.Usage) // 原子读，无锁
+fmt.Println(registry.Version())                                     // 账务落库时一并记录
+
+// 调价：校验通过后一次原子切换，不存在"半新半旧"的中间状态
+if err := registry.Replace(newTable, "2026-09-01"); err != nil {
+    log.Printf("新价格表非法，继续按旧价计费: %v", err)
+}
+```
+
+- 构造与 `Replace` 都会整表拷贝并走 `Validate`，调用方之后再改自己那份表影响不到已生效的价格。
+- `Cost` 走 `atomic.Pointer` 读取，与 `Replace` 并发安全；每次 `Cost` 要么整体按旧价、要么整体按新价。
+- `Rate(model)` 查单条费率零拷贝；`Snapshot()` 返回一致的表 + 版本拷贝（每次调用都拷贝，
+  用于导出或喂给按 `PricingTable` 取价的组件，不要放在热路径）；`Models()` 返回已配价模型名。
+- 空表表示暂无配价，`Cost` 一律返回 `ErrModelNotPriced`，不会静默按零计费。
+
 #### 配额拦截（QuotaChecker）
 
 ```go
@@ -1956,6 +2129,55 @@ top, _ := provider.NewFallbackProvider(vendorA, vendorB)         // 厂商间降
 完整示例见 [`example/middleware/main.go`](example/middleware/main.go)。
 示例还演示了 `tokenStatsMiddleware(stats *int64)`，用 `atomic.AddInt64` 累计总 token 消耗。
 
+### 加权负载均衡（BalancedProvider）
+
+降级链是"链首承担全部流量、失败才用下一个"；`BalancedProvider` 是"按权重分摊
+流量"，适合多 key 分摊配额、多地域就近、按成本比例混流。故障转移语义与降级链一致。
+
+```go
+lb, err := provider.NewBalancedProviderWithOptions([]provider.BalanceMember{
+    {
+        Provider: keyA,
+        Weight:   3,                                                    // 承担 3/4 流量
+        Breaker:  provider.NewBreaker(provider.BreakerOptions{Name: "key-a"}),
+    },
+    {
+        Provider: keyB,
+        Weight:   1,
+        Breaker:  provider.NewBreaker(provider.BreakerOptions{Name: "key-b"}),
+    },
+}, provider.BalanceOptions{
+    Strategy:    provider.BalanceWeightedRoundRobin,
+    MaxAttempts: 2, // 单次调用最多尝试 2 个成员，≤0 表示全部
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+resp, err := lb.Chat(ctx, req)
+```
+
+三种策略：
+
+| 策略 | 行为 | 适用 |
+|------|------|------|
+| `BalanceWeightedRoundRobin`（默认） | 平滑加权轮询，按权重把流量均匀铺开，低权重成员插在中间而非攒到末尾 | 多 key 分摊配额 |
+| `BalanceWeightedRandom` | 加权随机，长期分布与权重一致，短期可能连续命中同一成员 | 无状态、成员很多 |
+| `BalanceLeastPending` | 加权最少在途，选 `在途数/权重` 最小的成员 | 各成员时延差异大 |
+
+- **成员级熔断**：`BalanceMember.Breaker` 由均衡器负责申请与上报，不要再用
+  `WithBreaker` 包一层（会双重计数）。熔断打开的成员会以 `ErrBreakerOpen`
+  快速失败并自动转移到下一个成员，冷却到期后自动恢复接流。
+- **故障转移判定**同降级链：默认切换平台侧可重试错误、`ErrBreakerOpen`、
+  `ErrLocalRateLimited`，可用 `BalanceOptions.ShouldFallback` 覆盖。
+  ctx 已取消/超时时立即返回、不再尝试后续成员。
+- **`req.Model` 通常留空**（同降级链的理由），让各成员用自己的默认模型；
+  计费的 `RequestModel` 以首成员为口径，实际服务的模型由响应侧 `Model` 如实记录。
+- **流式只在创建阶段转移**：打字机开始输出后中途断流不会切换。
+- **`lb.Stats()`** 返回每个成员的权重、在途数与熔断状态，可直接喂给健康检查端点。
+- `BalancedProvider` 本身实现 `Provider`，可与 `FallbackProvider`、`WithRetry`
+  嵌套组合：常见装配是"均衡器内每个成员各自带 retry + 熔断 + 限流"。
+
 ### 洋葱模型执行顺序
 
 ```go
@@ -2016,6 +2238,19 @@ type ProviderError struct {
 - `RawCode` / `RawType` / `RawParam`：厂商原始诊断字段，适合日志和告警。
 - `Retryable`：是否值得调用方自行重试。
 - `Message` / `Cause`：平台返回消息与原始错误链。
+
+**本地拦截类 sentinel**（请求未发往平台，不是 `*ProviderError`，用 `errors.Is` 判定）：
+
+| Sentinel | 含义 | 出现位置 |
+|----------|------|----------|
+| `ErrBreakerOpen` | 熔断器打开，冷却期内快速失败 | `Breaker` / `BalancedProvider` |
+| `ErrLocalRateLimited` | 客户端限流拦下，区别于平台回传的 `ErrRateLimit` | `RateLimiter` |
+| `ErrQuotaExceeded` | 配额或预算耗尽 | `QuotaMiddleware` / `TokenBudget` / `CostBudget` |
+| `ErrModelNotPriced` | 模型未配价，不静默按零计费 | `PricingTable` / `PricingRegistry` |
+| `ErrInvalidPricing` | 费率或用量数据非法 | `PricingTable` / `PricingRegistry` |
+
+这些错误默认都会触发降级链与均衡器的成员切换（`ErrBreakerOpen`、
+`ErrLocalRateLimited`），或直接返回给调用方（配额与计价类）。
 
 ### 响应元数据：`ResponseMetadata`
 

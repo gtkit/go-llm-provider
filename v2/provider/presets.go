@@ -17,6 +17,10 @@ type Preset struct {
 	// 空字符串表示该平台暂无官方 embedding 接口（如 DeepSeek、Moonshot），
 	// NewEmbedderFromPreset 遇到空串会返回错误。
 	EmbeddingModel string
+	// RerankModel 是该平台推荐的默认 rerank 模型。
+	// 空字符串表示预设未覆盖该平台的 rerank 端点，
+	// NewRerankerFromPreset 遇到空串会返回错误；显式传入 model 即可绕过。
+	RerankModel string
 	// Capabilities 描述预设默认模型的已知能力。
 	Capabilities ModelCapabilities
 }
@@ -97,16 +101,19 @@ var presetCatalog = map[ProviderName]Preset{
 		BaseURL:        "https://api.siliconflow.cn/v1",
 		DefaultModel:   "deepseek-ai/DeepSeek-V3",
 		EmbeddingModel: "BAAI/bge-m3",
+		RerankModel:    "BAAI/bge-reranker-v2-m3",
 		Capabilities: ModelCapabilities{
 			Provider:       ProviderSiliconFlow,
 			ChatModel:      "deepseek-ai/DeepSeek-V3",
 			EmbeddingModel: "BAAI/bge-m3",
+			RerankModel:    "BAAI/bge-reranker-v2-m3",
 			Capabilities: []Capability{
 				CapabilityChat,
 				CapabilityStreaming,
 				CapabilityTools,
 				CapabilityStructuredOutput,
 				CapabilityEmbedding,
+				CapabilityRerank,
 			},
 		},
 	},
@@ -353,6 +360,31 @@ func NewEmbedderFromPreset(name ProviderName, apiKey, model string) (Embedder, e
 	}
 
 	return NewEmbedder(EmbedderConfig{
+		Name:    name,
+		BaseURL: preset.BaseURL,
+		APIKey:  apiKey,
+		Model:   model,
+	})
+}
+
+// NewRerankerFromPreset 使用预设配置快速创建 Reranker，只需提供 APIKey。
+// model 可选，留空时使用预设的 RerankModel。
+// 若预设未覆盖该平台的 rerank 端点，返回错误——此时用 NewReranker 显式给出
+// BaseURL 与模型名即可接入。
+func NewRerankerFromPreset(name ProviderName, apiKey, model string) (Reranker, error) {
+	preset, ok := presetCatalog[name]
+	if !ok {
+		return nil, fmt.Errorf("no preset for provider %q", name)
+	}
+
+	if model == "" {
+		model = preset.RerankModel
+	}
+	if model == "" {
+		return nil, fmt.Errorf("provider %q does not have a rerank preset", name)
+	}
+
+	return NewReranker(RerankerConfig{
 		Name:    name,
 		BaseURL: preset.BaseURL,
 		APIKey:  apiKey,

@@ -487,13 +487,13 @@ func anthropicStructuredTool(format *ResponseFormat) (*anthropicTool, *anthropic
 		}
 	}
 	return &anthropicTool{
-			Name:        name,
-			Description: "Return the response as structured JSON.",
-			InputSchema: schema,
-		}, &anthropicToolChoice{
-			Type: "tool",
-			Name: name,
-		}, nil
+		Name:        name,
+		Description: "Return the response as structured JSON.",
+		InputSchema: schema,
+	}, &anthropicToolChoice{
+		Type: "tool",
+		Name: name,
+	}, nil
 }
 
 func boolPtr(value bool) *bool {

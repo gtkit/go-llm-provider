@@ -16,10 +16,12 @@ Go 语言统一多模型 LLM 调用库。一套代码接入 OpenAI 以及 DeepSe
 - Gemini 原生 token counting：`TokenCounter` / `CountTokens`。
 - 本地与企业入口：`ProviderOllama`、`NewAzureOpenAIProvider`、`NewBedrockOpenAIProvider`。
 - 更多 OpenAI 兼容 preset：xAI、Groq、Mistral、Cohere。
-- 更完整的横切能力：`ResponseMetadata`、`WithObservability`（`WithRetry` 与 `NewFallbackProvider` 已回移 v1）。
+- 更完整的横切能力：`ResponseMetadata`、`WithObservability`、客户端限流 `RateLimiter`（RPM / TPM 令牌桶 + 响应头自适应）、价格表原子热替换 `PricingRegistry`、重排序 `Reranker`。可靠性层的 `WithRetry`、`NewFallbackProvider`、`NewBreaker`、`NewBalancedProvider` 已回移 v1。
 - 按用户计费全链路：流式/缓存/推理 token 统一统计、计费 hook 与用量查询、定价表与配额/余额硬限、上下文摘要压缩、流式工具循环、多模态输出（Gemini 图像）。
 
-v1 继续保留兼容维护；多模态、结构化输出、本地推理、token counting 等新能力只在 v2 增加。
+v1 继续保留兼容维护，并跟进与类型演进解耦的可靠性能力（重试、降级、熔断、负载均衡）；
+多模态、结构化输出、本地推理、token counting、计费体系等依赖 `Message.Content` 类型演进
+或观测基座的能力只在 v2 增加。
 
 ## 为什么做这个
 
@@ -50,10 +52,18 @@ llm-provider/
 │   ├── embedder_helpers.go    # Embedding 便捷函数：SimpleEmbed、EmbedBatch
 │   ├── errors.go              # ProviderError / ErrorCode / WrapProviderError
 │   ├── middleware.go          # Middleware / Handler 类型 + WithMiddlewares 装饰器
+│   ├── retry.go               # WithRetry / RetryMiddleware / BackoffFunc
+│   ├── fallback.go            # FallbackProvider 多 provider 失败切换
+│   ├── breaker.go             # Breaker 熔断器：滑动窗口计数 + 指数退避冷却 + 半开探测
+│   ├── balance.go             # BalancedProvider 加权负载均衡 + 故障转移
 │   ├── provider_test.go       # Chat / Tool Use 单测
 │   ├── embedder_test.go       # Embedding 单测
 │   ├── errors_test.go         # ProviderError / ErrorCode / WrapProviderError 单测
 │   ├── middleware_test.go     # Middleware 装饰器 + 洋葱顺序测试
+│   ├── retry_test.go          # 重试与退避单测
+│   ├── fallback_test.go       # 降级链切换单测
+│   ├── breaker_test.go        # 熔断状态机 / 退避 / 中间件单测
+│   ├── balance_test.go        # 权重分布 / 故障转移 / 策略单测
 │   └── runtime_test.go        # 运行时集成测试
 └── example/
     ├── main.go                # 基础使用示例（Chat）
@@ -385,6 +395,20 @@ fb, _ := provider.NewFallbackProviderWithOptions([]provider.Provider{primary, ba
 ctx 取消/超时后两者都会立即停止，不再发起无意义的尝试。
 `FallbackProvider` 可嵌套组合实现"厂商内穷尽 model 后再切厂商"的两级降级。
 与 v2 的差异：v1 的重试不解析 `Retry-After` 响应头（统一按本地退避策略）。
+
+```go
+// 熔断：连续失败的上游进入冷却，冷却期内请求在本地快速失败、不发往平台
+breaker := provider.NewBreaker(provider.BreakerOptions{Name: "deepseek"})
+p = provider.WithBreaker(base, breaker)
+
+// 加权负载均衡：按权重把流量分摊到多个 key / 地域，成员可各带独立熔断器
+lb, _ := provider.NewBalancedProvider(
+    provider.BalanceMember{Provider: keyA, Weight: 3, Breaker: provider.NewBreaker(provider.BreakerOptions{Name: "key-a"})},
+    provider.BalanceMember{Provider: keyB, Weight: 1, Breaker: provider.NewBreaker(provider.BreakerOptions{Name: "key-b"})},
+)
+```
+
+详见 [熔断](#熔断circuit-breaker) 与 [加权负载均衡](#加权负载均衡balancedprovider)。
 
 > 生产注意：重试/降级为 **at-least-once** 语义——供应商已处理但响应丢失时，重试会再次真实调用，造成重复执行与重复计费（Chat 接口通常无幂等键，无法在客户端去重）。成本敏感场景需保守设置重试次数与超时，并结合供应商账单对账。
 
@@ -803,12 +827,12 @@ emb, err = provider.NewEmbedder(provider.EmbedderConfig{
 })
 ```
 
-### 边界：本库不做什么
+### 职责边界：库负责与平台的交互
 
-- ❌ 向量存储（业务侧选向量数据库：pgvector / Milvus / Qdrant / Chroma 等）
-- ❌ 相似度计算（10 行代码可写完，内置反而限制）
-- ❌ 文档切片 / chunking 策略
-- ❌ 完整 RAG 框架（LangChain / LlamaIndex 的定位）
+`Embedder` 负责把文本变成向量，这是对平台端点的调用封装。向量落到哪里
+（pgvector / Milvus / Qdrant / Chroma）、相似度怎么算、文档怎么切片、检索链路怎么编排，
+由调用方按业务选型决定——这与对话历史由调用方持有是同一个口径：库只负责与 LLM 平台的交互，
+存储与业务逻辑留在调用方手里。
 
 这和"不管理对话历史"是同一个设计哲学 —— 库只负责与 LLM 平台的交互，存储与业务逻辑交给调用方。
 
@@ -855,13 +879,21 @@ reg.EmbedderNames()                            // 列出所有已注册 embedder
 
 ## Middleware（中间件扩展）
 
-当你需要日志、重试、限流、断路器、token 统计、审计、缓存这类横切关注点时，本库**不内置任何具体策略**，只提供扩展口子——装饰器 + Handler 类型。调用方用 30 行以内就能自行实现任一能力，策略完全由你控制。
+横切关注点走统一的装饰器 + Handler 抽象。本库内置了一组与业务口径无关的可靠性策略，
+开箱可用；口径因项目而异的部分（日志格式、指标后端、审计存储、脱敏字段、缓存键）
+由调用方用同一套 Middleware 类型自行实现，30 行以内即可。
 
-### 为什么不内置？
+内置策略：
 
-- 限流的阈值、断路器的窗口、日志的格式、审计的存储、脱敏的字段 —— **每家项目口径不同**
-- 一旦内置某种实现，就会产生滑坡："为什么不内置 Prometheus？为什么不内置 OTel？"
-- Middleware 抽象只有几个函数类型，学习成本极低，却能让调用方完全自主
+| 能力 | 入口 | 说明 |
+|------|------|------|
+| 重试 | `WithRetry` / `RetryMiddleware` | 按 `ProviderError.Retryable` 判定，支持指数退避与全抖动 |
+| 熔断 | `WithBreaker` / `BreakerMiddleware` | 滑动窗口计数 + 指数退避冷却 + 半开探测 |
+| 降级 | `NewFallbackProvider` | 多成员按序切换 |
+| 负载均衡 | `NewBalancedProvider` | 加权轮询 / 加权随机 / 加权最少在途 |
+
+策略参数一律由调用方注入（熔断阈值、退避曲线、成员权重），本库不预设业务口径。
+观测、计费与客户端限流在 v2 提供。
 
 ### 核心类型
 
@@ -941,6 +973,112 @@ func retryMiddleware(maxAttempts int) provider.Middleware {
 完整示例见 [`example/middleware/main.go`](example/middleware/main.go)。
 示例还演示了 `tokenStatsMiddleware(stats *int64)`，用 `atomic.AddInt64` 累计总 token 消耗。
 
+### 熔断（Circuit Breaker）
+
+`Breaker` 是进程内熔断器：滑动窗口累计失败达阈值即跳闸，冷却期内的请求在本地被
+挡下、不发往平台；冷却到期放行少量探测请求，探测成功即闭合，失败则延长冷却（指数退避）。
+
+```go
+breaker := provider.NewBreaker(provider.BreakerOptions{
+    Name:             "deepseek",         // 仅用于错误消息与 Stats，便于定位
+    FailureThreshold: 5,                  // 窗口内失败 5 次跳闸，默认 5
+    Window:           time.Minute,        // 滑动窗口，默认 1 分钟
+    OpenDuration:     30 * time.Second,   // 首次冷却时长，默认 30 秒
+    MaxOpenDuration:  5 * time.Minute,    // 冷却上限，默认 5 分钟
+    BackoffReset:     10 * time.Minute,   // 距上次跳闸超过该时长则退避重新起算
+    HalfOpenProbes:   1,                  // 半开态在途探测数，默认 1
+})
+
+guarded := provider.WithBreaker(base, breaker)
+
+resp, err := guarded.Chat(ctx, req)
+if errors.Is(err, provider.ErrBreakerOpen) {
+    // 熔断期内的快速失败，请求没有发出
+}
+```
+
+状态机与计数口径：
+
+```text
+closed    ──窗口内失败达阈值──▶ open       （冷却 = OpenDuration × 2^(连续跳闸-1)，上限 MaxOpenDuration）
+open      ──冷却到期───────────▶ half_open  （放行至多 HalfOpenProbes 个探测）
+half_open ──探测成功───────────▶ closed     （清空失败窗口）
+half_open ──探测失败───────────▶ open       （冷却翻倍）
+```
+
+- **计入失败的错误**由 `ShouldTrip` 判定，默认与重试口径一致（`IsRetryableError`：
+  限流 / 超时 / 5xx / 网络）。鉴权失败、参数非法不计入——换上游也修不了；
+  ctx 取消同样不计入。要把 key 失效也纳入熔断，显式传入判定函数：
+
+  ```go
+  provider.BreakerOptions{ShouldTrip: func(err error) bool {
+      return provider.IsRetryableError(err) || errors.Is(err, provider.ErrAuth)
+  }}
+  ```
+
+- **成功不清空窗口**：失败记录只随时间滑出窗口，语义是"最近 Window 内累计
+  FailureThreshold 次失败即视为该上游不可用"。
+- **连续跳闸退避**：`BackoffReset` 内再次跳闸视为连续故障，冷却时长翻倍；
+  超过 `BackoffReset` 才跳闸则退回 `OpenDuration` 重新起算。
+- **流式只统计创建阶段**：`BreakerStreamMiddleware` 以"流是否创建成功"为口径；
+  建流成功后中途断流不计入，需要覆盖时在 `Recv` 出错处自行调用 `breaker.Report(err)`。
+- **与降级链联动**：`ErrBreakerOpen` 已在默认切换判定内，熔断打开会立刻切到
+  下一个成员，无需自定义 `ShouldFallback`。
+- **装配位置**：熔断放在**每个上游成员**上（各自独立跳闸、独立恢复），
+  不要包在整条降级链外——那样一个上游故障会把整条链熔断。
+- **状态查询**：`breaker.State()` 与 `breaker.Stats()` 供健康检查与监控读取；
+  确认上游已恢复（如换了新 key）时用 `breaker.Reset()` 手动放行。
+- 状态保存在进程内存，不跨进程共享；多副本部署时每个副本独立熔断。
+- `Embedder` 侧用 `WithEmbedderBreaker` / `BreakerEmbedMiddleware`，语义相同。
+
+### 加权负载均衡（BalancedProvider）
+
+降级链是"链首承担全部流量、失败才用下一个"；`BalancedProvider` 是"按权重分摊
+流量"，适合多 key 分摊配额、多地域就近、按成本比例混流。故障转移语义与降级链一致。
+
+```go
+lb, err := provider.NewBalancedProviderWithOptions([]provider.BalanceMember{
+    {
+        Provider: keyA,
+        Weight:   3,                                                    // 承担 3/4 流量
+        Breaker:  provider.NewBreaker(provider.BreakerOptions{Name: "key-a"}),
+    },
+    {
+        Provider: keyB,
+        Weight:   1,
+        Breaker:  provider.NewBreaker(provider.BreakerOptions{Name: "key-b"}),
+    },
+}, provider.BalanceOptions{
+    Strategy:    provider.BalanceWeightedRoundRobin,
+    MaxAttempts: 2, // 单次调用最多尝试 2 个成员，≤0 表示全部
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+resp, err := lb.Chat(ctx, req)
+```
+
+三种策略：
+
+| 策略 | 行为 | 适用 |
+|------|------|------|
+| `BalanceWeightedRoundRobin`（默认） | 平滑加权轮询，按权重把流量均匀铺开，低权重成员插在中间而非攒到末尾 | 多 key 分摊配额 |
+| `BalanceWeightedRandom` | 加权随机，长期分布与权重一致，短期可能连续命中同一成员 | 无状态、成员很多 |
+| `BalanceLeastPending` | 加权最少在途，选 `在途数/权重` 最小的成员 | 各成员时延差异大 |
+
+- **成员级熔断**：`BalanceMember.Breaker` 由均衡器负责申请与上报，不要再用
+  `WithBreaker` 包一层（会双重计数）。熔断打开的成员会以 `ErrBreakerOpen`
+  快速失败并自动转移到下一个成员，冷却到期后自动恢复接流。
+- **故障转移判定**同降级链：默认切换平台侧可重试错误与 `ErrBreakerOpen`，
+  可用 `BalanceOptions.ShouldFallback` 覆盖。ctx 已取消/超时时立即返回、
+  不再尝试后续成员。
+- **`req.Model` 通常留空**（同降级链的理由），让各成员用自己的默认模型。
+- **流式只在创建阶段转移**：打字机开始输出后中途断流不会切换。
+- **`lb.Stats()`** 返回每个成员的权重、在途数与熔断状态，可直接喂给健康检查端点。
+- `BalancedProvider` 本身实现 `Provider`，可与 `FallbackProvider`、`WithRetry`
+  嵌套组合：常见装配是"均衡器内每个成员各自带 retry + 熔断"。
+
 ### 洋葱模型执行顺序
 
 ```go
@@ -975,6 +1113,10 @@ emb := provider.WithEmbedderMiddlewares(baseEmb, loggingEmbedMiddleware())
 如果你希望在装饰阶段显式处理空值，改用 `TryWithMiddlewares` / `TryWithEmbedderMiddlewares`，由调用方直接接收 `ErrNilProvider` / `ErrNilEmbedder`。
 
 ### 错误处理：`ProviderError` + 8 个 Sentinel
+
+除下面 8 个与 `*ProviderError` 互认的分类 sentinel 外，还有一个本地拦截类
+sentinel：`ErrBreakerOpen`（熔断器打开，请求未发往平台，不是 `*ProviderError`，
+用 `errors.Is` 判定）。它默认会触发降级链与均衡器的成员切换。
 
 底层 provider 错误统一包装为 `*ProviderError`。调用方既可以用 `errors.Is` 走高频分支，也可以用 `errors.As` 拿到结构化字段：
 

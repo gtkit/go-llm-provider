@@ -80,6 +80,15 @@ var (
 	// ErrNetwork 表示发起请求时遇到网络层错误。
 	// 与 *ProviderError 互认：errors.Is(err, ErrNetwork) 在 Code == ErrorCodeNetwork 时返回 true。
 	ErrNetwork = errors.New("provider network error")
+
+	// ErrBreakerOpen 表示熔断器处于打开状态，请求未发往平台。
+	ErrBreakerOpen = errors.New("circuit breaker is open")
+
+	// ErrNilBreaker 表示调用方传入了 nil 的熔断器。
+	ErrNilBreaker = errors.New("breaker is nil")
+
+	// ErrInvalidBalanceStrategy 表示 BalanceOptions.Strategy 取值不被支持。
+	ErrInvalidBalanceStrategy = errors.New("invalid balance strategy")
 )
 
 func providerIsNil(p Provider) bool {

@@ -17,13 +17,16 @@ type FallbackProvider struct {
 // FallbackOptions 配置降级链的切换行为。
 type FallbackOptions struct {
 	// ShouldFallback 判定某个错误是否应尝试下一个 provider。
-	// nil 时默认 IsRetryableError（限流/超时/5xx/网络才切换）。
-	// 多供应商冗余场景可放宽——如 key 失效（401）、模型下线（404）、
-	// 业务熔断错误也触发切换：
+	// nil 时默认切换平台侧可重试错误（限流/超时/5xx/网络，口径同
+	// IsRetryableError）、本地熔断打开（ErrBreakerOpen）与本地限流拦下
+	// （ErrLocalRateLimited）。
+	// 多供应商冗余场景可放宽——如 key 失效（401）、模型下线（404）
+	// 也触发切换：
 	//
 	//	provider.FallbackOptions{ShouldFallback: func(err error) bool {
 	//	    return provider.IsRetryableError(err) ||
-	//	        errors.Is(err, provider.ErrAuth) || isBreakerOpen(err)
+	//	        errors.Is(err, provider.ErrBreakerOpen) ||
+	//	        errors.Is(err, provider.ErrAuth)
 	//	}}
 	//
 	// 无论如何判定，ctx 已取消/超时时都不会继续尝试（调用方已放弃）。
@@ -49,9 +52,18 @@ func NewFallbackProviderWithOptions(providers []Provider, opts FallbackOptions) 
 	}
 	shouldFallback := opts.ShouldFallback
 	if shouldFallback == nil {
-		shouldFallback = IsRetryableError
+		shouldFallback = defaultShouldFallback
 	}
 	return &FallbackProvider{providers: out, shouldFallback: shouldFallback}, nil
+}
+
+// defaultShouldFallback 是降级链与均衡器的默认切换判定：平台侧可重试错误、
+// 本地熔断打开、本地限流拦下都切到下一个成员。后两者意味着当前成员短期内
+// 不可用，留在原地重试必然继续失败，切换是唯一有意义的动作。
+func defaultShouldFallback(err error) bool {
+	return IsRetryableError(err) ||
+		errors.Is(err, ErrBreakerOpen) ||
+		errors.Is(err, ErrLocalRateLimited)
 }
 
 // Name returns the first provider name.

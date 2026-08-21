@@ -30,6 +30,8 @@ const (
 	// (WebSearchTool). Providers without it can still perform web search through
 	// a regular function tool executed by the caller's ToolHandler (see README).
 	CapabilityWebSearch Capability = "web_search"
+	// CapabilityRerank 表示平台提供 OpenAI 兼容的 /rerank 端点（Reranker 接口）。
+	CapabilityRerank Capability = "rerank"
 )
 
 // ModelCapabilities describes the default models and known capabilities for a preset.
@@ -37,8 +39,10 @@ type ModelCapabilities struct {
 	Provider       ProviderName
 	ChatModel      string
 	EmbeddingModel string
-	ContextWindow  int
-	Capabilities   []Capability
+	// RerankModel 是该平台推荐的默认 rerank 模型，空串表示预设未覆盖 rerank。
+	RerankModel   string
+	ContextWindow int
+	Capabilities  []Capability
 }
 
 // Supports reports whether caps includes capability.

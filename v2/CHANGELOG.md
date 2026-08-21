@@ -8,8 +8,17 @@
 
 - 新增火山方舟（Ark）平台预设 `ProviderArk`：预置 OpenAI 兼容端点 `https://ark.cn-beijing.volces.com/api/v3`、默认 Chat 模型 `doubao-seed-2-0-pro-260215` 与 embedding 模型 `doubao-embedding-text-240515`，传 APIKey 即可通过 `NewProviderFromPreset` / `NewEmbedderFromPreset` / `QuickRegistry` 接入；`Model` 同时接受方舟模型 ID 与推理接入点 ID（`ep-` 开头）
 - `Thinking` 现已映射方舟深度思考控制：`Enabled` 下发请求体顶层 `thinking` 字段（`enabled` / `disabled`，nil 时不下发该字段，由方舟按模型的默认行为决定），`Effort` 下发 `reasoning_effort`；两者互相独立下发，本库不做取舍；非流式与流式调用均生效
+- 新增内置熔断器 `Breaker`：滑动窗口失败计数达阈值即跳闸，冷却期内请求以 `ErrBreakerOpen` 在本地快速失败、不发往平台；冷却到期放行半开探测，探测成功即闭合、失败则冷却时长翻倍（上限 `MaxOpenDuration`）。配套 `WithBreaker` / `BreakerMiddleware` / `BreakerStreamMiddleware` / `WithEmbedderBreaker` / `BreakerEmbedMiddleware`，`State()`、`Stats()`、`Reset()` 供健康检查与人工放行使用
+- 新增客户端侧限流器 `RateLimiter`：RPM 与 TPM 各走一个令牌桶，超额请求以 `ErrLocalRateLimited` 挡在发出之前；token 额度采用"预扣 + 真实 `Usage` 结算"（流式延后到流终止结算），`AdaptFromHeaders` 可用 `x-ratelimit-remaining-*` 响应头把本地额度下调到平台口径。配套 `WithRateLimit` / `RateLimitMiddleware` / `RateLimitStreamMiddleware` / `WithEmbedderRateLimit` / `RateLimitEmbedMiddleware` 与 `EstimateChatRequestTokens`
+- 新增加权负载均衡 `BalancedProvider`：按权重把流量分摊到多个成员（多 key 分摊配额、多地域就近、按成本混流），支持平滑加权轮询、加权随机、加权最少在途三种策略；成员可各带独立熔断器，熔断打开的成员自动被跳过并在冷却到期后恢复接流；`Stats()` 暴露每个成员的权重、在途数与熔断状态
+- 新增价格表原子容器 `PricingRegistry`：构造与 `Replace` 时整表拷贝并强制走 `Validate`，计价读取走原子指针，把"运行中改价会 data race"的文档约束变成 API 保证；每一代价格带 `Version` 标识，便于账务对账还原当时口径
+- 新增重排序能力 `Reranker`：`POST {BaseURL}/rerank` 的 OpenAI 兼容映射（硅基流动、Jina、Cohere 等平台形态一致），用量字段各家口径统一归一到 `RerankResponse.Usage`；平台返回越界 `Index` 时直接报错，不把越界值透给调用方；`RerankResponse.SortedDocuments` 把精排结果接回本地候选集。配套 `NewReranker` / `NewRerankerFromPreset`、`CapabilityRerank` 与 `Preset.RerankModel`（硅基流动预置 `BAAI/bge-reranker-v2-m3`）
+- 新增本地拦截类 sentinel：`ErrBreakerOpen`、`ErrLocalRateLimited`、`ErrNilBreaker`、`ErrNilRateLimiter`、`ErrInvalidBalanceStrategy`、`ErrNilPricingRegistry`、`ErrNilReranker`、`ErrNilRerankRequest`、`ErrEmptyRerankQuery`、`ErrEmptyRerankDocuments`、`ErrInvalidRerankerConfig`
 
 ### Changed
+
+- 降级链 `FallbackProvider` 的默认切换判定从"仅平台侧可重试错误"扩展为"平台侧可重试错误 + `ErrBreakerOpen` + `ErrLocalRateLimited`"：熔断打开与本地限流都意味着当前成员短期不可用，留在原地重试必然继续失败。两个新错误只在使用内置熔断器 / 限流器后才可能出现，既有调用方行为不变；显式传入 `FallbackOptions.ShouldFallback` 的调用方完全不受影响
+- `Preset` 与 `ModelCapabilities` 新增 `RerankModel` 字段（keyed struct literal 调用方不受影响）
 
 ### Deprecated
 
