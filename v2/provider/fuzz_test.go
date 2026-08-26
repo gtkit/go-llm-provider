@@ -8,6 +8,9 @@ import (
 	"math/big"
 	"regexp"
 	"testing"
+	"unicode/utf8"
+
+	"github.com/gtkit/json/v2"
 )
 
 // FuzzAnthropicStreamChunk 验证任意字节输入下流事件解析不 panic、不产生非法状态。
@@ -250,6 +253,56 @@ func FuzzPricingTableCost(f *testing.F) {
 		}
 		if !errors.Is(err, wantErr) {
 			t.Fatalf("错误类别不一致: want %v, got %v (usage=%+v rate=%+v)", wantErr, err, usage, rate)
+		}
+	})
+}
+
+// FuzzInjectExtraFields 验证顶层扩展字段注入的两条不变式：注入后的请求体仍是
+// 合法 JSON，且字段值能原样读回。字段名与字段值来自各平台的扩展协议，含引号、
+// 反斜杠、控制字符时都不得破坏请求体结构或逃逸出额外的顶层字段。
+func FuzzInjectExtraFields(f *testing.F) {
+	f.Add(`{"model":"m"}`, "thinking", "enabled")
+	f.Add(`{}`, `quote"key`, `auto","injected":"yes`)
+	f.Add(`   {"a":1,"b":[1,2,{"c":"d"}]}  `, "x", "\n\t\\")
+	f.Add(`{"thinking":"old"}`, "thinking", "new")
+	f.Add(`[1,2]`, "k", "v")
+	f.Add(``, "k", "v")
+
+	f.Fuzz(func(t *testing.T, body, name, value string) {
+		out, err := injectExtraFields([]byte(body), map[string]any{name: value})
+		if err != nil {
+			// 非 JSON 对象的请求体与非法字段名都必须被拒绝，拒绝即正确
+			return
+		}
+		// 注入只做首尾花括号的形状检查，不全量校验 body（见 injectExtraFields 的前置
+		// 条件）。body 本身非法时输出跟着非法，属于契约之外，不在此断言。
+		if !json.Valid([]byte(body)) {
+			return
+		}
+
+		if !json.Valid(out) {
+			t.Fatalf("注入后不是合法 JSON: body=%q name=%q value=%q out=%q", body, name, value, out)
+		}
+
+		var decoded map[string]any
+		if err := json.Unmarshal(out, &decoded); err != nil {
+			// 原请求体可能含无法解码到 any 的数值（如超大浮点），此时无从比较字段值
+			var base map[string]any
+			if json.Unmarshal([]byte(body), &base) != nil {
+				return
+			}
+			t.Fatalf("注入后无法解码: body=%q name=%q value=%q out=%q err=%v", body, name, value, out, err)
+		}
+
+		// 重复键取后者，注入值必须胜出
+		got, ok := decoded[name]
+		if !ok {
+			t.Fatalf("注入的字段缺失: name=%q out=%q", name, out)
+		}
+		// 字段值含非法 UTF-8 时，JSON 编码按语义替换成 U+FFFD，读回的不再是原字节。
+		// 字段名不受此影响：encodeExtraFields 直接拒绝非法 UTF-8 的字段名。
+		if utf8.ValidString(value) && got != value {
+			t.Fatalf("字段值不一致: name=%q want=%q got=%v", name, value, got)
 		}
 	})
 }

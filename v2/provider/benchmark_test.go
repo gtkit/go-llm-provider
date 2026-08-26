@@ -154,10 +154,16 @@ func BenchmarkAnthropicStreamChunk(b *testing.B) {
 	}
 }
 
-// BenchmarkInjectArkThinking 基准化方舟 thinking 注入热路径：显式设置 Enabled 的
-// 每次请求都会执行一次，请求体越大（长上下文、base64 图片）越要避免全量解析重编码。
-func BenchmarkInjectArkThinking(b *testing.B) {
+// BenchmarkInjectExtraFields 基准化顶层扩展字段注入热路径：需要注入的每次请求
+// 都会执行一次，请求体越大（长上下文、base64 图片）越要避免全量解析重编码。
+func BenchmarkInjectExtraFields(b *testing.B) {
 	const prefix = `{"model":"doubao-seed-2-0-pro-260215","messages":[{"role":"user","content":`
+
+	fields := arkExtraFields(&ChatRequest{Thinking: &Thinking{Enabled: boolPtr(true)}})
+	if len(fields) == 0 {
+		// 字段为空时 injectExtraFields 直接返回原字节，压测的就不是注入路径了。
+		b.Fatal("extra fields must not be empty")
+	}
 
 	benchmarks := []struct {
 		name string
@@ -174,7 +180,7 @@ func BenchmarkInjectArkThinking(b *testing.B) {
 			b.ReportAllocs()
 			b.SetBytes(int64(len(bm.body)))
 			for b.Loop() {
-				if _, err := injectArkThinking(bm.body, arkThinkingTypeEnabled); err != nil {
+				if _, err := injectExtraFields(bm.body, fields); err != nil {
 					b.Fatal(err)
 				}
 			}

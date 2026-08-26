@@ -698,10 +698,10 @@ func NewProvider(cfg ProviderConfig) (Provider, error) {
 	if httpClient == nil {
 		httpClient = DefaultHTTPClient()
 	}
-	if cfg.Name == ProviderArk {
-		// 方舟的 thinking 开关是 go-openai 无法表达的顶层扩展字段，
-		// 通过包装 HTTPDoer 在发送前注入（见 ark.go）。
-		httpClient = &arkThinkingDoer{next: httpClient}
+	if needsExtraFields(cfg.Name) {
+		// 该平台有 go-openai 无法表达的顶层扩展字段（如方舟的 thinking），
+		// 通过包装 HTTPDoer 在发送前注入（见 extrafields.go）。
+		httpClient = &extraFieldsDoer{next: httpClient}
 	}
 	ocfg.HTTPClient = httpClient
 
@@ -741,7 +741,7 @@ func (p *openaiProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRespo
 		return nil, err
 	}
 
-	ctx = arkThinkingContext(ctx, p.name, req.Thinking)
+	ctx = withExtraFields(ctx, p.name, req)
 	resp, err := p.client.CreateChatCompletion(ctx, oReq)
 	if err != nil {
 		return nil, WrapProviderError(p.name, err)
@@ -796,7 +796,7 @@ func (p *openaiProvider) ChatStream(ctx context.Context, req *ChatRequest) (*Str
 		oReq.StreamOptions = &openai.StreamOptions{IncludeUsage: true}
 	}
 
-	ctx = arkThinkingContext(ctx, p.name, req.Thinking)
+	ctx = withExtraFields(ctx, p.name, req)
 	stream, err := p.client.CreateChatCompletionStream(ctx, oReq)
 	if err != nil {
 		return nil, WrapProviderError(p.name, err)
