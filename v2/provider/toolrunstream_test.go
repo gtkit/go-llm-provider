@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"io"
 	"testing"
 
@@ -152,6 +153,71 @@ func TestToolCallAssemblerMultipleCalls(t *testing.T) {
 
 	empty := newToolCallAssembler()
 	assert.Nil(t, empty.result())
+}
+
+func TestRunToolLoopStreamAppliesToolResultTransformer(t *testing.T) {
+	t.Parallel()
+
+	var round int
+	var secondRoundReq *ChatRequest
+	p := &stubProvider{
+		name: ProviderOpenAI,
+		chatStream: func(_ context.Context, req *ChatRequest) (*StreamReader, error) {
+			round++
+			if round == 1 {
+				return chunkStream([]StreamChunk{
+					{ToolCalls: []ToolCallDelta{{Index: 0, ID: "call_1", Function: FunctionCallDelta{Name: "f", Arguments: "{}"}}}},
+					{FinishReason: "tool_calls"},
+				}), nil
+			}
+			secondRoundReq = req
+			return chunkStream([]StreamChunk{{Delta: "done", FinishReason: "stop"}}), nil
+		},
+	}
+
+	resp, err := RunToolLoopStreamWithOptions(t.Context(), p,
+		&ChatRequest{Messages: []Message{UserText("hi")}},
+		func(context.Context, string, string) (string, error) { return "raw-result", nil },
+		nil,
+		RunToolLoopOptions{
+			MaxRounds:             5,
+			ToolResultTransformer: WrapToolResultInTag("tool_result"),
+		})
+	require.NoError(t, err)
+	assert.Equal(t, "done", resp.Content)
+
+	require.NotNil(t, secondRoundReq)
+	lastMessage := secondRoundReq.Messages[len(secondRoundReq.Messages)-1]
+	assert.Equal(t, "<tool_result>\nraw-result\n</tool_result>", contentText(lastMessage.Content))
+}
+
+func TestRunToolLoopStreamResponseValidatorRejectsFinalResponse(t *testing.T) {
+	t.Parallel()
+
+	p := &stubProvider{
+		name: ProviderOpenAI,
+		chatStream: func(context.Context, *ChatRequest) (*StreamReader, error) {
+			return chunkStream([]StreamChunk{{Delta: "done", FinishReason: "stop"}}), nil
+		},
+	}
+
+	rejectErr := errors.New("suspicious output")
+	resp, err := RunToolLoopStreamWithOptions(t.Context(), p,
+		&ChatRequest{Messages: []Message{UserText("hi")}},
+		func(context.Context, string, string) (string, error) { return "", nil },
+		nil,
+		RunToolLoopOptions{
+			MaxRounds: 5,
+			ResponseValidator: func(_ context.Context, resp *ChatResponse) error {
+				if resp.Content == "done" {
+					return rejectErr
+				}
+				return nil
+			},
+		})
+	require.Error(t, err)
+	assert.Nil(t, resp)
+	require.ErrorIs(t, err, rejectErr)
 }
 
 func TestRunToolLoopStreamPropagatesRecvError(t *testing.T) {

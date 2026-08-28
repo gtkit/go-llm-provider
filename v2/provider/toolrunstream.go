@@ -71,6 +71,11 @@ func RunToolLoopStreamWithOptions(ctx context.Context, p Provider, req *ChatRequ
 			if opts.AccumulateUsage {
 				resp.Usage = totalUsage
 			}
+			if opts.ResponseValidator != nil {
+				if verr := opts.ResponseValidator(ctx, resp); verr != nil {
+					return nil, fmt.Errorf("validate response: %w", verr)
+				}
+			}
 			return resp, nil
 		}
 
@@ -79,7 +84,7 @@ func RunToolLoopStreamWithOptions(ctx context.Context, p Provider, req *ChatRequ
 			Content:   []ContentPart{TextPart(result.content)},
 			ToolCalls: result.toolCalls,
 		})
-		toolMessages, err := executeToolCalls(ctx, result.toolCalls, handler, encoder, opts.ParallelToolCalls, retry)
+		toolMessages, err := executeToolCalls(ctx, result.toolCalls, handler, encoder, opts.ToolResultTransformer, opts.ParallelToolCalls, retry)
 		if err != nil {
 			return nil, err
 		}

@@ -6,6 +6,8 @@
 
 ### Added
 
+- `RunToolLoopOptions` 新增 `ToolResultTransformer` / `ResponseValidator` 两个可选钩子，用于抵御工具结果携带间接提示注入内容：前者在工具结果写回对话历史前加工，后者在返回最终响应前校验，二者返回 error 均会中止工具循环、不将未处理或未通过校验的内容交还给调用方；`RunToolLoopWithOptions` 与 `RunToolLoopStreamWithOptions` 均已接入，均为 nil 时行为与之前版本完全一致。配套内置便捷函数 `WrapToolResultInTag`，将工具结果包裹进指定标签并转义结果中的尖括号，防止结果内容本身携带同名标签文本提前闭合标签；`example/toolsecurity` 提供组合长度截断、特征词检测、Markdown 结构符转义、标签结构隔离、`ResponseFormat` 强制 JSON Schema 输出、字段与敏感词校验的完整可运行示例
+
 ### Changed
 
 ### Deprecated

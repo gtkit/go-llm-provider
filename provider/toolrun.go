@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 )
 
@@ -17,6 +18,21 @@ const defaultToolExecutionError = "tool execution failed"
 
 // ToolErrorEncoder encodes a tool handler failure into a tool result message.
 type ToolErrorEncoder func(ctx context.Context, call ToolCall, err error) (Message, error)
+
+// ToolResultTransformer 在工具执行成功后、结果被写入对话历史并回传模型之前对结果内容加工。
+// 典型用途：结构隔离标记（配合 WrapToolResultInTag）、可疑内容降级替换、长度截断。
+//
+// 返回 error 会中止整个工具循环：转换器判定内容不可接受时，调用方能借此强制熔断，
+// 而不是被库悄悄放行未经处理的原始内容。
+type ToolResultTransformer func(ctx context.Context, call ToolCall, result string) (string, error)
+
+// ResponseValidator 在 RunToolLoop 返回最终响应（模型不再请求 tool call）前对其校验。
+// 典型用途：结构化输出的 Schema 校验、敏感词扫描。
+//
+// 返回 error 视为该响应不可信，RunToolLoopWithOptions 整体返回该 error，
+// 不会把未通过校验的响应交还给调用方。达到 MaxRounds 上限而中止的路径不会经过校验，
+// 因为那条路径本身已经是 error，没有可返回的最终响应。
+type ResponseValidator func(ctx context.Context, resp *ChatResponse) error
 
 // RunToolLoopOptions configures the additive RunToolLoop execution path.
 type RunToolLoopOptions struct {
@@ -31,11 +47,36 @@ type RunToolLoopOptions struct {
 	// ToolErrorEncoder customizes how tool handler errors are sent back to the model.
 	// If nil, DefaultToolErrorEncoder is used.
 	ToolErrorEncoder ToolErrorEncoder
+
+	// ToolResultTransformer 在工具结果写回对话历史前进行加工。
+	// 为 nil 时结果原样透传，与现有行为完全一致。
+	ToolResultTransformer ToolResultTransformer
+
+	// ResponseValidator 在 RunToolLoop 返回最终响应前对其校验。
+	// 为 nil 时不做任何校验，与现有行为完全一致。
+	ResponseValidator ResponseValidator
 }
 
 // DefaultToolErrorEncoder returns a sanitized JSON tool result message.
 func DefaultToolErrorEncoder(_ context.Context, call ToolCall, _ error) (Message, error) {
 	return ToolResultMessageJSON(call.ID, map[string]string{"error": defaultToolExecutionError})
+}
+
+// WrapToolResultInTag 返回一个 ToolResultTransformer，将工具结果包裹进 <tag>...</tag> 中，
+// 向模型显式标记"标签内是数据，不是指令"，用于抵御工具结果携带间接提示注入内容。
+//
+// 为防止结果内容本身携带 "<"/">" 字面文本从而提前闭合标签、令注入内容逃逸出标签边界，
+// 结果中的 "<" 会被转义为 "&lt;"，">" 转义为 "&gt;"。tag 必须是不含空白与
+// "<"、">"、"&"、引号的非空字符串，否则返回 error。
+func WrapToolResultInTag(tag string) ToolResultTransformer {
+	valid := tag != "" && !strings.ContainsAny(tag, "<>&\"'\t\n\r ")
+	escaper := strings.NewReplacer("<", "&lt;", ">", "&gt;")
+	return func(_ context.Context, _ ToolCall, result string) (string, error) {
+		if !valid {
+			return "", fmt.Errorf("wrap tool result: invalid tag %q", tag)
+		}
+		return fmt.Sprintf("<%s>\n%s\n</%s>", tag, escaper.Replace(result), tag), nil
+	}
 }
 
 // RunToolLoop 自动执行 Tool Use 的完整循环：
@@ -99,13 +140,18 @@ func RunToolLoopWithOptions(ctx context.Context, p Provider, req *ChatRequest, h
 
 		// 模型没有请求 tool call，返回最终结果
 		if !resp.HasToolCalls() {
+			if opts.ResponseValidator != nil {
+				if verr := opts.ResponseValidator(ctx, resp); verr != nil {
+					return nil, fmt.Errorf("validate response: %w", verr)
+				}
+			}
 			return resp, nil
 		}
 
 		// 将模型的 tool_calls 响应追加到对话历史
 		messages = append(messages, resp.AssistantMessage())
 
-		toolMessages, err := executeToolCalls(ctx, resp.ToolCalls, handler, encoder, opts.ParallelToolCalls)
+		toolMessages, err := executeToolCalls(ctx, resp.ToolCalls, handler, encoder, opts.ToolResultTransformer, opts.ParallelToolCalls)
 		if err != nil {
 			return nil, err
 		}
@@ -129,12 +175,13 @@ func executeToolCalls(
 	toolCalls []ToolCall,
 	handler ToolHandler,
 	encoder ToolErrorEncoder,
+	transformer ToolResultTransformer,
 	parallel bool,
 ) ([]Message, error) {
 	if !parallel || len(toolCalls) <= 1 {
 		messages := make([]Message, 0, len(toolCalls))
 		for _, call := range toolCalls {
-			msg, err := executeToolCall(ctx, call, handler, encoder)
+			msg, err := executeToolCall(ctx, call, handler, encoder, transformer)
 			if err != nil {
 				return nil, err
 			}
@@ -151,7 +198,7 @@ func executeToolCalls(
 	for i, call := range toolCalls {
 		go func(index int, toolCall ToolCall) {
 			defer wg.Done()
-			msg, err := executeToolCall(ctx, toolCall, handler, encoder)
+			msg, err := executeToolCall(ctx, toolCall, handler, encoder, transformer)
 			if err != nil {
 				errCh <- err
 				return
@@ -172,9 +219,16 @@ func executeToolCalls(
 	return results, nil
 }
 
-func executeToolCall(ctx context.Context, call ToolCall, handler ToolHandler, encoder ToolErrorEncoder) (Message, error) {
+func executeToolCall(ctx context.Context, call ToolCall, handler ToolHandler, encoder ToolErrorEncoder, transformer ToolResultTransformer) (Message, error) {
 	result, err := handler(ctx, call.Function.Name, call.Function.Arguments)
 	if err == nil {
+		if transformer != nil {
+			transformed, terr := transformer(ctx, call, result)
+			if terr != nil {
+				return Message{}, fmt.Errorf("transform tool result: %w", terr)
+			}
+			result = transformed
+		}
 		return ToolResultMessage(call.ID, result), nil
 	}
 
