@@ -26,17 +26,25 @@ const maxFetchedContentLen = 2000
 
 // suspiciousPatterns 是业务侧自定义的可疑指令特征词，库本身不内置这份规则，
 // 具体规则由使用方按自己的场景维护（第一道防线：关键词检测）。
+//
+// 锚点之间用 .{0,N} 容忍中间插入代词/修饰词（如"忘记你之前的处理任务"），
+// 而不是要求锚点词严格相邻——早期版本用严格相邻的写法，实测连
+// "ignore all previous instructions" 这种最常见的英文注入短语和文章原文
+// "忘记你之前的处理任务" 都会漏检（两个限定词之间插了别的字，相邻匹配直接失效）。
+// 放宽窗口是有代价的：会提高误报率（把无关文本误判为可疑），处理策略上
+// 只做降级替换 + 记审计日志而不是直接拒绝整个请求，误报的代价可以接受。
 var suspiciousPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)ignore\s+(previous|above|all)\s+instructions?`),
-	regexp.MustCompile(`(?i)forget\s+(your|the|all)\s+(previous|prior|above)`),
+	regexp.MustCompile(`(?is)ignore\s+.{0,25}(instructions?|prompts?|rules?)`),
+	regexp.MustCompile(`(?is)forget\s+.{0,25}(previous|prior|above|instructions?)`),
+	regexp.MustCompile(`(?is)disregard\s+.{0,25}(previous|prior|above|instructions?)`),
 	regexp.MustCompile(`(?i)you\s+are\s+now\s+a`),
 	regexp.MustCompile(`(?i)system\s*:\s*`),
 	regexp.MustCompile(`(?i)new\s+instruction`),
-	regexp.MustCompile(`(?i)disregard\s+(your|all|previous)`),
-	regexp.MustCompile(`忽略(前面|之前|所有)的(指令|任务|要求)`),
+	regexp.MustCompile(`(?s)(忘记|忽略).{0,6}(前面|之前|所有|全部).{0,6}(指令|任务|要求)`),
 	regexp.MustCompile(`你现在是`),
-	regexp.MustCompile(`请忽略(系统|之前)`),
-	regexp.MustCompile(`新的(指令|任务|角色)`),
+	regexp.MustCompile(`请(忘记|忽略)(系统|之前)`),
+	regexp.MustCompile(`(?s)新的.{0,4}(指令|任务|角色)`),
+	regexp.MustCompile(`系统提示词`),
 }
 
 // markdownEscaper 转义可能破坏 prompt 结构的 Markdown 控制符（第一道防线：结构符转义）。
