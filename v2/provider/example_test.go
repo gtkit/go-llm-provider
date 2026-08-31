@@ -400,3 +400,38 @@ func ExampleNewBedrockOpenAIProvider() {
 	fmt.Println(p != nil, err == nil)
 	// Output: true true
 }
+
+func ExamplePromptTask_Run() {
+	weatherTask := provider.PromptTask[struct{}]{
+		System: func(struct{}) string { return "你是天气助手，只返回结构化 JSON" },
+	}
+
+	reply, err := weatherTask.Run(context.Background(), exampleProvider{}, struct{}{}, "杭州天气")
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	fmt.Println(reply)
+	// Output: {"city":"杭州","temperature":27}
+}
+
+func ExampleRunPromptTaskJSON() {
+	type weather struct {
+		City        string `json:"city"`
+		Temperature int    `json:"temperature"`
+	}
+
+	weatherTask := provider.PromptTask[struct{}]{
+		System: func(struct{}) string { return "你是天气助手，只返回结构化 JSON" },
+	}
+
+	result, _, err := provider.RunPromptTaskJSON[struct{}, weather](
+		context.Background(), weatherTask, exampleProvider{}, struct{}{}, "杭州天气",
+	)
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	fmt.Println(result.City, result.Temperature)
+	// Output: 杭州 27
+}
