@@ -6,7 +6,7 @@
 
 ### Added
 
-- 新增 Prompt Injection 防御规则模板文档 `docs/prompt-injection-defense.md`：与本库解耦，只依赖标准库，可直接复制到任何项目使用；含可复制的正则特征词表、Markdown 转义、标签隔离、输出解析校验的完整代码模板，以及已验证的攻击载荷/正常文本用例表
+- 新增 Prompt Injection 防御规则模板文档 `PROMPT_INJECTION_DEFENSE.md`：与本库解耦，只依赖标准库，可直接复制到任何项目使用；含可复制的正则特征词表、Markdown 转义、标签隔离、输出解析校验的完整代码模板，以及已验证的攻击载荷/正常文本用例表
 
 ### Changed
 

@@ -21,7 +21,7 @@ type PromptTask[P any] struct {
 	// 且该调用路径是一次性 Chat，不经过 RunToolLoop 的
 	// ToolResultTransformer / ResponseValidator 钩子。优先用受限的枚举/白名单
 	// 类型约束这类字段的取值；确需接受自由文本时，参照
-	// docs/prompt-injection-defense.md 的输入净化规则在闭包内部处理后再拼接。
+	// PROMPT_INJECTION_DEFENSE.md 的输入净化规则在闭包内部处理后再拼接。
 	System func(params P) string
 
 	// Model 为空时使用 ProviderConfig.Model。

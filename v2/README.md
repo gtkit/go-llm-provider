@@ -559,7 +559,7 @@ var Translate = provider.PromptTask[TranslateParams]{
 reply, err := Translate.Run(ctx, p, TranslateParams{TargetLang: "英文"}, "今天天气真好")
 ```
 
-> **安全提示**：`System` 闭包完全由调用方实现，库不对拼接内容做任何检测或转义；如果 `TargetLang` 这类字段直接来自用户输入并原样拼进 system prompt，就是把不可信数据混入 system prompt——这条路径是一次性 `Chat` 调用，不经过 `RunToolLoop` 的 `ToolResultTransformer` / `ResponseValidator` 钩子。优先用受限枚举/白名单校验这类字段的取值；确需接受自由文本，参照 [`docs/prompt-injection-defense.md`](../docs/prompt-injection-defense.md#prompttask-另一类混入路径不经过-runtoolloop-的钩子) 在闭包内部净化后再拼接。不可信的正文内容应始终走 `input` 参数（对应 user message），不要拼进 `System`。
+> **安全提示**：`System` 闭包完全由调用方实现，库不对拼接内容做任何检测或转义；如果 `TargetLang` 这类字段直接来自用户输入并原样拼进 system prompt，就是把不可信数据混入 system prompt——这条路径是一次性 `Chat` 调用，不经过 `RunToolLoop` 的 `ToolResultTransformer` / `ResponseValidator` 钩子。优先用受限枚举/白名单校验这类字段的取值；确需接受自由文本，参照 [`PROMPT_INJECTION_DEFENSE.md`](../PROMPT_INJECTION_DEFENSE.md#prompttask-另一类混入路径不经过-runtoolloop-的钩子) 在闭包内部净化后再拼接。不可信的正文内容应始终走 `input` 参数（对应 user message），不要拼进 `System`。
 
 不需要运行时参数的任务可将参数类型设为 `struct{}`：
 
@@ -1291,7 +1291,7 @@ resp, err := provider.RunToolLoopWithOptions(
 - **结构化输出**：生成侧的强制约束用库已有的 `ResponseFormat` / `JSONSchemaFormatStrict`（见本 README「Structured Output（结构化输出）」一节），比纯 prompt 文字声明更可靠；具体 schema 定义、解析失败即拒绝、字段级校验，由业务侧在 `ResponseValidator` 里实现——即使生成侧已做 Strict 约束，Go 侧仍需要防御性解析，不同 provider 对 strict 模式的遵循程度不同
 - **输出校验**：字段完整性校验、长度合理性检查、敏感词表扫描，由业务侧在 `ResponseValidator` 里实现；模型平台自带的安全过滤（如 Gemini `SafetySettings`）由业务侧按需在构造请求时配置，与 `ResponseValidator` 叠加使用
 
-完整可运行示例见 [`example/toolsecurity/main.go`](example/toolsecurity/main.go)：模拟一个网页摘要助手，工具抓取的网页内容里携带间接提示注入文本，示例组合了长度截断 + 正则特征检测降级替换 + Markdown 结构符转义（`ToolResultTransformer`）、`WrapToolResultInTag` 结构隔离、system prompt 显式声明数据边界、`ResponseFormat` 强制 JSON Schema 输出、`ResponseValidator` 解析校验（JSON 解析失败即拒绝 + 字段完整性 + 长度合理性 + 敏感词扫描）六层处理。规则内容本身（正则特征词表、Markdown 转义表、校验函数）整理成了一份跟本库解耦的模板文档，见 [`../docs/prompt-injection-defense.md`](../docs/prompt-injection-defense.md)，可直接复制到任何项目使用，不依赖这个库。
+完整可运行示例见 [`example/toolsecurity/main.go`](example/toolsecurity/main.go)：模拟一个网页摘要助手，工具抓取的网页内容里携带间接提示注入文本，示例组合了长度截断 + 正则特征检测降级替换 + Markdown 结构符转义（`ToolResultTransformer`）、`WrapToolResultInTag` 结构隔离、system prompt 显式声明数据边界、`ResponseFormat` 强制 JSON Schema 输出、`ResponseValidator` 解析校验（JSON 解析失败即拒绝 + 字段完整性 + 长度合理性 + 敏感词扫描）六层处理。规则内容本身（正则特征词表、Markdown 转义表、校验函数）整理成了一份跟本库解耦的模板文档，见 [`../PROMPT_INJECTION_DEFENSE.md`](../PROMPT_INJECTION_DEFENSE.md)，可直接复制到任何项目使用，不依赖这个库。
 
 ```bash
 DEEPSEEK_API_KEY="<DEEPSEEK_API_KEY>" go run ./example/toolsecurity

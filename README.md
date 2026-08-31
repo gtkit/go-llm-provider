@@ -601,7 +601,7 @@ resp, err := provider.RunToolLoopWithOptions(
 - **结构化输出**：v1 没有平台原生的结构化输出能力，约束模型只输出约定 JSON 完全依赖 system prompt 里的文字声明（软约束）；解析失败本身就是一个"可能被注入"的信号，具体 schema 与解析校验逻辑由业务侧在 `ResponseValidator` 里实现
 - **输出校验**：字段完整性校验、长度合理性检查、敏感词表扫描，由业务侧在 `ResponseValidator` 里实现；模型平台自带的安全过滤（如 Gemini `SafetySettings`）由业务侧按需在构造请求时配置，与 `ResponseValidator` 叠加使用
 
-完整可运行示例见 `example/toolsecurity/main.go`：模拟一个网页摘要助手，工具抓取的网页内容里携带间接提示注入文本，示例组合了长度截断 + 正则特征检测降级替换 + Markdown 结构符转义（`ToolResultTransformer`）、`WrapToolResultInTag` 结构隔离、system prompt 显式声明数据边界与输出格式、`ResponseValidator` 解析校验（JSON 解析失败即拒绝 + 字段完整性 + 长度合理性 + 敏感词扫描）五层处理。规则内容本身（正则特征词表、Markdown 转义表、校验函数）整理成了一份跟本库解耦的模板文档，见 [`docs/prompt-injection-defense.md`](docs/prompt-injection-defense.md)，可直接复制到任何项目使用，不依赖这个库。
+完整可运行示例见 `example/toolsecurity/main.go`：模拟一个网页摘要助手，工具抓取的网页内容里携带间接提示注入文本，示例组合了长度截断 + 正则特征检测降级替换 + Markdown 结构符转义（`ToolResultTransformer`）、`WrapToolResultInTag` 结构隔离、system prompt 显式声明数据边界与输出格式、`ResponseValidator` 解析校验（JSON 解析失败即拒绝 + 字段完整性 + 长度合理性 + 敏感词扫描）五层处理。规则内容本身（正则特征词表、Markdown 转义表、校验函数）整理成了一份跟本库解耦的模板文档，见 [`PROMPT_INJECTION_DEFENSE.md`](PROMPT_INJECTION_DEFENSE.md)，可直接复制到任何项目使用，不依赖这个库。
 
 ```bash
 DEEPSEEK_API_KEY="<DEEPSEEK_API_KEY>" go run ./example/toolsecurity
