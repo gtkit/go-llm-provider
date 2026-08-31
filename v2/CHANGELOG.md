@@ -6,9 +6,6 @@
 
 ### Added
 
-- 新增 Prompt Injection 防御规则模板文档 `PROMPT_INJECTION_DEFENSE.md`：与本库解耦，只依赖标准库，可直接复制到任何项目使用；含可复制的正则特征词表、Markdown 转义、标签隔离、输出解析校验的完整代码模板，以及已验证的攻击载荷/正常文本用例表
-- 新增 `PromptTask[P]`：将润色、翻译、摘要等单轮任务的 system prompt 构造逻辑与常用请求参数（Model / Temperature / MaxTokens / ResponseFormat）绑定为可复用值，调用时按运行时参数 `P` 拼装 system prompt；配套 `Run` 返回纯文本、`RunPromptTaskJSON` 解码为结构化类型，新增 sentinel `ErrNilTaskSystem`。`System` 闭包由调用方实现且不经过 `RunToolLoop` 的注入防护钩子，GoDoc 与 `PROMPT_INJECTION_DEFENSE.md` 新增一节说明该路径的风险与缓解方式
-
 ### Changed
 
 ### Deprecated
@@ -18,6 +15,13 @@
 ### Fixed
 
 ### Security
+
+## [2.12.0] - 2026-08-31
+
+### Added
+
+- 新增 Prompt Injection 防御规则模板文档 `PROMPT_INJECTION_DEFENSE.md`：与本库解耦，只依赖标准库，可直接复制到任何项目使用；含可复制的正则特征词表、Markdown 转义、标签隔离、输出解析校验的完整代码模板，以及已验证的攻击载荷/正常文本用例表
+- 新增 `PromptTask[P]`：将润色、翻译、摘要等单轮任务的 system prompt 构造逻辑与常用请求参数（Model / Temperature / MaxTokens / ResponseFormat）绑定为可复用值，调用时按运行时参数 `P` 拼装 system prompt；配套 `Run` 返回纯文本、`RunPromptTaskJSON` 解码为结构化类型，新增 sentinel `ErrNilTaskSystem`。`System` 闭包由调用方实现且不经过 `RunToolLoop` 的注入防护钩子，GoDoc 与 `PROMPT_INJECTION_DEFENSE.md` 新增一节说明该路径的风险与缓解方式
 
 ## [2.11.1] - 2026-08-31
 
