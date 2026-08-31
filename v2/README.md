@@ -541,6 +541,48 @@ reply, err := provider.SimpleChatWithSystem(ctx, p,
 )
 ```
 
+#### PromptTask — 可复用的单轮任务（润色/翻译/摘要）
+
+把某类单轮任务的 system prompt 构造逻辑与常用参数绑定成一个可复用值，调用时按运行时参数拼装 system prompt。适合翻译（目标语言）、润色（风格）这类同一套 prompt 骨架、只是变量不同的场景。
+
+```go
+type TranslateParams struct {
+    TargetLang string
+}
+
+var Translate = provider.PromptTask[TranslateParams]{
+    System: func(p TranslateParams) string {
+        return fmt.Sprintf("你是专业翻译，请将用户输入翻译成%s，只返回译文", p.TargetLang)
+    },
+}
+
+reply, err := Translate.Run(ctx, p, TranslateParams{TargetLang: "英文"}, "今天天气真好")
+```
+
+> **安全提示**：`System` 闭包完全由调用方实现，库不对拼接内容做任何检测或转义；如果 `TargetLang` 这类字段直接来自用户输入并原样拼进 system prompt，就是把不可信数据混入 system prompt——这条路径是一次性 `Chat` 调用，不经过 `RunToolLoop` 的 `ToolResultTransformer` / `ResponseValidator` 钩子。优先用受限枚举/白名单校验这类字段的取值；确需接受自由文本，参照 [`docs/prompt-injection-defense.md`](../docs/prompt-injection-defense.md#prompttask-另一类混入路径不经过-runtoolloop-的钩子) 在闭包内部净化后再拼接。不可信的正文内容应始终走 `input` 参数（对应 user message），不要拼进 `System`。
+
+不需要运行时参数的任务可将参数类型设为 `struct{}`：
+
+```go
+var Polish = provider.PromptTask[struct{}]{
+    System: func(struct{}) string { return "你是文案润色助手，只返回润色后的文本" },
+}
+
+reply, err := Polish.Run(ctx, p, struct{}{}, rawText)
+```
+
+需要结构化输出时用 `RunPromptTaskJSON`，请求会按 `GenerateJSON` 规则自动补 `ResponseFormat`：
+
+```go
+type TranslateResult struct {
+    Text string `json:"text"`
+}
+
+result, resp, err := provider.RunPromptTaskJSON[TranslateParams, TranslateResult](
+    ctx, Translate, p, TranslateParams{TargetLang: "英文"}, "今天天气真好",
+)
+```
+
 #### Chat — 完整控制
 
 需要多轮对话、调参数时使用完整的 `Chat` 方法。
@@ -1249,7 +1291,7 @@ resp, err := provider.RunToolLoopWithOptions(
 - **结构化输出**：生成侧的强制约束用库已有的 `ResponseFormat` / `JSONSchemaFormatStrict`（见本 README「Structured Output（结构化输出）」一节），比纯 prompt 文字声明更可靠；具体 schema 定义、解析失败即拒绝、字段级校验，由业务侧在 `ResponseValidator` 里实现——即使生成侧已做 Strict 约束，Go 侧仍需要防御性解析，不同 provider 对 strict 模式的遵循程度不同
 - **输出校验**：字段完整性校验、长度合理性检查、敏感词表扫描，由业务侧在 `ResponseValidator` 里实现；模型平台自带的安全过滤（如 Gemini `SafetySettings`）由业务侧按需在构造请求时配置，与 `ResponseValidator` 叠加使用
 
-完整可运行示例见 [`example/toolsecurity/main.go`](example/toolsecurity/main.go)：模拟一个网页摘要助手，工具抓取的网页内容里携带间接提示注入文本，示例组合了长度截断 + 正则特征检测降级替换 + Markdown 结构符转义（`ToolResultTransformer`）、`WrapToolResultInTag` 结构隔离、system prompt 显式声明数据边界、`ResponseFormat` 强制 JSON Schema 输出、`ResponseValidator` 解析校验（JSON 解析失败即拒绝 + 字段完整性 + 长度合理性 + 敏感词扫描）六层处理。
+完整可运行示例见 [`example/toolsecurity/main.go`](example/toolsecurity/main.go)：模拟一个网页摘要助手，工具抓取的网页内容里携带间接提示注入文本，示例组合了长度截断 + 正则特征检测降级替换 + Markdown 结构符转义（`ToolResultTransformer`）、`WrapToolResultInTag` 结构隔离、system prompt 显式声明数据边界、`ResponseFormat` 强制 JSON Schema 输出、`ResponseValidator` 解析校验（JSON 解析失败即拒绝 + 字段完整性 + 长度合理性 + 敏感词扫描）六层处理。规则内容本身（正则特征词表、Markdown 转义表、校验函数）整理成了一份跟本库解耦的模板文档，见 [`../docs/prompt-injection-defense.md`](../docs/prompt-injection-defense.md)，可直接复制到任何项目使用，不依赖这个库。
 
 ```bash
 DEEPSEEK_API_KEY="<DEEPSEEK_API_KEY>" go run ./example/toolsecurity
@@ -2929,6 +2971,8 @@ provider.GenerateJSON[MyType](ctx, p, req)                    // JSON 结构化�
 provider.GenerateJSONWithValidator[MyType](ctx, p, req, fn)   // JSON 结构化输出 → Go 类型 + 业务校验
 provider.GenerateJSONInto(ctx, p, req, &out)                  // 解码到已有变量
 provider.GenerateJSONIntoWithValidator(ctx, p, req, &out, fn) // 解码到已有变量 + 业务校验
+task.Run(ctx, p, params, input)                               // PromptTask 单轮任务 → 文本
+provider.RunPromptTaskJSON[P, T](ctx, task, p, params, input) // PromptTask 单轮任务 → JSON 结构化输出
 provider.DefaultHTTPClient()                                  // 默认传输层超时 HTTP 客户端
 provider.WithRetry(p, provider.RetryOptions{...})             // 为 Chat / ChatStream 创建阶段添加重试
 provider.NewFallbackProvider(primary, backup)                 // 多 provider fallback
