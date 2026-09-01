@@ -4,15 +4,6 @@
 .DS_Store
 .Ds_Store
 
-# Harness: 本地工具与 Agent 运行产物
-.harness/
-.claude/
-.learnings/
-CLAUDE.md
-AGENTS.md
-docs/
-openspec/
-
 # Go 构建产物 & 测试产物
 bin/
 dist/
