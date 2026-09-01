@@ -470,3 +470,64 @@ func TestAssistantMessageExcludesReasoning(t *testing.T) {
 	assert.NotContains(t, text, "先分解问题再验算",
 		"思考内容不得进入回传给平台的 assistant 消息")
 }
+
+// TestAnthropicThinkingBudgetAdaptsDefaultMaxTokens 覆盖"只设思考预算、不设 MaxTokens"
+// 这条路径：思考预算需小于 max_tokens，而本库的 max_tokens 有默认值。
+// 若沿用默认上限，调用方会收到一个针对自己从未设置过的参数的平台错误。
+func TestAnthropicThinkingBudgetAdaptsDefaultMaxTokens(t *testing.T) {
+	t.Parallel()
+
+	p := &anthropicProvider{model: "claude-x"}
+
+	t.Run("预算超过默认上限时自动抬高 max_tokens", func(t *testing.T) {
+		t.Parallel()
+
+		budget := defaultNativeMaxTokens * 2
+		req, _, err := p.buildRequest(&ChatRequest{
+			Messages: []Message{UserText("hi")},
+			Thinking: &Thinking{BudgetTokens: &budget},
+		}, false)
+		require.NoError(t, err)
+		require.NotNil(t, req.Thinking)
+		assert.Equal(t, budget, req.Thinking.BudgetTokens)
+		assert.Greater(t, req.MaxTokens, budget,
+			"max_tokens 必须大于思考预算，否则平台会拒绝这个调用方没设置过的参数")
+	})
+
+	t.Run("预算小于默认上限时保持默认值", func(t *testing.T) {
+		t.Parallel()
+
+		budget := 1024
+		req, _, err := p.buildRequest(&ChatRequest{
+			Messages: []Message{UserText("hi")},
+			Thinking: &Thinking{BudgetTokens: &budget},
+		}, false)
+		require.NoError(t, err)
+		assert.Equal(t, defaultNativeMaxTokens, req.MaxTokens)
+	})
+
+	t.Run("显式设置的 MaxTokens 一律尊重，不被改写", func(t *testing.T) {
+		t.Parallel()
+
+		budget := 8000
+		req, _, err := p.buildRequest(&ChatRequest{
+			Messages:  []Message{UserText("hi")},
+			MaxTokens: 5000, // 小于预算：调用方显式配置的冲突，交由平台裁决
+			Thinking:  &Thinking{BudgetTokens: &budget},
+		}, false)
+		require.NoError(t, err)
+		assert.Equal(t, 5000, req.MaxTokens, "不得覆盖调用方显式设置的 MaxTokens")
+	})
+
+	t.Run("关闭思考时不影响 max_tokens", func(t *testing.T) {
+		t.Parallel()
+
+		disabled := false
+		req, _, err := p.buildRequest(&ChatRequest{
+			Messages: []Message{UserText("hi")},
+			Thinking: &Thinking{Enabled: &disabled},
+		}, false)
+		require.NoError(t, err)
+		assert.Equal(t, defaultNativeMaxTokens, req.MaxTokens)
+	})
+}

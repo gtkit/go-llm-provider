@@ -247,6 +247,22 @@ func (p *anthropicProvider) setHeaders(req *http.Request) {
 	req.Header.Set("anthropic-version", defaultAnthropicVersion)
 }
 
+// anthropicMaxTokens 决定本次请求下发的 max_tokens。
+//
+// 思考预算需小于 max_tokens。调用方只给了预算、没设 MaxTokens 时，沿用本库的
+// 默认上限会让请求被平台拒绝，而 max_tokens 根本不是调用方设过的值、错误无从
+// 理解——这种情况下把上限抬到"预算 + 默认余量"，让只设预算的请求本身就成立。
+// 显式设置过 MaxTokens 的一律尊重原值，与预算的冲突交由平台裁决。
+func anthropicMaxTokens(requested int, thinking *anthropicThinking) int {
+	if requested > 0 {
+		return requested
+	}
+	if thinking != nil && thinking.BudgetTokens >= defaultNativeMaxTokens {
+		return thinking.BudgetTokens + defaultNativeMaxTokens
+	}
+	return defaultNativeMaxTokens
+}
+
 func (p *anthropicProvider) buildRequest(req *ChatRequest, stream bool) (anthropicRequest, string, error) {
 	if len(req.Messages) == 0 {
 		return anthropicRequest{}, "", fmt.Errorf("%w: messages are required", ErrInvalidRequest)
@@ -286,7 +302,7 @@ func (p *anthropicProvider) buildRequest(req *ChatRequest, stream bool) (anthrop
 	model := firstString(req.Model, p.model)
 	out := anthropicRequest{
 		Model:      model,
-		MaxTokens:  defaultNativeMaxTokens,
+		MaxTokens:  anthropicMaxTokens(req.MaxTokens, thinking),
 		Stream:     stream,
 		Tools:      tools,
 		ToolChoice: toolChoice,
@@ -295,9 +311,6 @@ func (p *anthropicProvider) buildRequest(req *ChatRequest, stream bool) (anthrop
 	if structuredTool != nil {
 		out.Tools = append(out.Tools, *structuredTool)
 		out.ToolChoice = structuredChoice
-	}
-	if req.MaxTokens > 0 {
-		out.MaxTokens = req.MaxTokens
 	}
 	if req.Temperature != nil {
 		out.Temperature = req.Temperature

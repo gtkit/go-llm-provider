@@ -27,6 +27,7 @@
 
 ### Fixed
 
+- Anthropic 思考预算超过本库默认 `max_tokens` 时自动抬高上限：思考预算需小于 `max_tokens`，而调用方只设 `Thinking.BudgetTokens`、不设 `ChatRequest.MaxTokens` 时会拿到一个针对自己从未设置过的参数的平台错误。现在这种情况下 `max_tokens` 取"预算 + 默认余量"；显式设置过 `MaxTokens` 的请求一律尊重原值，冲突交由平台裁决
 - Gemini 流式：只携带思考摘要的事件此前会被"无正文即跳过"的判定整块丢弃，导致 `ReasoningDelta` 缺失；跳过判定改为同时检查思考内容
 - `PricingTable.Cost` / `Validate` 补齐分档相关校验：分档 token 之和超过 `CacheWriteTokens`、分档 token 为负、分档费率越界均返回 `ErrInvalidPricing`，不静默算出偏低金额
 - Ollama 原生路径此前静默忽略 `Thinking`，改为返回 `ErrInvalidRequest`（原生 thinking 控制尚未实现）
