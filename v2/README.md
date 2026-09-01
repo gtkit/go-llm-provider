@@ -279,7 +279,9 @@ reg.Register(p)
 
 ### 方式三：NewProvider（完全自定义）
 
-适合私有部署、自建推理服务、或新平台接入。
+适合私有部署、自建推理服务、或新平台接入。自定义接入的平台若接受 OpenAI 标准的
+`reasoning_effort`，加上 `SupportsReasoningEffort: true` 即可使用 `Thinking.Effort`
+（见[自定义接入的平台](#自定义接入的平台)）。
 
 ```go
 p, err := provider.NewProvider(provider.ProviderConfig{
@@ -1072,6 +1074,34 @@ type Thinking struct {
 已映射的字段。推理 token 计入输出、按输出价计费，静默忽略会让调用方误以为思考已开启，
 并为未发生的思考付费。需要在运行前判断时，用 `ModelCapabilitiesFromPreset` 取回
 `ModelCapabilities` 再调 `Supports(provider.CapabilityReasoning)`。
+
+#### 自定义接入的平台
+
+上表只覆盖内置预设。用 `NewProvider` 自定义接入的平台（未收录的 OpenAI 兼容平台、
+自建推理服务）不在表中，默认拒绝全部 `Thinking` 字段——库不认识这个平台，
+无从判断它接受哪些推理参数。
+
+这类平台里不少直接接受 OpenAI 标准的 `reasoning_effort`，用
+`ProviderConfig.SupportsReasoningEffort` 声明即可解锁 `Thinking.Effort`：
+
+```go
+p, err := provider.NewProvider(provider.ProviderConfig{
+    Name:    "my-vllm",
+    BaseURL: "http://192.168.1.100:8080/v1",
+    APIKey:  "no-key-needed",
+    Model:   "Qwen3-235B",
+
+    SupportsReasoningEffort: true, // 该平台接受 reasoning_effort
+})
+```
+
+两条边界：
+
+- **只解锁 `Effort`。** `Enabled` 与 `BudgetTokens` 在各平台落在互不相同的私有字段上
+  （DeepSeek 用 `chat_template_kwargs`、火山方舟用顶层 `thinking`），库无从代为映射，
+  对未收录平台始终返回 `ErrInvalidRequest`。
+- **内置预设优先。** 对已收录的平台声明该字段不生效，它们的支持范围由库判定——
+  内置平台的映射属于库的实现，不交给调用方覆盖。
 
 #### 档位口径（OpenAI / Azure / 火山方舟）
 

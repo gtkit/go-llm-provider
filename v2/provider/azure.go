@@ -82,6 +82,12 @@ type BedrockOpenAIConfig struct {
 	Model      string
 	BaseURL    string
 	HTTPClient HTTPDoer
+
+	// SupportsReasoningEffort 声明该 Bedrock 部署接受 OpenAI 标准的
+	// reasoning_effort 字段，从而允许使用 Thinking.Effort。
+	// 语义同 ProviderConfig.SupportsReasoningEffort：Bedrock 上能否使用该字段
+	// 取决于所选的底层模型，库不代为断言，交由知情的调用方声明。
+	SupportsReasoningEffort bool
 }
 
 // Validate 检查 Bedrock OpenAI 兼容 API 的必需配置字段是否缺失。
@@ -118,11 +124,12 @@ func NewBedrockOpenAIProvider(cfg BedrockOpenAIConfig) (Provider, error) {
 		return nil, fmt.Errorf("%w: invalid bedrock base URL host", ErrInvalidProviderConfig)
 	}
 	return NewProvider(ProviderConfig{
-		Name:       ProviderBedrock,
-		BaseURL:    baseURL,
-		APIKey:     cfg.APIKey,
-		Model:      cfg.Model,
-		HTTPClient: cfg.HTTPClient,
+		Name:                    ProviderBedrock,
+		BaseURL:                 baseURL,
+		APIKey:                  cfg.APIKey,
+		Model:                   cfg.Model,
+		HTTPClient:              cfg.HTTPClient,
+		SupportsReasoningEffort: cfg.SupportsReasoningEffort,
 	})
 }
 

@@ -531,3 +531,109 @@ func TestAnthropicThinkingBudgetAdaptsDefaultMaxTokens(t *testing.T) {
 		assert.Equal(t, defaultNativeMaxTokens, req.MaxTokens)
 	})
 }
+
+// TestSupportsReasoningEffortUnlocksCustomProvider 覆盖自定义接入平台的推理控制。
+//
+// 库对未收录的平台默认拒绝全部 Thinking 字段（不静默丢弃调用方意图），
+// 但这会把用 NewProvider 接入的 OpenAI 兼容平台、自建推理服务一并堵死——
+// 它们中不少直接接受 OpenAI 标准的 reasoning_effort。
+// ProviderConfig.SupportsReasoningEffort 是知情调用方的解锁开关。
+func TestSupportsReasoningEffortUnlocksCustomProvider(t *testing.T) {
+	t.Parallel()
+
+	const custom ProviderName = "my-vllm"
+
+	t.Run("未声明时 Effort 被拒并指出声明入口", func(t *testing.T) {
+		t.Parallel()
+
+		p := &openaiProvider{name: custom, model: "Qwen3-235B"}
+		_, err := p.buildRequest(&ChatRequest{
+			Messages: []Message{UserText("hi")},
+			Thinking: &Thinking{Effort: ThinkingEffortHigh},
+		})
+		require.ErrorIs(t, err, ErrInvalidRequest)
+		assert.Contains(t, err.Error(), "SupportsReasoningEffort",
+			"错误信息需给出解除限制的路径，否则调用方无从下手")
+	})
+
+	t.Run("声明后 Effort 映射到 reasoning_effort", func(t *testing.T) {
+		t.Parallel()
+
+		p := &openaiProvider{name: custom, model: "Qwen3-235B", supportsReasoningEffort: true}
+		req, err := p.buildRequest(&ChatRequest{
+			Messages: []Message{UserText("hi")},
+			Thinking: &Thinking{Effort: ThinkingEffortHigh},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "high", req.ReasoningEffort)
+	})
+
+	t.Run("声明只解锁 Effort，不解锁无通用映射的字段", func(t *testing.T) {
+		t.Parallel()
+
+		enabled := true
+		budget := 2048
+		p := &openaiProvider{name: custom, model: "Qwen3-235B", supportsReasoningEffort: true}
+
+		for name, thinking := range map[string]*Thinking{
+			"Enabled":      {Enabled: &enabled},
+			"BudgetTokens": {BudgetTokens: &budget},
+		} {
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				_, err := p.buildRequest(&ChatRequest{
+					Messages: []Message{UserText("hi")},
+					Thinking: thinking,
+				})
+				require.ErrorIs(t, err, ErrInvalidRequest,
+					"各平台把该字段落在互不相同的私有字段上，库无从代为映射")
+			})
+		}
+	})
+
+	t.Run("内置预设优先于声明", func(t *testing.T) {
+		t.Parallel()
+
+		// DeepSeek 内置映射只支持 Enabled；对它声明 SupportsReasoningEffort
+		// 不应生效——内置平台的映射由库判定，不交给调用方覆盖。
+		p := &openaiProvider{name: ProviderDeepSeek, model: "deepseek-chat", supportsReasoningEffort: true}
+		_, err := p.buildRequest(&ChatRequest{
+			Messages: []Message{UserText("hi")},
+			Thinking: &Thinking{Effort: ThinkingEffortHigh},
+		})
+		require.ErrorIs(t, err, ErrInvalidRequest)
+
+		// 反向：内置支持 Effort 的平台，不声明也照常可用。
+		p2 := &openaiProvider{name: ProviderOpenAI, model: "gpt-5"}
+		req, err := p2.buildRequest(&ChatRequest{
+			Messages: []Message{UserText("hi")},
+			Thinking: &Thinking{Effort: ThinkingEffortHigh},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "high", req.ReasoningEffort)
+	})
+}
+
+// TestNewProviderCarriesReasoningEffortDeclaration 确认声明经由 NewProvider
+// 真的落到请求上——只测 buildRequest 会漏掉构造函数没传递字段这类错误。
+func TestNewProviderCarriesReasoningEffortDeclaration(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewProvider(ProviderConfig{
+		Name:                    "my-vllm",
+		BaseURL:                 "http://127.0.0.1:8080/v1",
+		APIKey:                  "no-key-needed",
+		Model:                   "Qwen3-235B",
+		SupportsReasoningEffort: true,
+	})
+	require.NoError(t, err)
+
+	op, ok := p.(*openaiProvider)
+	require.True(t, ok)
+	req, err := op.buildRequest(&ChatRequest{
+		Messages: []Message{UserText("hi")},
+		Thinking: &Thinking{Effort: ThinkingEffortLow},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "low", req.ReasoningEffort)
+}

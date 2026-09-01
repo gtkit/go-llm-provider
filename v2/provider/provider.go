@@ -199,6 +199,19 @@ type ProviderConfig struct {
 	Model      string // 默认模型，如 "glm-4"、"deepseek-chat"
 	OrgID      string // 可选，部分平台需要
 	HTTPClient HTTPDoer
+
+	// SupportsReasoningEffort 声明该平台接受 OpenAI 标准的 reasoning_effort 字段，
+	// 从而允许本次接入使用 Thinking.Effort。
+	//
+	// 仅对库未收录的平台生效——自定义 Name 接入的 OpenAI 兼容平台、自建推理服务。
+	// 库不认识这些平台，无从判断它们接受哪些推理参数，默认一律拒绝 Thinking
+	// 以免静默丢弃调用方的意图；知情的调用方用这个字段解除限制。
+	// 内置预设（如 ProviderOpenAI、ProviderDeepSeek）的支持范围由库判定，该字段被忽略。
+	//
+	// Thinking.Enabled 与 Thinking.BudgetTokens 没有对应的开关：各平台把它们落在
+	// 互不相同的私有字段上（DeepSeek 用 chat_template_kwargs、火山方舟用顶层
+	// thinking），库无从代为映射，这两个字段对未收录平台始终返回 ErrInvalidRequest。
+	SupportsReasoningEffort bool
 }
 
 // Provider 是统一的大模型调用接口。
@@ -665,9 +678,13 @@ func (r *StreamReader) Close() error {
 // openaiProvider 是 Provider 的通用实现。
 // 因为国内主流平台都兼容 OpenAI API，所以只需要一个实现类。
 type openaiProvider struct {
-	name   ProviderName
-	model  string
-	client *openai.Client
+	name  ProviderName
+	model string
+	// supportsReasoningEffort 是 ProviderConfig 同名字段的副本。
+	// 这里只保存调用方的声明、不保存解析结果：内置映射表始终优先，
+	// 零值因此等价于"完全按库内映射表判定"，与不使用该声明时的行为一致。
+	supportsReasoningEffort bool
+	client                  *openai.Client
 }
 
 // Validate reports missing required ProviderConfig fields.
@@ -716,9 +733,10 @@ func NewProvider(cfg ProviderConfig) (Provider, error) {
 	ocfg.HTTPClient = httpClient
 
 	return &openaiProvider{
-		name:   cfg.Name,
-		model:  cfg.Model,
-		client: openai.NewClientWithConfig(ocfg),
+		name:                    cfg.Name,
+		model:                   cfg.Model,
+		supportsReasoningEffort: cfg.SupportsReasoningEffort,
+		client:                  openai.NewClientWithConfig(ocfg),
 	}, nil
 }
 
@@ -935,7 +953,7 @@ func (p *openaiProvider) buildRequest(req *ChatRequest) (openai.ChatCompletionRe
 		oReq.ParallelToolCalls = req.ParallelToolCalls
 	}
 
-	if err := applyThinking(&oReq, p.name, req.Thinking); err != nil {
+	if err := applyThinking(&oReq, p, req.Thinking); err != nil {
 		return openai.ChatCompletionRequest{}, err
 	}
 	if err := applyResponseFormat(&oReq, req.ResponseFormat); err != nil {
@@ -973,16 +991,21 @@ func usageFromOpenAI(usage openai.Usage) Usage {
 }
 
 // applyThinking 把统一 Thinking 映射为 OpenAI 兼容平台的推理参数。
-// 平台不支持的字段由 validateThinking 拦下并返回 ErrInvalidRequest，
-// 不静默丢弃；各平台的支持范围见 thinkingSupportByProvider。
-func applyThinking(req *openai.ChatCompletionRequest, providerName ProviderName, thinking *Thinking) error {
-	if req == nil || thinking == nil {
+// 无映射的字段被拦下并返回 ErrInvalidRequest，不静默丢弃。
+// 支持范围按 resolveThinkingSupport 解析：内置预设取 thinkingSupportByProvider，
+// 未收录的平台取调用方经 ProviderConfig.SupportsReasoningEffort 的声明。
+func applyThinking(req *openai.ChatCompletionRequest, p *openaiProvider, thinking *Thinking) error {
+	if req == nil || p == nil || thinking == nil {
 		return nil
 	}
-	if err := validateThinking(providerName, thinking); err != nil {
+	providerName := p.name
+	support := resolveThinkingSupport(providerName, thinkingSupport{effort: p.supportsReasoningEffort})
+	if err := validateThinkingWith(providerName, support, thinking); err != nil {
 		return err
 	}
 
+	// Enabled 在各平台落在互不相同的私有字段上，只能按平台映射。
+	// DeepSeek 用 chat_template_kwargs；火山方舟的顶层 thinking 见 ark.go。
 	if providerName == ProviderDeepSeek && thinking.Enabled != nil {
 		if req.ChatTemplateKwargs == nil {
 			req.ChatTemplateKwargs = make(map[string]any, 1)
@@ -990,12 +1013,9 @@ func applyThinking(req *openai.ChatCompletionRequest, providerName ProviderName,
 		req.ChatTemplateKwargs["enable_thinking"] = *thinking.Enabled
 	}
 
-	if thinking.Effort != "" && (providerName == ProviderOpenAI || providerName == ProviderAzureOpenAI) {
-		req.ReasoningEffort = thinking.Effort
-	}
-
-	// 方舟支持顶层 reasoning_effort 字段（Enabled 的注入见 ark.go）。
-	if providerName == ProviderArk && thinking.Effort != "" {
+	// Effort 走 OpenAI 标准的 reasoning_effort，所有支持该字段的平台共用一套映射——
+	// 由 support 驱动而非按平台名枚举，自定义接入的平台声明后同样生效。
+	if thinking.Effort != "" && support.effort {
 		req.ReasoningEffort = thinking.Effort
 	}
 	return nil

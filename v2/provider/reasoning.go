@@ -69,20 +69,44 @@ var thinkingSupportByProvider = map[ProviderName]thinkingSupport{
 	ProviderGemini:      {enabled: true, budget: true},
 }
 
-// validateThinking 校验 thinking 中每个已设置的字段在 provider 上都有映射，
-// 存在无映射的字段时返回 ErrInvalidRequest。thinking 为 nil 时放行。
+// Thinking 各字段在错误信息中的名字，集中一处以免措辞漂移。
+const (
+	thinkingFieldEnabled = "Thinking.Enabled"
+	thinkingFieldEffort  = "Thinking.Effort"
+	thinkingFieldBudget  = "Thinking.BudgetTokens"
+)
+
+// resolveThinkingSupport 决定某个平台的推理字段支持情况。
+//
+// 内置预设以库内的映射表为准——它们的映射由库实现，调用方无需也不应覆盖。
+// 映射表未收录的平台（用 NewProvider 自定义接入的 OpenAI 兼容平台、自建推理
+// 服务）以调用方的显式声明为准：库不认识这个平台，无从判断它接受哪些参数，
+// 与其一律拒绝，不如让知情的调用方声明。
+func resolveThinkingSupport(name ProviderName, declared thinkingSupport) thinkingSupport {
+	if support, ok := thinkingSupportByProvider[name]; ok {
+		return support
+	}
+	return declared
+}
+
+// validateThinking 按库内映射表校验，用于协议固定的原生路径。
 func validateThinking(provider ProviderName, thinking *Thinking) error {
+	return validateThinkingWith(provider, thinkingSupportByProvider[provider], thinking)
+}
+
+// validateThinkingWith 校验 thinking 中每个已设置的字段在该平台上都有映射，
+// 存在无映射的字段时返回 ErrInvalidRequest。thinking 为 nil 时放行。
+func validateThinkingWith(provider ProviderName, support thinkingSupport, thinking *Thinking) error {
 	if thinking == nil {
 		return nil
 	}
-	support := thinkingSupportByProvider[provider]
 	switch {
 	case thinking.Enabled != nil && !support.enabled:
-		return unsupportedThinkingFieldError(provider, "Thinking.Enabled", support)
+		return unsupportedThinkingFieldError(provider, thinkingFieldEnabled, support)
 	case thinking.Effort != "" && !support.effort:
-		return unsupportedThinkingFieldError(provider, "Thinking.Effort", support)
+		return unsupportedThinkingFieldError(provider, thinkingFieldEffort, support)
 	case thinking.BudgetTokens != nil && !support.budget:
-		return unsupportedThinkingFieldError(provider, "Thinking.BudgetTokens", support)
+		return unsupportedThinkingFieldError(provider, thinkingFieldBudget, support)
 	}
 	return nil
 }
@@ -93,15 +117,24 @@ func validateThinking(provider ProviderName, thinking *Thinking) error {
 func unsupportedThinkingFieldError(provider ProviderName, field string, support thinkingSupport) error {
 	var supported []string
 	if support.enabled {
-		supported = append(supported, "Thinking.Enabled")
+		supported = append(supported, thinkingFieldEnabled)
 	}
 	if support.effort {
-		supported = append(supported, "Thinking.Effort")
+		supported = append(supported, thinkingFieldEffort)
 	}
 	if support.budget {
-		supported = append(supported, "Thinking.BudgetTokens")
+		supported = append(supported, thinkingFieldBudget)
 	}
 	if len(supported) == 0 {
+		// 自定义接入的 OpenAI 兼容平台只有 Effort 有通用映射（reasoning_effort
+		// 是 OpenAI 的标准字段），指出声明入口；Enabled 与 BudgetTokens 各家
+		// 落在不同的私有字段上，库无从代为映射，不给出误导性的指引。
+		if field == thinkingFieldEffort {
+			return fmt.Errorf(
+				"%w: no reasoning control mapping for %s, got %s"+
+					" (set ProviderConfig.SupportsReasoningEffort if this platform accepts reasoning_effort)",
+				ErrInvalidRequest, provider, field)
+		}
 		return fmt.Errorf("%w: no reasoning control mapping for %s, got %s",
 			ErrInvalidRequest, provider, field)
 	}
