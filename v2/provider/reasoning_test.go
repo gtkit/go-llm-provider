@@ -51,22 +51,34 @@ func TestBuildRequestThinkingOpenAIEffort(t *testing.T) {
 	assert.Equal(t, "high", req.ReasoningEffort)
 }
 
-func TestBuildRequestThinkingUnsupportedProviderIgnored(t *testing.T) {
+func TestBuildRequestThinkingUnmappedProviderRejected(t *testing.T) {
 	t.Parallel()
 
 	enabled := true
 	p := &openaiProvider{name: ProviderQwen, model: "qwen-plus"}
 
-	req, err := p.buildRequest(&ChatRequest{
+	_, err := p.buildRequest(&ChatRequest{
 		Messages: []Message{UserText("hello")},
 		Thinking: &Thinking{
 			Enabled: &enabled,
 			Effort:  ThinkingEffortLow,
 		},
 	})
-	require.NoError(t, err)
-	assert.Nil(t, req.ChatTemplateKwargs)
-	assert.Empty(t, req.ReasoningEffort)
+	require.ErrorIs(t, err, ErrInvalidRequest)
+}
+
+func TestBuildRequestThinkingUnmappedFieldRejected(t *testing.T) {
+	t.Parallel()
+
+	budget := 2048
+	// DeepSeek 只映射 Enabled；BudgetTokens 无映射，必须报错而非静默丢弃。
+	p := &openaiProvider{name: ProviderDeepSeek, model: "deepseek-chat"}
+
+	_, err := p.buildRequest(&ChatRequest{
+		Messages: []Message{UserText("hello")},
+		Thinking: &Thinking{BudgetTokens: &budget},
+	})
+	require.ErrorIs(t, err, ErrInvalidRequest)
 }
 
 func TestStreamChunkReasoningDeltaField(t *testing.T) {

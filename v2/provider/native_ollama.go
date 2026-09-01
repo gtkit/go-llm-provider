@@ -180,6 +180,9 @@ func (p *ollamaProvider) buildRequest(req *ChatRequest, stream bool) (ollamaChat
 	if req.ResponseFormat != nil {
 		return ollamaChatRequest{}, "", fmt.Errorf("%w: ollama native response format is not implemented", ErrInvalidRequest)
 	}
+	if req.Thinking != nil {
+		return ollamaChatRequest{}, "", fmt.Errorf("%w: ollama native thinking control is not implemented", ErrInvalidRequest)
+	}
 	if err := requireTextOnlyOutput(ProviderOllama, req.OutputModalities); err != nil {
 		return ollamaChatRequest{}, "", err
 	}

@@ -9,7 +9,7 @@ Go 语言统一多模型 LLM 调用库。一套代码接入 OpenAI 以及 DeepSe
 新项目建议直接使用 `github.com/gtkit/go-llm-provider/v2`。相比 v1，v2 额外提供：
 
 - 多模态消息：`Message.Content` 升级为 `[]ContentPart`，支持文本、图片 URL、图片 bytes、文件 bytes/URL/ID。
-- Thinking / Reasoning：`ChatRequest.Thinking`、`ChatResponse.Reasoning`、`StreamChunk.ReasoningDelta`、`Usage.ReasoningTokens`。
+- Thinking / Reasoning：`ChatRequest.Thinking`（档位与 token 预算两套口径，覆盖 OpenAI / Ark / DeepSeek / Anthropic / Gemini）、`ChatResponse.Reasoning`、`StreamChunk.ReasoningDelta`、`Usage.ReasoningTokens`。
 - Structured Output：`ResponseFormat`、`JSONObjectFormat`、`JSONSchemaFormatStrict` 与 `GenerateJSON` 类型化解码助手。
 - 确定性与多候选：`Seed`、`CandidateCount`。
 - Anthropic prompt caching：`WithCacheControl(..., CacheControlEphemeral())`。

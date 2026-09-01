@@ -22,6 +22,56 @@ type anthropicRequest struct {
 	Stream        bool                 `json:"stream,omitempty"`
 	Tools         []anthropicTool      `json:"tools,omitempty"`
 	ToolChoice    *anthropicToolChoice `json:"tool_choice,omitempty"`
+	Thinking      *anthropicThinking   `json:"thinking,omitempty"`
+}
+
+// anthropicThinking 是 Messages API 的 thinking 参数。
+type anthropicThinking struct {
+	Type         string `json:"type"`
+	BudgetTokens int    `json:"budget_tokens,omitempty"`
+}
+
+const (
+	anthropicThinkingEnabled  = "enabled"
+	anthropicThinkingDisabled = "disabled"
+)
+
+// anthropicThinkingParam 把统一 Thinking 映射为 Anthropic 的 thinking 参数。
+// 只处理 Enabled 与 BudgetTokens——Effort 无对应参数，已由 validateThinking 拦下。
+//
+// 开启思考时 budget_tokens 必填且须为正数，缺失或非正数返回 ErrInvalidRequest
+// 而不代为推导：推理 token 按输出价计费，预算大小必须由调用方决定。
+// "预算须小于 max_tokens"这一上限由平台校验。
+func anthropicThinkingParam(thinking *Thinking) (*anthropicThinking, error) {
+	if thinking == nil {
+		return nil, nil
+	}
+	if thinking.Enabled != nil && !*thinking.Enabled {
+		if thinking.BudgetTokens != nil {
+			return nil, fmt.Errorf(
+				"%w: anthropic thinking cannot set BudgetTokens while Enabled is false", ErrInvalidRequest)
+		}
+		return &anthropicThinking{Type: anthropicThinkingDisabled}, nil
+	}
+	// Enabled 未显式设置时，给出预算即视为开启。
+	if thinking.Enabled == nil && thinking.BudgetTokens == nil {
+		return nil, nil
+	}
+	if thinking.BudgetTokens == nil {
+		return nil, fmt.Errorf(
+			"%w: anthropic thinking requires Thinking.BudgetTokens when enabled", ErrInvalidRequest)
+	}
+	// 非正数预算无法表达"开启思考"，且 0 会被 budget_tokens 的 omitempty 吞掉，
+	// 发出只含 type 的不完整参数——在本地拒绝，不让平台收到语义损坏的请求。
+	if *thinking.BudgetTokens <= 0 {
+		return nil, fmt.Errorf(
+			"%w: anthropic thinking budget must be positive, got %d",
+			ErrInvalidRequest, *thinking.BudgetTokens)
+	}
+	return &anthropicThinking{
+		Type:         anthropicThinkingEnabled,
+		BudgetTokens: *thinking.BudgetTokens,
+	}, nil
 }
 
 type anthropicMessage struct {
@@ -32,6 +82,7 @@ type anthropicMessage struct {
 type anthropicContentPart struct {
 	Type         string                 `json:"type"`
 	Text         string                 `json:"text,omitempty"`
+	Thinking     string                 `json:"thinking,omitempty"`
 	Title        string                 `json:"title,omitempty"`
 	Source       *anthropicImageSource  `json:"source,omitempty"`
 	ID           string                 `json:"id,omitempty"`
@@ -216,6 +267,7 @@ type anthropicStreamEvent struct {
 type anthropicStreamDelta struct {
 	Type        string `json:"type"`
 	Text        string `json:"text"`
+	Thinking    string `json:"thinking"`
 	PartialJSON string `json:"partial_json"`
 	StopReason  string `json:"stop_reason"`
 }
@@ -537,18 +589,32 @@ func buildAnthropicToolChoice(req *ChatRequest) (*anthropicToolChoice, error) {
 	return choice, nil
 }
 
-func anthropicResponseContent(resp anthropicResponse) (content, finishReason string, toolCalls []ToolCall, search *SearchMetadata, err error) {
+// anthropicParsedContent 是 Anthropic 响应内容的解析结果。
+type anthropicParsedContent struct {
+	Text         string
+	Reasoning    string
+	FinishReason string
+	ToolCalls    []ToolCall
+	Search       *SearchMetadata
+}
+
+func anthropicResponseContent(resp anthropicResponse) (anthropicParsedContent, error) {
+	var out anthropicParsedContent
 	var text strings.Builder
+	var thinking strings.Builder
 	for _, part := range resp.Content {
 		switch part.Type {
 		case "text":
 			text.WriteString(part.Text)
+		case "thinking":
+			// 思考内容单独归位到 ChatResponse.Reasoning，不混入正文。
+			thinking.WriteString(part.Thinking)
 		case "tool_use":
 			arguments, marshalErr := json.Marshal(part.Input)
 			if marshalErr != nil {
-				return "", "", nil, nil, fmt.Errorf("marshal anthropic tool input: %w", marshalErr)
+				return anthropicParsedContent{}, fmt.Errorf("marshal anthropic tool input: %w", marshalErr)
 			}
-			toolCalls = append(toolCalls, ToolCall{
+			out.ToolCalls = append(out.ToolCalls, ToolCall{
 				ID: part.ID,
 				Function: FunctionCall{
 					Name:      part.Name,
@@ -557,20 +623,22 @@ func anthropicResponseContent(resp anthropicResponse) (content, finishReason str
 			})
 		case "server_tool_use":
 			if query := anthropicServerToolQuery(part.Input); query != "" {
-				search = appendSearchQuery(search, query)
+				out.Search = appendSearchQuery(out.Search, query)
 			}
 		case "web_search_tool_result":
 			sources, searchErr := anthropicSearchResultContent(part.Content)
-			search = appendSearchSources(search, sources)
-			search = appendSearchError(search, searchErr)
+			out.Search = appendSearchSources(out.Search, sources)
+			out.Search = appendSearchError(out.Search, searchErr)
 		}
 	}
-	if len(toolCalls) > 0 || resp.StopReason == "tool_use" {
-		finishReason = "tool_calls"
+	if len(out.ToolCalls) > 0 || resp.StopReason == "tool_use" {
+		out.FinishReason = "tool_calls"
 	} else {
-		finishReason = resp.StopReason
+		out.FinishReason = resp.StopReason
 	}
-	return text.String(), finishReason, toolCalls, search, nil
+	out.Text = text.String()
+	out.Reasoning = thinking.String()
+	return out, nil
 }
 
 // anthropicServerToolQuery 提取 server_tool_use（web_search）输入中的搜索查询。

@@ -117,8 +117,8 @@ go get github.com/gtkit/go-llm-provider/v2
 | Moonshot / Kimi | 是 | 是 | 是 | 是 | 否 | 否 | 是 | 否 | 否 | 否 | 否 | OpenAI 兼容 |
 | 火山方舟 / 豆包 | 是 | 是 | 是 | 是 | 是 | 否 | 否 | 是 | 是 | 否 | 否 | OpenAI 兼容 |
 | OpenAI | 是 | 是 | 是 | 是 | 否 | 否 | 是 | 是 | 是 | 否 | 否 | OpenAI 兼容 |
-| Anthropic / Claude | 是 | 是 | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 否 | 是 | 原生 HTTP |
-| Google Gemini | 是 | 是 | 是 | 是 | 是 | 是 | 否 | 否 | 是 | 否 | 是 | 原生 HTTP |
+| Anthropic / Claude | 是 | 是 | 是 | 是 | 是 | 是 | 否 | 是 | 否 | 否 | 是 | 原生 HTTP |
+| Google Gemini | 是 | 是 | 是 | 是 | 是 | 是 | 否 | 是 | 是 | 否 | 是 | 原生 HTTP |
 | Ollama | 是 | 是 | 否 | 否 | 否 | 否 | 否 | 否 | 否 | 否 | 否 | 原生 HTTP |
 | xAI / Grok | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 否 | 否 | 否 | 否 | OpenAI 兼容 |
 | Groq | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 否 | 否 | 否 | 否 | OpenAI 兼容 |
@@ -1046,17 +1046,42 @@ for _, part := range resp.Parts {
 
 ### Thinking（思考模式）
 
-`Thinking` 抽象把“让模型多想一会”和“显式开关 provider 思考模式”统一到了一个字段里：
+`Thinking` 把平台的两套推理控制口径统一到一个字段里：`Effort` 是档位口径，
+`BudgetTokens` 是 token 预算口径。思考内容通过 `ChatResponse.Reasoning`
+（流式为 `StreamChunk.ReasoningDelta`）单独返回，不混入正文。
 
 ```go
-enabled := true
+type Thinking struct {
+    Enabled      *bool  // 显式开启 / 关闭思考
+    Effort       string // 档位：minimal / low / medium / high
+    BudgetTokens *int   // 思考 token 预算
+}
+```
+
+各平台已映射的字段：
+
+| 平台 | `Enabled` | `Effort` | `BudgetTokens` |
+| --- | --- | --- | --- |
+| OpenAI / Azure OpenAI | | ✅ | |
+| 火山方舟 Ark | ✅ | ✅ | |
+| DeepSeek | ✅ | | |
+| Anthropic（原生） | ✅ | | ✅ |
+| Gemini（原生） | ✅ | | ✅ |
+
+传入表中未标注的字段时，请求在构建阶段返回 `ErrInvalidRequest`，错误信息会列出该平台
+已映射的字段。推理 token 计入输出、按输出价计费，静默忽略会让调用方误以为思考已开启，
+并为未发生的思考付费。需要在运行前判断时，用 `ModelCapabilitiesFromPreset` 取回
+`ModelCapabilities` 再调 `Supports(provider.CapabilityReasoning)`。
+
+#### 档位口径（OpenAI / Azure / 火山方舟）
+
+```go
 resp, err := p.Chat(ctx, &provider.ChatRequest{
     Messages: []provider.Message{
         provider.UserText("请解释 Go 的 goroutine 调度模型"),
     },
     Thinking: &provider.Thinking{
-        Enabled: &enabled,                     // DeepSeek 等支持显式开关的 provider
-        Effort:  provider.ThinkingEffortHigh,  // OpenAI o-series reasoning_effort
+        Effort: provider.ThinkingEffortHigh,
     },
 })
 if err != nil {
@@ -1068,12 +1093,69 @@ fmt.Println(resp.Reasoning)
 fmt.Println(resp.Usage.ReasoningTokens)
 ```
 
-说明：
+`Effort` 取值原样透传给平台的 `reasoning_effort`，`ThinkingEffortMinimal` / `Low` /
+`Medium` / `High` 是便利常量而非取值全集。
 
-- DeepSeek：优先识别 `Enabled`
-- OpenAI：优先识别 `Effort`
-- 火山方舟：`Enabled` 映射请求体顶层 `thinking` 字段（`enabled` / `disabled`，nil 时不下发该字段，由方舟按模型的默认行为决定），`Effort` 映射 `reasoning_effort`。两者互相独立：同时设置 `Enabled: false` 与非空 `Effort` 时，`thinking.disabled` 与 `reasoning_effort` 都会原样下发，本库不做取舍，最终以方舟侧的裁决为准
-- 其他 OpenAI 兼容 provider：当前静默忽略，不报错
+火山方舟同时映射两个字段：`Enabled` 映射请求体顶层 `thinking`（`enabled` / `disabled`，
+nil 时不下发该字段，由方舟按模型默认行为决定），`Effort` 映射 `reasoning_effort`。
+两者互相独立：同时设置 `Enabled: false` 与非空 `Effort` 时，`thinking.disabled` 与
+`reasoning_effort` 都会原样下发，本库不做取舍，最终以方舟侧的裁决为准。
+
+DeepSeek 只映射 `Enabled`，写入 `chat_template_kwargs.enable_thinking`。
+
+#### 预算口径（Anthropic / Gemini 原生路径）
+
+Anthropic 开启思考时要求显式预算，缺失或非正数返回 `ErrInvalidRequest`——预算大小直接
+决定费用，由调用方决定而不由本库代为推导。预算还需小于本次请求的 `MaxTokens`
+（未显式设置时为 4096），该上限由平台校验。
+
+```go
+budget := 4096
+resp, err := p.Chat(ctx, &provider.ChatRequest{
+    Messages:  []provider.Message{provider.UserText("逐步分析这段代码的复杂度")},
+    MaxTokens: 8192,
+    Thinking:  &provider.Thinking{BudgetTokens: &budget},
+})
+```
+
+Gemini 未给出预算时，借用平台自身的语义取值表达意图：`Enabled: true` 下发
+`thinkingBudget: -1`（由模型动态决定预算），`Enabled: false` 下发 `thinkingBudget: 0`
+（禁用思考）；显式给出 `BudgetTokens` 时原样下发，取值是否被目标模型接受由平台校验。
+
+```go
+enabled := true
+resp, err := p.Chat(ctx, &provider.ChatRequest{
+    Messages: []provider.Message{provider.UserText("解释这段推导")},
+    Thinking: &provider.Thinking{Enabled: &enabled},
+})
+```
+
+两个平台的响应形态也已归位：Anthropic 的 `thinking` 内容块、Gemini 中带 `thought`
+标记的 part，都进入 `Reasoning` 而不混入 `Content`。Anthropic 的加密思考块
+（`redacted_thinking`）无法读取，不会出现在任何字段里。
+
+#### 流式接收思考过程
+
+```go
+for {
+    chunk, err := stream.Recv()
+    if errors.Is(err, io.EOF) {
+        break
+    }
+    if err != nil {
+        return err
+    }
+    if chunk.ReasoningDelta != "" {
+        fmt.Printf("[思考] %s", chunk.ReasoningDelta)
+    }
+    if chunk.Delta != "" {
+        fmt.Print(chunk.Delta)
+    }
+}
+```
+
+Anthropic 原生路径的思考内容以 `Reasoning` / `ReasoningDelta` 返回，不参与后续轮次的
+消息构建；多轮对话把 `resp.AssistantMessage()` 追加进历史时携带的是正文与工具调用。
 
 ### Structured Output（结构化输出）
 
@@ -2776,7 +2858,7 @@ type ChatRequest struct {
     CandidateCount int  // 多候选生成
 
     // Reasoning / Structured Output
-    Thinking       *Thinking
+    Thinking       *Thinking       // 思考开关 / 档位 / token 预算，见 Thinking（思考模式）
     ResponseFormat *ResponseFormat
 }
 ```

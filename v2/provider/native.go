@@ -124,22 +124,22 @@ func (p *anthropicProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRe
 		return nil, err
 	}
 
-	content, finishReason, toolCalls, search, err := anthropicResponseContent(resp)
+	parsed, err := anthropicResponseContent(resp)
 	if err != nil {
 		return nil, err
 	}
 	if resp.StopReason == "pause_turn" {
 		// 暂停前服务端已执行的搜索会计费：错误携带真实用量与搜索元数据，
 		// 供观测/计费层提取，不得按零消耗处理。
-		return nil, &PauseTurnError{Usage: usageFromAnthropic(resp.Usage), Search: search}
+		return nil, &PauseTurnError{Usage: usageFromAnthropic(resp.Usage), Search: parsed.Search}
 	}
 	if req.ResponseFormat != nil && req.ResponseFormat.Type != ResponseFormatText {
 		if structured, ok, err := anthropicStructuredContent(resp); err != nil {
 			return nil, err
 		} else if ok {
-			content = structured
-			finishReason = "stop"
-			toolCalls = nil
+			parsed.Text = structured
+			parsed.FinishReason = "stop"
+			parsed.ToolCalls = nil
 		}
 	}
 	if metadata.Model == "" {
@@ -147,12 +147,13 @@ func (p *anthropicProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRe
 	}
 
 	return &ChatResponse{
-		Content:      content,
-		FinishReason: finishReason,
+		Content:      parsed.Text,
+		Reasoning:    parsed.Reasoning,
+		FinishReason: parsed.FinishReason,
 		Usage:        usageFromAnthropic(resp.Usage),
 		Metadata:     metadata,
-		Search:       search,
-		ToolCalls:    toolCalls,
+		Search:       parsed.Search,
+		ToolCalls:    parsed.ToolCalls,
 	}, nil
 }
 
@@ -256,6 +257,13 @@ func (p *anthropicProvider) buildRequest(req *ChatRequest, stream bool) (anthrop
 	if err := validateWebSearchRequest(req); err != nil {
 		return anthropicRequest{}, "", err
 	}
+	if err := validateThinking(ProviderAnthropic, req.Thinking); err != nil {
+		return anthropicRequest{}, "", err
+	}
+	thinking, err := anthropicThinkingParam(req.Thinking)
+	if err != nil {
+		return anthropicRequest{}, "", err
+	}
 	toolChoice, err := buildAnthropicToolChoice(req)
 	if err != nil {
 		return anthropicRequest{}, "", err
@@ -282,6 +290,7 @@ func (p *anthropicProvider) buildRequest(req *ChatRequest, stream bool) (anthrop
 		Stream:     stream,
 		Tools:      tools,
 		ToolChoice: toolChoice,
+		Thinking:   thinking,
 	}
 	if structuredTool != nil {
 		out.Tools = append(out.Tools, *structuredTool)
@@ -396,7 +405,7 @@ func (p *geminiProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRespo
 		return nil, err
 	}
 
-	content, finishReason, toolCalls, parts, err := geminiResponseContent(resp)
+	parsed, err := geminiResponseContent(resp)
 	if err != nil {
 		return nil, err
 	}
@@ -406,13 +415,14 @@ func (p *geminiProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRespo
 	usage := usageFromGemini(resp.UsageMetadata)
 	search := applyGeminiGrounding(geminiGrounding(resp), &usage)
 	return &ChatResponse{
-		Content:      content,
-		FinishReason: finishReason,
+		Content:      parsed.Text,
+		Reasoning:    parsed.Reasoning,
+		FinishReason: parsed.FinishReason,
 		Usage:        usage,
 		Metadata:     metadata,
-		Parts:        parts,
+		Parts:        parsed.Parts,
 		Search:       search,
-		ToolCalls:    toolCalls,
+		ToolCalls:    parsed.ToolCalls,
 	}, nil
 }
 
@@ -532,6 +542,19 @@ func (p *geminiProvider) buildRequest(req *ChatRequest) (geminiRequest, string, 
 	}
 	if err := validateWebSearchRequest(req); err != nil {
 		return geminiRequest{}, "", err
+	}
+	if err := validateThinking(ProviderGemini, req.Thinking); err != nil {
+		return geminiRequest{}, "", err
+	}
+	thinkingConfig, err := geminiThinkingParam(req.Thinking)
+	if err != nil {
+		return geminiRequest{}, "", err
+	}
+	if thinkingConfig != nil {
+		if generation == nil {
+			generation = &geminiGenerationConfig{}
+		}
+		generation.ThinkingConfig = thinkingConfig
 	}
 	// 多候选与 grounding 的组合下各 candidate 的搜索归属不明确，
 	// 无法给出可靠的计费与元数据归一，拒绝而非按首个 candidate 近似。
@@ -827,24 +850,26 @@ func geminiStreamChunk(data []byte, state *geminiStreamState) (*StreamChunk, boo
 	if gm := geminiGrounding(event); gm != nil {
 		state.grounding = mergeGeminiGrounding(state.grounding, gm)
 	}
-	content, finishReason, toolCalls, parts, err := geminiResponseContent(event)
+	parsed, err := geminiResponseContent(event)
 	if err != nil {
 		return nil, false, err
 	}
-	if len(toolCalls) > 0 {
-		finishReason = "tool_calls"
+	if len(parsed.ToolCalls) > 0 {
+		parsed.FinishReason = "tool_calls"
 	}
-	if content == "" && finishReason == "" && len(parts) == 0 {
+	// 只携带思考摘要的事件也必须下发，否则 ReasoningDelta 会被整块丢弃。
+	if parsed.Text == "" && parsed.Reasoning == "" && parsed.FinishReason == "" && len(parsed.Parts) == 0 {
 		return nil, false, errSkipNativeStreamEvent
 	}
 	chunk := &StreamChunk{
-		Delta:        content,
-		FinishReason: finishReason,
-		Model:        event.ModelVersion,
-		Parts:        parts,
-		ToolCalls:    toolCallDeltas(toolCalls),
+		Delta:          parsed.Text,
+		ReasoningDelta: parsed.Reasoning,
+		FinishReason:   parsed.FinishReason,
+		Model:          event.ModelVersion,
+		Parts:          parsed.Parts,
+		ToolCalls:      toolCallDeltas(parsed.ToolCalls),
 	}
-	if finishReason != "" {
+	if parsed.FinishReason != "" {
 		chunk.Usage = usageFromGemini(state.usage)
 		chunk.Search = applyGeminiGrounding(state.grounding, &chunk.Usage)
 	}
@@ -883,21 +908,7 @@ func anthropicStreamChunk(data []byte, state *anthropicStreamState) (*StreamChun
 			}}}, true, nil
 		}
 	case "content_block_delta":
-		if event.Delta.Type == "text_delta" && event.Delta.Text != "" {
-			return &StreamChunk{Delta: event.Delta.Text}, true, nil
-		}
-		if event.Delta.Type == "input_json_delta" && event.Delta.PartialJSON != "" {
-			if state.isServerToolBlock(event.Index) {
-				state.appendServerToolInput(event.Index, event.Delta.PartialJSON)
-				return nil, false, nil
-			}
-			return &StreamChunk{ToolCalls: []ToolCallDelta{{
-				Index: event.Index,
-				Function: FunctionCallDelta{
-					Arguments: event.Delta.PartialJSON,
-				},
-			}}}, true, nil
-		}
+		return anthropicStreamDeltaChunk(event, state)
 	case "message_delta":
 		mergeAnthropicStreamUsage(&state.usage, event.Usage)
 		if event.Delta.StopReason == "pause_turn" {
@@ -921,6 +932,33 @@ func anthropicStreamChunk(data []byte, state *anthropicStreamState) (*StreamChun
 		return nil, false, io.EOF
 	case "error":
 		return nil, false, anthropicStreamProviderError(event)
+	}
+	return nil, false, nil
+}
+
+// anthropicStreamDeltaChunk 处理 content_block_delta 事件：正文、思考增量与
+// 工具入参增量各归其位。未识别的 delta 类型不产出 chunk。
+func anthropicStreamDeltaChunk(event anthropicStreamEvent, state *anthropicStreamState) (*StreamChunk, bool, error) {
+	switch {
+	case event.Delta.Type == "text_delta" && event.Delta.Text != "":
+		return &StreamChunk{Delta: event.Delta.Text}, true, nil
+
+	// 思考增量走 ReasoningDelta，不混入正文；随 thinking 块到达的
+	// signature_delta 只用于把思考块回传给平台，本库不回传，忽略。
+	case event.Delta.Type == "thinking_delta" && event.Delta.Thinking != "":
+		return &StreamChunk{ReasoningDelta: event.Delta.Thinking}, true, nil
+
+	case event.Delta.Type == "input_json_delta" && event.Delta.PartialJSON != "":
+		if state.isServerToolBlock(event.Index) {
+			state.appendServerToolInput(event.Index, event.Delta.PartialJSON)
+			return nil, false, nil
+		}
+		return &StreamChunk{ToolCalls: []ToolCallDelta{{
+			Index: event.Index,
+			Function: FunctionCallDelta{
+				Arguments: event.Delta.PartialJSON,
+			},
+		}}}, true, nil
 	}
 	return nil, false, nil
 }

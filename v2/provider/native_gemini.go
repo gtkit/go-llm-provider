@@ -27,6 +27,9 @@ type geminiPart struct {
 	InlineData       *geminiInlineData       `json:"inline_data,omitempty"`
 	FunctionCall     *geminiFunctionCall     `json:"functionCall,omitempty"`
 	FunctionResponse *geminiFunctionResponse `json:"functionResponse,omitempty"`
+
+	// Thought 标记该 part 是思考摘要而非正文，仅出现在响应中。
+	Thought bool `json:"thought,omitempty"`
 }
 
 type geminiInlineData struct {
@@ -35,15 +38,56 @@ type geminiInlineData struct {
 }
 
 type geminiGenerationConfig struct {
-	MaxOutputTokens    int      `json:"maxOutputTokens,omitempty"`
-	CandidateCount     int      `json:"candidateCount,omitempty"`
-	Seed               *int     `json:"seed,omitempty"`
-	Temperature        *float32 `json:"temperature,omitempty"`
-	TopP               *float32 `json:"topP,omitempty"`
-	StopSequences      []string `json:"stopSequences,omitempty"`
-	ResponseMIMEType   string   `json:"responseMimeType,omitempty"`
-	ResponseSchema     any      `json:"responseSchema,omitempty"`
-	ResponseModalities []string `json:"responseModalities,omitempty"`
+	MaxOutputTokens    int                   `json:"maxOutputTokens,omitempty"`
+	CandidateCount     int                   `json:"candidateCount,omitempty"`
+	Seed               *int                  `json:"seed,omitempty"`
+	Temperature        *float32              `json:"temperature,omitempty"`
+	TopP               *float32              `json:"topP,omitempty"`
+	StopSequences      []string              `json:"stopSequences,omitempty"`
+	ResponseMIMEType   string                `json:"responseMimeType,omitempty"`
+	ResponseSchema     any                   `json:"responseSchema,omitempty"`
+	ResponseModalities []string              `json:"responseModalities,omitempty"`
+	ThinkingConfig     *geminiThinkingConfig `json:"thinkingConfig,omitempty"`
+}
+
+// geminiThinkingConfig 是 generationConfig.thinkingConfig 参数。
+type geminiThinkingConfig struct {
+	ThinkingBudget *int `json:"thinkingBudget,omitempty"`
+}
+
+// geminiThinkingBudget* 是 thinkingBudget 的两个特殊取值。
+const (
+	geminiThinkingBudgetDisabled = 0
+	geminiThinkingBudgetDynamic  = -1
+)
+
+// geminiThinkingParam 把统一 Thinking 映射为 Gemini 的 thinkingConfig。
+// 只处理 Enabled 与 BudgetTokens——Effort 无对应参数，已由 validateThinking 拦下。
+//
+// 未给出预算时借用平台自身的语义取值表达意图：关闭用 0、开启用 -1
+// （由模型动态决定预算），不代为推导具体数值。
+// 预算取值是否被目标模型接受由平台校验。
+func geminiThinkingParam(thinking *Thinking) (*geminiThinkingConfig, error) {
+	if thinking == nil {
+		return nil, nil
+	}
+	if thinking.Enabled != nil && !*thinking.Enabled {
+		if thinking.BudgetTokens != nil {
+			return nil, fmt.Errorf(
+				"%w: gemini thinking cannot set BudgetTokens while Enabled is false", ErrInvalidRequest)
+		}
+		budget := geminiThinkingBudgetDisabled
+		return &geminiThinkingConfig{ThinkingBudget: &budget}, nil
+	}
+	if thinking.BudgetTokens != nil {
+		budget := *thinking.BudgetTokens
+		return &geminiThinkingConfig{ThinkingBudget: &budget}, nil
+	}
+	if thinking.Enabled == nil {
+		return nil, nil
+	}
+	budget := geminiThinkingBudgetDynamic
+	return &geminiThinkingConfig{ThinkingBudget: &budget}, nil
 }
 
 // geminiResponseModalities 将统一 Modality 映射为 Gemini 的 responseModalities 枚举。
@@ -581,20 +625,37 @@ func appendGeminiMessage(out *geminiRequest, msg Message) error {
 	return nil
 }
 
-func geminiResponseContent(resp geminiResponse) (content, finishReason string, toolCalls []ToolCall, parts []ContentPart, err error) {
+// geminiParsedContent 是 Gemini 响应内容的解析结果。
+type geminiParsedContent struct {
+	Text         string
+	Reasoning    string
+	FinishReason string
+	ToolCalls    []ToolCall
+	Parts        []ContentPart
+}
+
+func geminiResponseContent(resp geminiResponse) (geminiParsedContent, error) {
+	var out geminiParsedContent
 	if len(resp.Candidates) == 0 {
-		return "", "", nil, nil, nil
+		return out, nil
 	}
 	candidate := resp.Candidates[0]
 	var text strings.Builder
+	var thought strings.Builder
 	for _, part := range candidate.Content.Parts {
-		text.WriteString(part.Text)
+		// 思考摘要的文本单独归位到 Reasoning / ReasoningDelta，不混入正文；
+		// 同一 part 上的 functionCall / inlineData 仍照常处理，不随文本一起跳过。
+		if part.Thought {
+			thought.WriteString(part.Text)
+		} else {
+			text.WriteString(part.Text)
+		}
 		if part.FunctionCall != nil {
 			arguments, marshalErr := json.Marshal(part.FunctionCall.Args)
 			if marshalErr != nil {
-				return "", "", nil, nil, fmt.Errorf("marshal gemini function call args: %w", marshalErr)
+				return geminiParsedContent{}, fmt.Errorf("marshal gemini function call args: %w", marshalErr)
 			}
-			toolCalls = append(toolCalls, ToolCall{
+			out.ToolCalls = append(out.ToolCalls, ToolCall{
 				ID: firstString(part.FunctionCall.ID, "gemini_"+part.FunctionCall.Name),
 				Function: FunctionCall{
 					Name:      part.FunctionCall.Name,
@@ -605,17 +666,19 @@ func geminiResponseContent(resp geminiResponse) (content, finishReason string, t
 		if part.InlineData != nil {
 			output, convertErr := geminiInlineOutputPart(part.InlineData)
 			if convertErr != nil {
-				return "", "", nil, nil, convertErr
+				return geminiParsedContent{}, convertErr
 			}
-			parts = append(parts, output)
+			out.Parts = append(out.Parts, output)
 		}
 	}
-	if len(toolCalls) > 0 {
-		finishReason = "tool_calls"
+	if len(out.ToolCalls) > 0 {
+		out.FinishReason = "tool_calls"
 	} else {
-		finishReason = candidate.FinishReason
+		out.FinishReason = candidate.FinishReason
 	}
-	return text.String(), finishReason, toolCalls, parts, nil
+	out.Text = text.String()
+	out.Reasoning = thought.String()
+	return out, nil
 }
 
 // geminiInlineOutputPart 将响应中的 inlineData（base64）转换为输出 ContentPart：

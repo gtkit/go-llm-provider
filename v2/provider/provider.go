@@ -925,7 +925,9 @@ func (p *openaiProvider) buildRequest(req *ChatRequest) (openai.ChatCompletionRe
 		oReq.ParallelToolCalls = req.ParallelToolCalls
 	}
 
-	applyThinking(&oReq, p.name, req.Thinking)
+	if err := applyThinking(&oReq, p.name, req.Thinking); err != nil {
+		return openai.ChatCompletionRequest{}, err
+	}
 	if err := applyResponseFormat(&oReq, req.ResponseFormat); err != nil {
 		return openai.ChatCompletionRequest{}, err
 	}
@@ -960,9 +962,15 @@ func usageFromOpenAI(usage openai.Usage) Usage {
 	}
 }
 
-func applyThinking(req *openai.ChatCompletionRequest, providerName ProviderName, thinking *Thinking) {
+// applyThinking 把统一 Thinking 映射为 OpenAI 兼容平台的推理参数。
+// 平台不支持的字段由 validateThinking 拦下并返回 ErrInvalidRequest，
+// 不静默丢弃；各平台的支持范围见 thinkingSupportByProvider。
+func applyThinking(req *openai.ChatCompletionRequest, providerName ProviderName, thinking *Thinking) error {
 	if req == nil || thinking == nil {
-		return
+		return nil
+	}
+	if err := validateThinking(providerName, thinking); err != nil {
+		return err
 	}
 
 	if providerName == ProviderDeepSeek && thinking.Enabled != nil {
@@ -972,7 +980,7 @@ func applyThinking(req *openai.ChatCompletionRequest, providerName ProviderName,
 		req.ChatTemplateKwargs["enable_thinking"] = *thinking.Enabled
 	}
 
-	if providerName == ProviderOpenAI && thinking.Effort != "" {
+	if thinking.Effort != "" && (providerName == ProviderOpenAI || providerName == ProviderAzureOpenAI) {
 		req.ReasoningEffort = thinking.Effort
 	}
 
@@ -980,6 +988,7 @@ func applyThinking(req *openai.ChatCompletionRequest, providerName ProviderName,
 	if providerName == ProviderArk && thinking.Effort != "" {
 		req.ReasoningEffort = thinking.Effort
 	}
+	return nil
 }
 
 func applyResponseFormat(req *openai.ChatCompletionRequest, format *ResponseFormat) error {
