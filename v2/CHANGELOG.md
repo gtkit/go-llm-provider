@@ -6,6 +6,20 @@
 
 ### Added
 
+### Changed
+
+### Deprecated
+
+### Removed
+
+### Fixed
+
+### Security
+
+## [2.13.0] - 2026-09-01
+
+### Added
+
 - `Breaker` 新增 `ReadyToTrip` 选项与 `FailureRateTrip` 助手，支持按滑动窗口内的失败率判定跳闸。此前只有绝对次数阈值 `FailureThreshold`，它与流量规模无关——1 分钟窗口配 5 次失败，在 1000 QPS 下只要上游有 0.1% 的偶发错误率就会持续跳闸，把 99.9% 本可成功的请求挡在本地。新选项与 QPS 解耦，`FailureRateTrip(minSamples, maxFailureRate)` 内置样本下限保护（样本不足时不跳闸）。配置后 `FailureThreshold` 不再参与判定；未配置时行为与之前完全一致，不记录成功样本、不分配分桶。启用后 `BreakerStats` 新增的 `Successes` 字段与 `Failures` 一同反映窗口内统计，供健康检查读取
 - `BalancedProvider` 新增会话粘性策略 `BalanceSessionAffinity`：按会话键哈希稳定选中成员，同一会话的多轮请求落到同一成员，让该成员上游的提示词缓存能连续命中。此前三种策略都会把同一会话打散到不同成员，各成员缓存均为冷启动，而缓存命中的输入单价通常只有常规输入的一小部分。会话键默认取 `ConversationIDFromContext` 再回落 `UserIDFromContext`，可用新增的 `BalanceOptions.SessionKey` 自定义；哈希不含随机种子，多副本与重启后归属一致；会话键为空时退化为平滑加权轮询，故障转移语义不变
 - `Usage` 新增 `CacheWrite5mTokens` / `CacheWrite1hTokens`，承载 Anthropic 缓存写入的 TTL 分档明细（`usage.cache_creation.ephemeral_5m/1h_input_tokens`），二者均为 `CacheWriteTokens` 的子集；流式累计与 `RunToolLoop` 的多轮用量聚合同步覆盖
@@ -21,18 +35,12 @@
 
 - ⚠ 破坏性变更：`ChatRequest.Thinking` 中平台未映射的字段不再被静默忽略，改为在请求构建阶段返回 `ErrInvalidRequest`，错误信息列出该平台已映射的字段。此前对 Anthropic / Gemini 原生路径设置 `Thinking` 完全无效果，对国产 OpenAI 兼容平台设置 `Enabled` / `Effort` 也被丢弃，调用方无从察觉思考并未开启，却仍可能按推理 token 付费（推理 token 计入输出、按输出价计费）。迁移方式：按 `v2/README.md` 的平台矩阵改用该平台已映射的字段，或移除对该平台无效的 `Thinking` 设置
 
-### Deprecated
-
-### Removed
-
 ### Fixed
 
 - Anthropic 思考预算超过本库默认 `max_tokens` 时自动抬高上限：思考预算需小于 `max_tokens`，而调用方只设 `Thinking.BudgetTokens`、不设 `ChatRequest.MaxTokens` 时会拿到一个针对自己从未设置过的参数的平台错误。现在这种情况下 `max_tokens` 取"预算 + 默认余量"；显式设置过 `MaxTokens` 的请求一律尊重原值，冲突交由平台裁决
 - Gemini 流式：只携带思考摘要的事件此前会被"无正文即跳过"的判定整块丢弃，导致 `ReasoningDelta` 缺失；跳过判定改为同时检查思考内容
 - `PricingTable.Cost` / `Validate` 补齐分档相关校验：分档 token 之和超过 `CacheWriteTokens`、分档 token 为负、分档费率越界均返回 `ErrInvalidPricing`，不静默算出偏低金额
 - Ollama 原生路径此前静默忽略 `Thinking`，改为返回 `ErrInvalidRequest`（原生 thinking 控制尚未实现）
-
-### Security
 
 ## [2.12.0] - 2026-08-31
 
