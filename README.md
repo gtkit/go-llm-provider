@@ -1057,6 +1057,32 @@ half_open ──探测失败───────────▶ open       （�
 
 - **成功不清空窗口**：失败记录只随时间滑出窗口，语义是"最近 Window 内累计
   FailureThreshold 次失败即视为该上游不可用"。
+- **高 QPS 服务改用失败率判定**：`FailureThreshold` 是绝对次数，与流量规模无关。
+  1 分钟窗口配 5 次失败，在 1000 QPS 下只要上游有 0.1% 的偶发错误率，
+  窗口内就会累计到 5 次失败而跳闸——把 99.9% 本可成功的请求一起挡在本地。
+  `ReadyToTrip` 按窗口内的成功/失败统计判定，与 QPS 解耦：
+
+  ```go
+  provider.BreakerOptions{
+      // 窗口内至少 20 次调用、且失败率超过 50% 才跳闸
+      ReadyToTrip: provider.FailureRateTrip(20, 0.5),
+  }
+  ```
+
+  `minSamples` 是必需的下限保护——样本太少时失败率没有统计意义（只有一次调用
+  且失败就是 100%），样本不足时一律不跳闸。需要更复杂的条件可自行实现该回调，
+  入参 `BreakerCounts` 提供窗口内的 `Successes` / `Failures`，
+  并带 `Total()` 与 `FailureRate()` 两个便捷方法。
+
+  三点使用约定：
+
+  - 配置 `ReadyToTrip` 后 **`FailureThreshold` 不再参与判定**（替代关系，非叠加）。
+  - 与 `ShouldTrip` 的加锁语义相反：`ShouldTrip` 在锁外调用，回调内可以读熔断器
+    状态；**`ReadyToTrip` 在锁内调用，回调内不得访问该熔断器**（调用 `State` /
+    `Stats` / `Report` 会死锁）。判定所需信息已全部通过入参给出，回调应为纯函数。
+  - 启用后熔断器同时记录成功与失败样本（分桶计数，内存与 QPS 无关，固定 32 个桶）；
+    不配置时只记录失败时刻，行为与之前完全一致，`Stats().Successes` 恒为 0。
+
 - **连续跳闸退避**：`BackoffReset` 内再次跳闸视为连续故障，冷却时长翻倍；
   超过 `BackoffReset` 才跳闸则退回 `OpenDuration` 重新起算。
 - **流式只统计创建阶段**：`BreakerStreamMiddleware` 以"流是否创建成功"为口径；

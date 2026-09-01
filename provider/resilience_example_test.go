@@ -116,6 +116,34 @@ func ExampleNewBreaker() {
 	// 熔断状态: open
 }
 
+// ExampleFailureRateTrip 演示按失败率而非绝对失败次数熔断：
+// 高 QPS 服务下绝对次数阈值容易被偶发错误触发，失败率判定与流量规模解耦。
+func ExampleFailureRateTrip() {
+	breaker := provider.NewBreaker(provider.BreakerOptions{
+		Name: "deepseek",
+		// 窗口内至少 10 次调用、且失败率超过 50% 才跳闸。
+		ReadyToTrip: provider.FailureRateTrip(10, 0.5),
+	})
+
+	// 9 次成功 + 1 次失败：失败率 10%，远低于阈值，保持闭合。
+	for range 9 {
+		_ = breaker.Allow()
+		breaker.Report(nil)
+	}
+	_ = breaker.Allow()
+	breaker.Report(&provider.ProviderError{Code: provider.ErrorCodeServerError, Retryable: true})
+
+	stats := breaker.Stats()
+	fmt.Println("窗口内成功:", stats.Successes)
+	fmt.Println("窗口内失败:", stats.Failures)
+	fmt.Println("熔断状态:", breaker.State())
+
+	// Output:
+	// 窗口内成功: 9
+	// 窗口内失败: 1
+	// 熔断状态: closed
+}
+
 func ExampleNewBalancedProvider() {
 	lb, err := provider.NewBalancedProvider(
 		provider.BalanceMember{Provider: namedExampleProvider{name: provider.ProviderDeepSeek}, Weight: 3},

@@ -5,6 +5,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 )
 
 func BenchmarkCosineSimilarity(b *testing.B) {
@@ -186,4 +187,28 @@ func BenchmarkInjectExtraFields(b *testing.B) {
 			}
 		})
 	}
+}
+
+// BenchmarkBreakerReport 对比熔断器两种判定模式在热路径上的开销：
+// Report 每次调用都要走一次判定，失败率模式需要汇总分桶计数。
+func BenchmarkBreakerReport(b *testing.B) {
+	b.Run("failure_threshold", func(b *testing.B) {
+		br := NewBreaker(BreakerOptions{Window: time.Minute})
+		b.ReportAllocs()
+		for b.Loop() {
+			br.Report(nil)
+		}
+	})
+
+	b.Run("failure_rate", func(b *testing.B) {
+		// 阈值设得足够高，保证全程闭合、每次都要走完整判定。
+		br := NewBreaker(BreakerOptions{
+			Window:      time.Minute,
+			ReadyToTrip: FailureRateTrip(1_000_000, 0.5),
+		})
+		b.ReportAllocs()
+		for b.Loop() {
+			br.Report(nil)
+		}
+	})
 }

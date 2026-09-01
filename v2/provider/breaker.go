@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"math"
 	"slices"
 	"sync"
 	"time"
@@ -37,7 +38,68 @@ const (
 	// 保留一个时间戳，阈值即这份切片的长度上界；设置超过该上限的阈值会被收敛到
 	// 上限值，避免误配置的巨大阈值吃掉内存。
 	maxBreakerFailureThreshold = 4096
+
+	// breakerBucketCount 是 ReadyToTrip 模式下滑动窗口的分桶数。
+	// 分桶而非逐条记录样本，使内存占用只与桶数相关、与 QPS 无关：
+	// 按时间戳逐条记录时，1000 QPS 配 1 分钟窗口需要保留 6 万个样本。
+	// 32 个桶在默认 1 分钟窗口下约 1.9 秒一格，足够支撑失败率判定的精度。
+	breakerBucketCount = 32
 )
+
+// BreakerCounts 是熔断器滑动窗口内的样本统计，作为 ReadyToTrip 的判定输入。
+type BreakerCounts struct {
+	// Successes 与 Failures 是当前滑动窗口内的成功、失败次数。
+	// 失败的口径由 BreakerOptions.ShouldTrip 决定：未计入失败的错误
+	// （如 ctx 取消、参数非法）算作成功。
+	Successes int
+	Failures  int
+}
+
+// Total 返回窗口内的样本总数。
+func (c BreakerCounts) Total() int {
+	return c.Successes + c.Failures
+}
+
+// FailureRate 返回窗口内的失败率，取值 [0, 1]；无样本时返回 0。
+func (c BreakerCounts) FailureRate() float64 {
+	total := c.Total()
+	if total <= 0 {
+		return 0
+	}
+	return float64(c.Failures) / float64(total)
+}
+
+// FailureRateTrip 构造按失败率判定的 ReadyToTrip：窗口内样本数达到 minSamples、
+// 且失败率超过 maxFailureRate 时跳闸。
+//
+// minSamples 是必需的下限保护——样本太少时失败率没有统计意义
+// （只有一次调用且失败就是 100%），样本不足时一律不跳闸。
+// minSamples ≤ 0 按 1 计，maxFailureRate 收敛到 [0, 1]，
+// 传入 NaN 按 0 处理（任何失败都跳闸），不会退化成永不跳闸。
+//
+//	// 窗口内至少 20 次调用、失败率超过 50% 才熔断
+//	provider.BreakerOptions{ReadyToTrip: provider.FailureRateTrip(20, 0.5)}
+func FailureRateTrip(minSamples int, maxFailureRate float64) func(BreakerCounts) bool {
+	minSamples = max(minSamples, 1)
+	if math.IsNaN(maxFailureRate) {
+		maxFailureRate = 0
+	}
+	maxFailureRate = min(max(maxFailureRate, 0), 1)
+	return func(counts BreakerCounts) bool {
+		if counts.Total() < minSamples {
+			return false
+		}
+		return counts.FailureRate() > maxFailureRate
+	}
+}
+
+// breakerBucket 是一个时间格内的样本计数。
+// epoch 是该格的时间序号，用于判断环形数组的槽位是否属于当前窗口。
+type breakerBucket struct {
+	epoch     int64
+	successes int
+	failures  int
+}
 
 // BreakerOptions 配置熔断器的跳闸与恢复行为。
 // 零值可直接使用，全部字段走默认值。
@@ -79,6 +141,24 @@ type BreakerOptions struct {
 	//	    return provider.IsRetryableError(err) || errors.Is(err, provider.ErrAuth)
 	//	}}
 	ShouldTrip func(error) bool
+
+	// ReadyToTrip 按滑动窗口内的成功/失败统计判定是否跳闸，非 nil 时**替代**
+	// FailureThreshold（后者不再参与判定）。用 FailureRateTrip 构造常见的
+	// 失败率判定，也可自行实现更复杂的条件。
+	//
+	// 为什么需要它：FailureThreshold 是绝对次数，与流量规模无关——1 分钟窗口配
+	// 5 次失败，在 1000 QPS 下只要上游有 0.1% 的偶发错误率就会持续跳闸，
+	// 把 99.9% 本可成功的请求一起挡在本地。失败率判定与 QPS 解耦，
+	// 高流量服务应优先使用。
+	//
+	// 与 ShouldTrip 的加锁语义不同，注意区分：ShouldTrip 在锁外调用，
+	// 回调内可以读熔断器状态；**ReadyToTrip 在锁内调用，回调内不得访问
+	// 该熔断器（调用 State / Stats / Report 会死锁）**。判定所需的信息
+	// 已全部通过 counts 传入，回调应当是不访问外部状态的纯函数。
+	//
+	// 启用后熔断器会同时记录成功与失败样本（分桶计数，内存与 QPS 无关）；
+	// 为 nil 时只记录失败时刻，与不使用该选项时的行为完全一致。
+	ReadyToTrip func(counts BreakerCounts) bool
 }
 
 // BreakerStats 是熔断器某一时刻的状态快照。
@@ -90,6 +170,10 @@ type BreakerStats struct {
 	State BreakerState
 	// Failures 是当前滑动窗口内的失败次数。
 	Failures int
+	// Successes 是当前滑动窗口内的成功次数，仅在配置了
+	// BreakerOptions.ReadyToTrip 时统计；未配置时恒为 0
+	// （此时熔断器只记录失败，不为统计成功付出开销）。
+	Successes int
 	// Trips 是连续跳闸次数（BackoffReset 内的累计），决定当前冷却时长。
 	Trips int
 	// OpenUntil 是冷却结束时刻；未处于冷却中时为零值。
@@ -111,9 +195,16 @@ type Breaker struct {
 	opts BreakerOptions
 	now  func() time.Time
 
+	// buckets 是 ReadyToTrip 模式下的环形分桶计数，nil 表示未启用该模式；
+	// bucketWidth 是单桶时长，恒为正。二者构造后长度/取值不变，
+	// 桶内计数的读写受 mu 保护。
+	buckets     []breakerBucket
+	bucketWidth time.Duration
+
 	mu    sync.Mutex
 	state BreakerState
 	// failures 是窗口内的失败时刻，长度上界为 opts.FailureThreshold。
+	// 仅在未配置 ReadyToTrip 时使用。
 	failures     []time.Time
 	openUntil    time.Time
 	trips        int
@@ -131,11 +222,19 @@ func newBreakerWithClock(opts BreakerOptions, now func() time.Time) *Breaker {
 	if now == nil {
 		now = time.Now
 	}
-	return &Breaker{
-		opts:  normalizeBreakerOptions(opts),
+	normalized := normalizeBreakerOptions(opts)
+	b := &Breaker{
+		opts:  normalized,
 		now:   now,
 		state: BreakerClosed,
 	}
+	if normalized.ReadyToTrip != nil {
+		b.buckets = make([]breakerBucket, breakerBucketCount)
+		// Window 已被 normalize 保证为正；极小窗口下整除可能得 0，
+		// 下限取 1ns 以杜绝后续的除零。
+		b.bucketWidth = max(normalized.Window/breakerBucketCount, time.Nanosecond)
+	}
+	return b
 }
 
 func normalizeBreakerOptions(opts BreakerOptions) BreakerOptions {
@@ -234,6 +333,15 @@ func (b *Breaker) Report(err error) {
 	if b.state == BreakerOpen {
 		return
 	}
+	if b.buckets != nil {
+		// 成功与失败都要记：失败率判定需要分母。
+		b.recordSampleLocked(now, failed)
+		// ReadyToTrip 在锁内调用，回调内不得访问该熔断器（见选项文档）。
+		if b.opts.ReadyToTrip(b.bucketCountsLocked(now)) {
+			b.tripLocked(now)
+		}
+		return
+	}
 	if failed {
 		b.recordFailureLocked(now)
 	}
@@ -261,11 +369,13 @@ func (b *Breaker) Stats() BreakerStats {
 	defer b.mu.Unlock()
 
 	now := b.now()
+	counts := b.countsLocked(now)
 	stats := BreakerStats{
-		Name:     b.opts.Name,
-		State:    b.effectiveStateLocked(now),
-		Failures: b.countRecentFailuresLocked(now),
-		Trips:    b.trips,
+		Name:      b.opts.Name,
+		State:     b.effectiveStateLocked(now),
+		Failures:  counts.Failures,
+		Successes: counts.Successes,
+		Trips:     b.trips,
 	}
 	if b.state == BreakerOpen && now.Before(b.openUntil) {
 		stats.OpenUntil = b.openUntil
@@ -335,6 +445,72 @@ func (b *Breaker) countRecentFailuresLocked(now time.Time) int {
 	return count
 }
 
+// countsLocked 返回当前窗口内的样本统计。
+// 未启用 ReadyToTrip 时只有失败被记录，成功数恒为 0。
+func (b *Breaker) countsLocked(now time.Time) BreakerCounts {
+	if b.buckets != nil {
+		return b.bucketCountsLocked(now)
+	}
+	return BreakerCounts{Failures: b.countRecentFailuresLocked(now)}
+}
+
+// bucketEpoch 返回 now 所属的时间格序号。bucketWidth 恒为正，不会除零。
+func (b *Breaker) bucketEpoch(now time.Time) int64 {
+	return now.UnixNano() / int64(b.bucketWidth)
+}
+
+// bucketSlot 把时间格序号映射到环形数组下标。
+// epoch 可能为负（1970 之前的时刻，如零值 time.Time），
+// Go 的取模会保留负号，这里补正回非负区间，避免索引越界。
+func (b *Breaker) bucketSlot(epoch int64) int {
+	slot := epoch % int64(len(b.buckets))
+	if slot < 0 {
+		slot += int64(len(b.buckets))
+	}
+	return int(slot)
+}
+
+// recordSampleLocked 把一次调用结果记入当前时间格。
+// 槽位被环形复用时先清零，避免把一个窗口之前的旧计数算作当前窗口。
+func (b *Breaker) recordSampleLocked(now time.Time, failed bool) {
+	epoch := b.bucketEpoch(now)
+	slot := b.bucketSlot(epoch)
+	if b.buckets[slot].epoch != epoch {
+		b.buckets[slot] = breakerBucket{epoch: epoch}
+	}
+	if failed {
+		b.buckets[slot].failures++
+		return
+	}
+	b.buckets[slot].successes++
+}
+
+// bucketCountsLocked 汇总落在当前窗口内的分桶计数。
+// 同时排除过期的槽位与"未来"的槽位——系统时钟回拨后，
+// 环形数组里可能残留序号大于当前时间格的桶，计入会让判定失真。
+func (b *Breaker) bucketCountsLocked(now time.Time) BreakerCounts {
+	current := b.bucketEpoch(now)
+	oldest := current - int64(len(b.buckets)) + 1
+
+	var counts BreakerCounts
+	for _, bucket := range b.buckets {
+		if bucket.epoch < oldest || bucket.epoch > current {
+			continue
+		}
+		counts.Successes += bucket.successes
+		counts.Failures += bucket.failures
+	}
+	return counts
+}
+
+// resetBucketsLocked 清空全部分桶，用于跳闸与闭合后让窗口重新起算，
+// 与失败时刻切片被清空的语义保持一致。
+func (b *Breaker) resetBucketsLocked() {
+	for i := range b.buckets {
+		b.buckets[i] = breakerBucket{}
+	}
+}
+
 func (b *Breaker) tripLocked(now time.Time) {
 	if !b.lastTripAt.IsZero() && now.Sub(b.lastTripAt) <= b.opts.BackoffReset {
 		b.trips++
@@ -345,12 +521,14 @@ func (b *Breaker) tripLocked(now time.Time) {
 	b.state = BreakerOpen
 	b.openUntil = now.Add(ExponentialBackoff(b.opts.OpenDuration, b.opts.MaxOpenDuration)(b.trips))
 	b.failures = b.failures[:0]
+	b.resetBucketsLocked()
 	b.halfOpenUsed = 0
 }
 
 func (b *Breaker) closeLocked() {
 	b.state = BreakerClosed
 	b.failures = b.failures[:0]
+	b.resetBucketsLocked()
 	b.halfOpenUsed = 0
 }
 

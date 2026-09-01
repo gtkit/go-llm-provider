@@ -6,6 +6,7 @@
 
 ### Added
 
+- `Breaker` 新增 `ReadyToTrip` 选项与 `FailureRateTrip` 助手（与 v2 同源回移），支持按滑动窗口内的失败率判定跳闸。此前只有绝对次数阈值 `FailureThreshold`，它与流量规模无关——1 分钟窗口配 5 次失败，在 1000 QPS 下只要上游有 0.1% 的偶发错误率就会持续跳闸，把 99.9% 本可成功的请求挡在本地。新选项与 QPS 解耦，`FailureRateTrip(minSamples, maxFailureRate)` 内置样本下限保护（样本不足时不跳闸）。配置后 `FailureThreshold` 不再参与判定；未配置时行为与之前完全一致，不记录成功样本、不分配分桶。启用后 `BreakerStats` 新增的 `Successes` 字段与 `Failures` 一同反映窗口内统计
 - `BalancedProvider` 新增会话粘性策略 `BalanceSessionAffinity`（与 v2 同源回移）：按会话键哈希稳定选中成员，同一会话的多轮请求落到同一成员，让该成员上游的提示词缓存能连续命中。此前三种策略都会把同一会话打散到不同成员，各成员缓存均为冷启动。会话键由新增的 `BalanceOptions.SessionKey` 提供，该策略下必填——本代码线不内置会话标识，缺失时构造返回 `ErrInvalidBalanceStrategy` 而不静默退化成普通轮询。哈希不含随机种子，多副本部署与进程重启后归属一致；会话键为空时该次调用退化为平滑加权轮询，故障转移语义不变
 
 ### Changed

@@ -6,6 +6,7 @@
 
 ### Added
 
+- `Breaker` 新增 `ReadyToTrip` 选项与 `FailureRateTrip` 助手，支持按滑动窗口内的失败率判定跳闸。此前只有绝对次数阈值 `FailureThreshold`，它与流量规模无关——1 分钟窗口配 5 次失败，在 1000 QPS 下只要上游有 0.1% 的偶发错误率就会持续跳闸，把 99.9% 本可成功的请求挡在本地。新选项与 QPS 解耦，`FailureRateTrip(minSamples, maxFailureRate)` 内置样本下限保护（样本不足时不跳闸）。配置后 `FailureThreshold` 不再参与判定；未配置时行为与之前完全一致，不记录成功样本、不分配分桶。启用后 `BreakerStats` 新增的 `Successes` 字段与 `Failures` 一同反映窗口内统计，供健康检查读取
 - `BalancedProvider` 新增会话粘性策略 `BalanceSessionAffinity`：按会话键哈希稳定选中成员，同一会话的多轮请求落到同一成员，让该成员上游的提示词缓存能连续命中。此前三种策略都会把同一会话打散到不同成员，各成员缓存均为冷启动，而缓存命中的输入单价通常只有常规输入的一小部分。会话键默认取 `ConversationIDFromContext` 再回落 `UserIDFromContext`，可用新增的 `BalanceOptions.SessionKey` 自定义；哈希不含随机种子，多副本与重启后归属一致；会话键为空时退化为平滑加权轮询，故障转移语义不变
 - `Usage` 新增 `CacheWrite5mTokens` / `CacheWrite1hTokens`，承载 Anthropic 缓存写入的 TTL 分档明细（`usage.cache_creation.ephemeral_5m/1h_input_tokens`），二者均为 `CacheWriteTokens` 的子集；流式累计与 `RunToolLoop` 的多轮用量聚合同步覆盖
 - `ModelRate` 新增 `CacheWrite5mPer1M` / `CacheWrite1hPer1M` 分档写入单价，`PricingTable.Cost` 按档计价。长 TTL 缓存写入单价高于短 TTL，此前只有单一 `CacheWritePer1M`，使用 1 小时缓存的调用会被系统性少算写入成本。两项为 0 时该档回落到 `CacheWritePer1M`，且平台未上报分档明细时写入总量整体按 `CacheWritePer1M` 计价——既有费率表与既有账目金额不变
