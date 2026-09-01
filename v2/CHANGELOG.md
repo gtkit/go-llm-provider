@@ -16,6 +16,17 @@
 
 ### Security
 
+## [2.14.0] - 2026-09-01
+
+### Added
+
+- `ProviderConfig` 新增 `SupportsReasoningEffort`，让用 `NewProvider` 自定义接入的平台（未收录的 OpenAI 兼容平台、自建推理服务）也能使用 `Thinking.Effort`。库对未收录平台默认拒绝全部 `Thinking` 字段以免静默丢弃调用方意图，此前这条规则把这类平台一并堵死且无绕过办法；声明后 `Effort` 映射为 OpenAI 标准的 `reasoning_effort`。仅解锁 `Effort`——`Enabled` 与 `BudgetTokens` 各家落在不同私有字段上，库无从代为映射；内置预设的支持范围仍由库判定，对其声明该字段不生效
+- `BedrockOpenAIConfig` 同步新增 `SupportsReasoningEffort`：`ProviderBedrock` 不在库内的推理映射表中（能否使用 `reasoning_effort` 取决于所选底层模型，库不代为断言），该声明是 `NewBedrockOpenAIProvider` 使用 `Thinking.Effort` 的入口
+
+### Fixed
+
+- `Thinking.Effort` 的下发改由能力判定驱动，不再按平台名枚举：此前校验放行后，只有 `ProviderOpenAI` / `ProviderAzureOpenAI` / `ProviderArk` 三个硬编码分支会真正写入 `reasoning_effort`，其余平台校验通过却被静默丢弃
+
 ## [2.13.0] - 2026-09-01
 
 ### Added
