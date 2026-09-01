@@ -2140,8 +2140,30 @@ micros, currency, err := table.Cost("deepseek-chat", resp.Usage)
 fmt.Println(provider.FormatMicros(micros), currency) // 如 "0.0123 CNY"
 ```
 
+缓存写入支持按 TTL 分档配置费率。Anthropic 的长 TTL 缓存写入单价高于短 TTL，
+两档配同一个价会算错——按各档实际单价配置即可：
+
+```go
+table := provider.PricingTable{
+    "claude-sonnet-4-5": {
+        InputPer1M:        3_000_000,
+        OutputPer1M:       15_000_000,
+        CacheReadPer1M:    300_000,   // 缓存命中远低于常规输入
+        CacheWritePer1M:   3_750_000, // 未分档部分与未上报明细时的兜底单价
+        CacheWrite5mPer1M: 3_750_000,
+        CacheWrite1hPer1M: 6_000_000, // 长 TTL 写入更贵
+        Currency:          "CNY",
+    },
+}
+```
+
+分档费率只在平台上报了 `Usage.CacheWrite5mTokens` / `CacheWrite1hTokens` 时参与计算：
+未上报明细、或未配置分档费率时，写入总量整体按 `CacheWritePer1M` 计价，
+与不使用分档时的结果一致（示例中的单价仅为格式演示，请以官方定价页为准）。
+
 计费公式先减子集再分档乘价（`ReasoningTokens ⊆ CompletionTokens`、
-`CacheReadTokens + CacheWriteTokens ≤ PromptTokens`），不会重复计费；
+`CacheReadTokens + CacheWriteTokens ≤ PromptTokens`、
+`CacheWrite5mTokens + CacheWrite1hTokens ≤ CacheWriteTokens`），不会重复计费；
 原生联网搜索按次计价并与 token 项一并累加，两种口径的费率
 （`WebSearchPer1K` / `GroundedPromptPer1K`，微元/1000 次）**二选一**配置，
 规则见"原生联网搜索"一节。未配价模型、存在搜索用量但未配搜索价、
@@ -2320,13 +2342,54 @@ if err != nil {
 resp, err := lb.Chat(ctx, req)
 ```
 
-三种策略：
+四种策略：
 
 | 策略 | 行为 | 适用 |
 |------|------|------|
 | `BalanceWeightedRoundRobin`（默认） | 平滑加权轮询，按权重把流量均匀铺开，低权重成员插在中间而非攒到末尾 | 多 key 分摊配额 |
 | `BalanceWeightedRandom` | 加权随机，长期分布与权重一致，短期可能连续命中同一成员 | 无状态、成员很多 |
 | `BalanceLeastPending` | 加权最少在途，选 `在途数/权重` 最小的成员 | 各成员时延差异大 |
+| `BalanceSessionAffinity` | 会话粘性，按会话键哈希稳定选中成员 | 多轮会话 + 提示词缓存 |
+
+#### 会话粘性与提示词缓存
+
+前三种策略把同一会话的多轮请求打散到不同成员，每个成员上游的提示词缓存都是冷的。
+缓存命中的输入单价通常只有常规输入的一小部分（Anthropic 约十分之一），
+把长会话打散等于让这部分收益全部消失——`BalanceSessionAffinity` 用来解决这个问题：
+
+```go
+lb, err := provider.NewBalancedProviderWithOptions(members, provider.BalanceOptions{
+    Strategy: provider.BalanceSessionAffinity,
+})
+// 请求入口注入会话标识，同一会话的每一轮都会落到同一个 key
+ctx = provider.WithConversationID(ctx, conversationID)
+resp, err := lb.Chat(ctx, req)
+```
+
+会话键默认取 `ConversationIDFromContext`，再回落 `UserIDFromContext`；
+需要按别的维度粘附（租户、提示词前缀指纹等）时用 `BalanceOptions.SessionKey` 自定义：
+
+```go
+provider.BalanceOptions{
+    Strategy: provider.BalanceSessionAffinity,
+    SessionKey: func(ctx context.Context, req *provider.ChatRequest) string {
+        return tenantFromContext(ctx)
+    },
+}
+```
+
+行为约定：
+
+- **按权重分配会话**：权重大的成员占据更宽的哈希区间、承载更多会话，
+  粘的是"同一会话"，不是把所有流量压到一个成员。
+- **哈希确定性**：不含随机种子，同一会话键在所有副本、进程重启前后都落到同一成员，
+  多副本部署无需共享状态。
+- **会话键为空**（未注入标识、或自定义函数返回空串）的调用退化为平滑加权轮询，
+  不会恒选同一成员。
+- **故障转移不受影响**：粘附成员失败或熔断时，从粘附位置环形向后取下一个未尝试的成员，
+  顺序确定；转移后该轮请求落在冷缓存成员上，属于预期代价。
+- **成员增减会重新分布会话**：哈希区间随权重总和变化，增删 key 后大部分会话会换成员、
+  缓存需要重新预热。调整成员列表宜安排在低峰期。
 
 - **成员级熔断**：`BalanceMember.Breaker` 由均衡器负责申请与上报，不要再用
   `WithBreaker` 包一层（会双重计数）。熔断打开的成员会以 `ErrBreakerOpen`
@@ -2883,18 +2946,22 @@ resp.AssistantMessage() Message // 转换为可追加到历史的 Message
 
 ```go
 type Usage struct {
-    PromptTokens     int // 全部输入 token（已包含缓存读/写部分）
-    CompletionTokens int // 全部输出 token（已包含推理部分）
-    ReasoningTokens  int // 推理/思考 token（CompletionTokens 的子集）
-    CacheReadTokens  int // 命中提示词缓存的输入 token（PromptTokens 的子集）
-    CacheWriteTokens int // 写入提示词缓存的输入 token（PromptTokens 的子集，仅 Anthropic）
-    TotalTokens      int // 通常 = PromptTokens + CompletionTokens，provider 返回总量时以其为准
+    PromptTokens       int // 全部输入 token（已包含缓存读/写部分）
+    CompletionTokens   int // 全部输出 token（已包含推理部分）
+    ReasoningTokens    int // 推理/思考 token（CompletionTokens 的子集）
+    CacheReadTokens    int // 命中提示词缓存的输入 token（PromptTokens 的子集）
+    CacheWriteTokens   int // 写入提示词缓存的输入 token（PromptTokens 的子集，仅 Anthropic）
+    CacheWrite5mTokens int // 5 分钟 TTL 的缓存写入 token（CacheWriteTokens 的子集）
+    CacheWrite1hTokens int // 1 小时 TTL 的缓存写入 token（CacheWriteTokens 的子集）
+    TotalTokens        int // 通常 = PromptTokens + CompletionTokens，provider 返回总量时以其为准
 }
 ```
 
 各字段跨 provider 遵循统一的包含关系，可直接用于按 token 计费，无需针对平台做换算：
 
 - **Anthropic** 原始 `input_tokens` 不含缓存部分，本库已归一化为 `PromptTokens = input + cache_read + cache_write`；
+  缓存写入的 TTL 分档明细（`cache_creation.ephemeral_5m/1h_input_tokens`）映射到
+  `CacheWrite5mTokens` / `CacheWrite1hTokens`，供按档计价；未上报明细的模型这两项为 0；
 - **Gemini** 原始 `candidatesTokenCount` 不含思考 token，本库已归一化为 `CompletionTokens = candidates + thoughts`；
 - **OpenAI 兼容**平台的语义与上述统一语义天然一致，直接映射。
 

@@ -6,13 +6,29 @@
 
 ### Added
 
+- `BalancedProvider` 新增会话粘性策略 `BalanceSessionAffinity`：按会话键哈希稳定选中成员，同一会话的多轮请求落到同一成员，让该成员上游的提示词缓存能连续命中。此前三种策略都会把同一会话打散到不同成员，各成员缓存均为冷启动，而缓存命中的输入单价通常只有常规输入的一小部分。会话键默认取 `ConversationIDFromContext` 再回落 `UserIDFromContext`，可用新增的 `BalanceOptions.SessionKey` 自定义；哈希不含随机种子，多副本与重启后归属一致；会话键为空时退化为平滑加权轮询，故障转移语义不变
+- `Usage` 新增 `CacheWrite5mTokens` / `CacheWrite1hTokens`，承载 Anthropic 缓存写入的 TTL 分档明细（`usage.cache_creation.ephemeral_5m/1h_input_tokens`），二者均为 `CacheWriteTokens` 的子集；流式累计与 `RunToolLoop` 的多轮用量聚合同步覆盖
+- `ModelRate` 新增 `CacheWrite5mPer1M` / `CacheWrite1hPer1M` 分档写入单价，`PricingTable.Cost` 按档计价。长 TTL 缓存写入单价高于短 TTL，此前只有单一 `CacheWritePer1M`，使用 1 小时缓存的调用会被系统性少算写入成本。两项为 0 时该档回落到 `CacheWritePer1M`，且平台未上报分档明细时写入总量整体按 `CacheWritePer1M` 计价——既有费率表与既有账目金额不变
+- `Thinking` 新增 `BudgetTokens` 字段，补齐"按 token 预算控制推理深度"的口径（对应 Anthropic 的 `thinking.budget_tokens` 与 Gemini 的 `thinkingConfig.thinkingBudget`）；原有 `Effort` 仍是档位口径，新增便利常量 `ThinkingEffortMinimal`
+- Anthropic 原生路径支持推理控制：下发 `thinking` 参数，响应中的 `thinking` 块归位到 `ChatResponse.Reasoning`、流式 `thinking_delta` 归位到 `StreamChunk.ReasoningDelta`，均不混入正文；开启思考时要求显式的正数 `BudgetTokens`，缺失或非正数返回 `ErrInvalidRequest`（预算大小直接决定费用，不由库代为推导）
+- Gemini 原生路径支持推理控制：下发 `generationConfig.thinkingConfig`，未给出预算时按平台语义取值表达意图（`Enabled: true` → `thinkingBudget: -1` 由模型动态决定，`Enabled: false` → `thinkingBudget: 0` 禁用）；响应中 `thought` 标记的 part 归位到 `Reasoning` / `ReasoningDelta`，不再混入正文
+- Azure OpenAI 路径支持 `Thinking.Effort`（此前该字段仅对 `ProviderOpenAI` 生效）
+- `ProviderAnthropic` 与 `ProviderGemini` 预设新增 `CapabilityReasoning` 声明，可用 `ModelCapabilities.Supports` 提前预检
+- `v2/README.md` 的"Thinking（思考模式）"章节重写：两套口径的适用平台矩阵、各平台示例、响应归位说明与流式接收思考过程的写法；能力矩阵中 Anthropic / Gemini 的 Reasoning 列更新为"是"
+
 ### Changed
+
+- ⚠ 破坏性变更：`ChatRequest.Thinking` 中平台未映射的字段不再被静默忽略，改为在请求构建阶段返回 `ErrInvalidRequest`，错误信息列出该平台已映射的字段。此前对 Anthropic / Gemini 原生路径设置 `Thinking` 完全无效果，对国产 OpenAI 兼容平台设置 `Enabled` / `Effort` 也被丢弃，调用方无从察觉思考并未开启，却仍可能按推理 token 付费（推理 token 计入输出、按输出价计费）。迁移方式：按 `v2/README.md` 的平台矩阵改用该平台已映射的字段，或移除对该平台无效的 `Thinking` 设置
 
 ### Deprecated
 
 ### Removed
 
 ### Fixed
+
+- Gemini 流式：只携带思考摘要的事件此前会被"无正文即跳过"的判定整块丢弃，导致 `ReasoningDelta` 缺失；跳过判定改为同时检查思考内容
+- `PricingTable.Cost` / `Validate` 补齐分档相关校验：分档 token 之和超过 `CacheWriteTokens`、分档 token 为负、分档费率越界均返回 `ErrInvalidPricing`，不静默算出偏低金额
+- Ollama 原生路径此前静默忽略 `Thinking`，改为返回 `ErrInvalidRequest`（原生 thinking 控制尚未实现）
 
 ### Security
 

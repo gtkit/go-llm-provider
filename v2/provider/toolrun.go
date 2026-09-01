@@ -223,6 +223,8 @@ func addUsage(a, b Usage) Usage {
 		ReasoningTokens:          a.ReasoningTokens + b.ReasoningTokens,
 		CacheReadTokens:          a.CacheReadTokens + b.CacheReadTokens,
 		CacheWriteTokens:         a.CacheWriteTokens + b.CacheWriteTokens,
+		CacheWrite5mTokens:       a.CacheWrite5mTokens + b.CacheWrite5mTokens,
+		CacheWrite1hTokens:       a.CacheWrite1hTokens + b.CacheWrite1hTokens,
 		TotalTokens:              a.TotalTokens + b.TotalTokens,
 		WebSearchRequests:        a.WebSearchRequests + b.WebSearchRequests,
 		WebSearchGroundedPrompts: a.WebSearchGroundedPrompts + b.WebSearchGroundedPrompts,

@@ -532,3 +532,27 @@ func TestNormalizeToolRetry(t *testing.T) {
 	got = normalizeToolRetry(ToolRetryOptions{MaxAttempts: -2})
 	assert.Equal(t, 1, got.MaxAttempts)
 }
+
+// TestAddUsageAggregatesCacheWriteTiers 是"多轮用量聚合不丢分档"的反证：
+// addUsage 漏掉分档字段时，RunToolLoop 的合计会把长 TTL 写入算成普通写入。
+func TestAddUsageAggregatesCacheWriteTiers(t *testing.T) {
+	t.Parallel()
+
+	sum := addUsage(
+		Usage{
+			PromptTokens: 1_000, CacheWriteTokens: 100,
+			CacheWrite5mTokens: 60, CacheWrite1hTokens: 40,
+		},
+		Usage{
+			PromptTokens: 2_000, CacheWriteTokens: 200,
+			CacheWrite5mTokens: 150, CacheWrite1hTokens: 50,
+		},
+	)
+
+	assert.Equal(t, 3_000, sum.PromptTokens)
+	assert.Equal(t, 300, sum.CacheWriteTokens)
+	assert.Equal(t, 210, sum.CacheWrite5mTokens)
+	assert.Equal(t, 90, sum.CacheWrite1hTokens)
+	// 聚合结果仍需满足子集关系，否则合计后无法计价。
+	require.NoError(t, validateUsage(sum))
+}

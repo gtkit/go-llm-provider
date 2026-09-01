@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"math/rand/v2"
 	"sync"
 	"sync/atomic"
@@ -32,6 +33,18 @@ const (
 	// BalanceLeastPending 是加权最少在途：选择"在途请求数 / 权重"最小的成员，
 	// 适合各成员响应时延差异大的场景（慢的成员自然少分到流量）。
 	BalanceLeastPending BalanceStrategy = "least_pending"
+
+	// BalanceSessionAffinity 是会话粘性：按会话键哈希稳定选中一个成员，
+	// 同一会话的多轮请求落到同一成员，让该成员上游的提示词缓存能连续命中。
+	//
+	// 其他策略把同一会话的请求打散到不同成员，各成员的提示词缓存都是冷的；
+	// 缓存命中的输入单价通常只有常规输入的一小部分（Anthropic 约十分之一），
+	// 打散会让这部分收益全部消失。会话较长、且启用了提示词缓存时优先选它。
+	//
+	// 哈希按成员权重分配会话，权重大的成员承载更多会话；哈希是确定性的
+	// （不含随机种子），多副本部署与进程重启后同一会话仍落到同一成员。
+	// 会话键为空的调用退化为平滑加权轮询，故障转移语义与其他策略一致。
+	BalanceSessionAffinity BalanceStrategy = "session_affinity"
 )
 
 // BalanceMember 是均衡器的一个成员，通常对应一个 key、一个地域或一个平台。
@@ -61,6 +74,15 @@ type BalanceOptions struct {
 	// MaxAttempts 是单次调用最多尝试的成员数，≤ 0 表示最多尝试全部成员。
 	// 设为 1 表示只打一个成员、不做故障转移。
 	MaxAttempts int
+
+	// SessionKey 取出本次调用的会话键，仅在 Strategy 为 BalanceSessionAffinity 时生效。
+	// 同一会话键的调用会落到同一成员；返回空串表示本次调用无会话归属，
+	// 该次调用退化为平滑加权轮询。
+	//
+	// nil 时取 ctx 中的会话标识：先 ConversationIDFromContext，
+	// 再回落 UserIDFromContext（二者都用 WithConversationID / WithUserID 注入）。
+	// 需要按别的维度粘附（如租户、提示词前缀指纹）时自行提供。
+	SessionKey func(ctx context.Context, req *ChatRequest) string
 }
 
 // BalanceMemberStats 是单个成员的状态快照。
@@ -85,6 +107,7 @@ type BalancedProvider struct {
 	strategy       BalanceStrategy
 	shouldFallback func(error) bool
 	maxAttempts    int
+	sessionKey     func(ctx context.Context, req *ChatRequest) string
 
 	// mu 保护平滑加权轮询的动态权重。
 	mu sync.Mutex
@@ -115,7 +138,7 @@ func NewBalancedProviderWithOptions(members []BalanceMember, opts BalanceOptions
 		strategy = BalanceWeightedRoundRobin
 	}
 	switch strategy {
-	case BalanceWeightedRoundRobin, BalanceWeightedRandom, BalanceLeastPending:
+	case BalanceWeightedRoundRobin, BalanceWeightedRandom, BalanceLeastPending, BalanceSessionAffinity:
 	default:
 		return nil, fmt.Errorf("%w: %q", ErrInvalidBalanceStrategy, string(strategy))
 	}
@@ -140,13 +163,30 @@ func NewBalancedProviderWithOptions(members []BalanceMember, opts BalanceOptions
 	if maxAttempts <= 0 || maxAttempts > len(out) {
 		maxAttempts = len(out)
 	}
+	sessionKey := opts.SessionKey
+	if sessionKey == nil {
+		sessionKey = sessionKeyFromContext
+	}
 
 	return &BalancedProvider{
 		members:        out,
 		strategy:       strategy,
 		shouldFallback: shouldFallback,
 		maxAttempts:    maxAttempts,
+		sessionKey:     sessionKey,
 	}, nil
+}
+
+// sessionKeyFromContext 是 BalanceOptions.SessionKey 的默认实现：
+// 取 ctx 中的会话标识，先会话级、再用户级，都没有则返回空串。
+func sessionKeyFromContext(ctx context.Context, _ *ChatRequest) string {
+	if conversationID, ok := ConversationIDFromContext(ctx); ok {
+		return conversationID
+	}
+	if userID, ok := UserIDFromContext(ctx); ok {
+		return userID
+	}
+	return ""
 }
 
 // Name 返回首个成员的供应商标识。
@@ -176,7 +216,7 @@ func (b *BalancedProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRes
 	if b == nil || len(b.members) == 0 {
 		return nil, ErrNilProvider
 	}
-	return balanceCall(ctx, b, func(ctx context.Context, p Provider) (*ChatResponse, error) {
+	return balanceCall(ctx, b, b.resolveSessionKey(ctx, req), func(ctx context.Context, p Provider) (*ChatResponse, error) {
 		return p.Chat(ctx, req)
 	})
 }
@@ -187,7 +227,7 @@ func (b *BalancedProvider) ChatStream(ctx context.Context, req *ChatRequest) (*S
 	if b == nil || len(b.members) == 0 {
 		return nil, ErrNilProvider
 	}
-	return balanceCall(ctx, b, func(ctx context.Context, p Provider) (*StreamReader, error) {
+	return balanceCall(ctx, b, b.resolveSessionKey(ctx, req), func(ctx context.Context, p Provider) (*StreamReader, error) {
 		return p.ChatStream(ctx, req)
 	})
 }
@@ -210,13 +250,18 @@ func (b *BalancedProvider) Stats() []BalanceMemberStats {
 }
 
 // balanceCall 是 Chat 与 ChatStream 共用的选择—调用—转移流程。
-func balanceCall[T any](ctx context.Context, b *BalancedProvider, call func(context.Context, Provider) (T, error)) (T, error) {
+func balanceCall[T any](
+	ctx context.Context,
+	b *BalancedProvider,
+	sessionKey string,
+	call func(context.Context, Provider) (T, error),
+) (T, error) {
 	var zero T
 
 	tried := make([]bool, len(b.members))
 	var errs []error
 	for range b.maxAttempts {
-		m, ok := b.pick(tried)
+		m, ok := b.pick(tried, sessionKey)
 		if !ok {
 			break
 		}
@@ -260,15 +305,76 @@ func invokeBalanceMember[T any](ctx context.Context, m *balanceMember, call func
 	return result, nil
 }
 
-func (b *BalancedProvider) pick(tried []bool) (*balanceMember, bool) {
+// resolveSessionKey 仅在会话粘性策略下取会话键，其他策略不调用 SessionKey，
+// 避免为不需要的策略引入额外开销。
+func (b *BalancedProvider) resolveSessionKey(ctx context.Context, req *ChatRequest) string {
+	if b.strategy != BalanceSessionAffinity || b.sessionKey == nil {
+		return ""
+	}
+	return b.sessionKey(ctx, req)
+}
+
+func (b *BalancedProvider) pick(tried []bool, sessionKey string) (*balanceMember, bool) {
 	switch b.strategy {
 	case BalanceWeightedRandom:
 		return b.pickWeightedRandom(tried)
 	case BalanceLeastPending:
 		return b.pickLeastPending(tried)
+	case BalanceSessionAffinity:
+		// 会话键为空表示本次调用无会话归属，退化为平滑加权轮询而不是恒选同一成员。
+		if sessionKey != "" {
+			return b.pickSessionAffinity(tried, sessionKey)
+		}
+		return b.pickSmoothWeighted(tried)
 	default:
 		return b.pickSmoothWeighted(tried)
 	}
+}
+
+// pickSessionAffinity 按会话键在成员权重区间上定位起始成员：同一键恒定映射到
+// 同一成员，权重越大占据的区间越宽、承载的会话越多。
+//
+// 定位用的权重总和取全体成员（不剔除已尝试的），因此起始位置只由会话键决定，
+// 不受本次调用已重试几次影响；起始成员已尝试过时从该位置环形向后取第一个
+// 未尝试的成员，保证故障转移仍能推进且顺序确定。
+func (b *BalancedProvider) pickSessionAffinity(tried []bool, sessionKey string) (*balanceMember, bool) {
+	total := 0
+	for _, m := range b.members {
+		total += m.weight
+	}
+	if total <= 0 {
+		return nil, false
+	}
+
+	// FNV-1a 是确定性哈希（无随机种子），同一会话键在所有副本、
+	// 进程重启前后都定位到同一成员；用 64 位避免权重总和较大时哈希空间不足。
+	digest := fnv.New64a()
+	// hash.Hash 的 Write 契约是永不返回 error。
+	_, _ = digest.Write([]byte(sessionKey))
+	// 全程用 uint64 比较：取模结果落在 [0, total)，成员权重恒为正，
+	// 无需在无符号与有符号之间来回转换。
+	target := digest.Sum64() % uint64(total)
+
+	start := len(b.members) - 1
+	for i, m := range b.members {
+		//nolint:gosec // G115 误报：weight 由构造函数钳制在 [1, maxBalanceWeight]，转换无损
+		weight := uint64(m.weight)
+		if target < weight {
+			start = i
+			break
+		}
+		target -= weight
+	}
+
+	for offset := range b.members {
+		i := (start + offset) % len(b.members)
+		if tried[i] {
+			continue
+		}
+		tried[i] = true
+		return b.members[i], true
+	}
+	return nil, false
 }
 
 // pickSmoothWeighted 是 Nginx 的平滑加权轮询：每轮给候选成员各加一份权重，

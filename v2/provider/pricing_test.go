@@ -283,3 +283,179 @@ func TestPricingTableCostRejectsInvalidInput(t *testing.T) {
 		require.ErrorIs(t, err, ErrInvalidPricing)
 	})
 }
+
+// TestPricingTableCostCacheWriteTiers 覆盖缓存写入的 TTL 分档计价。
+// 首个用例是向后兼容的反证：平台未上报分档明细时，配了分档费率也必须与
+// 只有单一 CacheWritePer1M 时的金额完全一致——否则存量账目会因升级而变化。
+func TestPricingTableCostCacheWriteTiers(t *testing.T) {
+	t.Parallel()
+
+	const (
+		inputRate   = 3_000_000 // 3 元 / 1M
+		writeRate   = 3_750_000 // 1.25x 输入
+		write5mRate = 3_750_000 // 与总档同价
+		write1hRate = 6_000_000 // 2x 输入，长 TTL 更贵
+	)
+
+	single := ModelRate{
+		InputPer1M: inputRate, OutputPer1M: 15_000_000,
+		CacheWritePer1M: writeRate, Currency: "CNY",
+	}
+	tiered := single
+	tiered.CacheWrite5mPer1M = write5mRate
+	tiered.CacheWrite1hPer1M = write1hRate
+
+	// 三个用例共用：输入 10000，其中写入 2000，基础输入 8000。
+	// 基础输入固定为 8000*3 = 24000 微元。
+	tests := []struct {
+		name       string
+		rate       ModelRate
+		usage      Usage
+		wantMicros int64
+	}{
+		{
+			name: "无分档明细：配了分档费率也与单一费率同价（向后兼容）",
+			rate: tiered,
+			usage: Usage{
+				PromptTokens: 10_000, CacheWriteTokens: 2_000,
+			},
+			// 基础输入 24000 微元；写入 2000 token 按 1.25 倍输入价计 7500 微元。
+			wantMicros: 31_500,
+		},
+		{
+			name: "无分档明细 + 单一费率：基准金额",
+			rate: single,
+			usage: Usage{
+				PromptTokens: 10_000, CacheWriteTokens: 2_000,
+			},
+			wantMicros: 31_500,
+		},
+		{
+			name: "分档明细齐全：1h 档按自己的单价计，高于单一费率",
+			rate: tiered,
+			usage: Usage{
+				PromptTokens: 10_000, CacheWriteTokens: 2_000,
+				CacheWrite5mTokens: 1_500, CacheWrite1hTokens: 500,
+			},
+			// 基础输入 24000 微元；5m 档 1500 token 计 5625 微元、1h 档 500 token 计 3000 微元。
+			wantMicros: 32_625,
+		},
+		{
+			name: "有分档明细但未配分档费率：两档回落到 CacheWritePer1M",
+			rate: single,
+			usage: Usage{
+				PromptTokens: 10_000, CacheWriteTokens: 2_000,
+				CacheWrite5mTokens: 1_500, CacheWrite1hTokens: 500,
+			},
+			wantMicros: 31_500,
+		},
+		{
+			name: "部分分档：未被分档覆盖的部分按 CacheWritePer1M",
+			rate: tiered,
+			usage: Usage{
+				PromptTokens: 10_000, CacheWriteTokens: 2_000,
+				CacheWrite1hTokens: 500, // 剩余 1500 落到总档
+			},
+			// 同上：未分档的 1500 token 落到总档单价，与 5m 档同价。
+			wantMicros: 32_625,
+		},
+		{
+			name: "分档费率未配时回落链为 CacheWrite1h -> CacheWrite -> Input",
+			rate: ModelRate{InputPer1M: inputRate, OutputPer1M: 1, Currency: "CNY"},
+			usage: Usage{
+				PromptTokens: 10_000, CacheWriteTokens: 2_000,
+				CacheWrite1hTokens: 2_000,
+			},
+			// 两级回落后全部按输入单价，10000 token 合 30000 微元。
+			wantMicros: 30_000,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			micros, currency, err := PricingTable{"m": tc.rate}.Cost("m", tc.usage)
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantMicros, micros)
+			assert.Equal(t, "CNY", currency)
+		})
+	}
+}
+
+// TestPricingTableCostRejectsInvalidCacheWriteTiers 是"分档必须是写入总量子集"的反证：
+// 若不校验，Cost 的未分档部分会变成负数并算出偏低金额。
+func TestPricingTableCostRejectsInvalidCacheWriteTiers(t *testing.T) {
+	t.Parallel()
+
+	table := PricingTable{"m": {
+		InputPer1M: 3_000_000, CacheWritePer1M: 3_750_000,
+		CacheWrite5mPer1M: 3_750_000, CacheWrite1hPer1M: 6_000_000, Currency: "CNY",
+	}}
+
+	tests := []struct {
+		name  string
+		usage Usage
+	}{
+		{
+			name: "分档之和超过写入总量",
+			usage: Usage{
+				PromptTokens: 10_000, CacheWriteTokens: 1_000,
+				CacheWrite5mTokens: 800, CacheWrite1hTokens: 500,
+			},
+		},
+		{
+			name: "单档超过写入总量",
+			usage: Usage{
+				PromptTokens: 10_000, CacheWriteTokens: 100,
+				CacheWrite1hTokens: 500,
+			},
+		},
+		{
+			name: "5m 档为负",
+			usage: Usage{
+				PromptTokens: 10_000, CacheWriteTokens: 1_000,
+				CacheWrite5mTokens: -1,
+			},
+		},
+		{
+			name: "1h 档为负",
+			usage: Usage{
+				PromptTokens: 10_000, CacheWriteTokens: 1_000,
+				CacheWrite1hTokens: -1,
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, _, err := table.Cost("m", tc.usage)
+			require.ErrorIs(t, err, ErrInvalidPricing)
+		})
+	}
+}
+
+// TestPricingTableValidateCacheWriteTierRates 确认分档费率同样纳入启动期整表校验。
+func TestPricingTableValidateCacheWriteTierRates(t *testing.T) {
+	t.Parallel()
+
+	t.Run("负分档费率被拦下", func(t *testing.T) {
+		t.Parallel()
+		err := PricingTable{"m": {InputPer1M: 1_000_000, CacheWrite5mPer1M: -1}}.Validate()
+		require.ErrorIs(t, err, ErrInvalidPricing)
+	})
+
+	t.Run("越界分档费率被拦下", func(t *testing.T) {
+		t.Parallel()
+		err := PricingTable{"m": {InputPer1M: 1_000_000, CacheWrite1hPer1M: maxRatePer1M + 1}}.Validate()
+		require.ErrorIs(t, err, ErrInvalidPricing)
+	})
+
+	t.Run("合法分档费率通过", func(t *testing.T) {
+		t.Parallel()
+		err := PricingTable{"m": {
+			InputPer1M: 1_000_000, CacheWrite5mPer1M: 1_250_000, CacheWrite1hPer1M: 2_000_000,
+		}}.Validate()
+		require.NoError(t, err)
+	})
+}

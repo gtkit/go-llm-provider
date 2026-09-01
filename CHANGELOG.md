@@ -6,6 +6,8 @@
 
 ### Added
 
+- `BalancedProvider` 新增会话粘性策略 `BalanceSessionAffinity`（与 v2 同源回移）：按会话键哈希稳定选中成员，同一会话的多轮请求落到同一成员，让该成员上游的提示词缓存能连续命中。此前三种策略都会把同一会话打散到不同成员，各成员缓存均为冷启动。会话键由新增的 `BalanceOptions.SessionKey` 提供，该策略下必填——本代码线不内置会话标识，缺失时构造返回 `ErrInvalidBalanceStrategy` 而不静默退化成普通轮询。哈希不含随机种子，多副本部署与进程重启后归属一致；会话键为空时该次调用退化为平滑加权轮询，故障转移语义不变
+
 ### Changed
 
 ### Deprecated

@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -523,4 +524,205 @@ func BenchmarkBalancedProviderChatParallel(b *testing.B) {
 			}
 		}
 	})
+}
+
+// sessionKeyCtxKey 是 v1 测试里模拟业务侧会话标识的 ctx 键。
+// 本代码线不内置会话标识，会话键一律由调用方通过 BalanceOptions.SessionKey 提供。
+type sessionKeyCtxKey struct{}
+
+func withTestSessionID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, sessionKeyCtxKey{}, id)
+}
+
+func testSessionKey(ctx context.Context, _ *ChatRequest) string {
+	id, _ := ctx.Value(sessionKeyCtxKey{}).(string)
+	return id
+}
+
+// TestNewBalancedProviderSessionAffinityRequiresSessionKey 是"缺 SessionKey 不静默退化"
+// 的反证：本代码线没有默认会话键来源，若放行构造，粘性会完全失效而调用方无从察觉。
+func TestNewBalancedProviderSessionAffinityRequiresSessionKey(t *testing.T) {
+	t.Parallel()
+
+	var counter atomic.Int64
+	_, err := NewBalancedProviderWithOptions([]BalanceMember{
+		{Provider: countingProvider(ProviderDeepSeek, &counter, nil), Weight: 1},
+	}, BalanceOptions{Strategy: BalanceSessionAffinity})
+	require.ErrorIs(t, err, ErrInvalidBalanceStrategy)
+
+	// 提供 SessionKey 后构造成功。
+	_, err = NewBalancedProviderWithOptions([]BalanceMember{
+		{Provider: countingProvider(ProviderDeepSeek, &counter, nil), Weight: 1},
+	}, BalanceOptions{Strategy: BalanceSessionAffinity, SessionKey: testSessionKey})
+	require.NoError(t, err)
+}
+
+// TestBalancedProviderSessionAffinityIsSticky 是会话粘性的核心反证：
+// 同一会话键的多轮调用必须始终命中同一成员，否则上游提示词缓存每轮都是冷的。
+func TestBalancedProviderSessionAffinityIsSticky(t *testing.T) {
+	t.Parallel()
+
+	var a, bCount atomic.Int64
+	lb, err := NewBalancedProviderWithOptions([]BalanceMember{
+		{Provider: countingProvider(ProviderDeepSeek, &a, nil), Weight: 1},
+		{Provider: countingProvider(ProviderZhipu, &bCount, nil), Weight: 1},
+	}, BalanceOptions{Strategy: BalanceSessionAffinity, SessionKey: testSessionKey})
+	require.NoError(t, err)
+
+	ctx := withTestSessionID(t.Context(), "conv-1")
+	const rounds = 20
+	for range rounds {
+		_, err := lb.Chat(ctx, chatRequest())
+		require.NoError(t, err)
+	}
+
+	require.EqualValues(t, rounds, a.Load()+bCount.Load())
+	assert.True(t, a.Load() == rounds || bCount.Load() == rounds,
+		"同一会话必须恒定命中同一成员，实际 a=%d b=%d", a.Load(), bCount.Load())
+}
+
+// TestBalancedProviderSessionAffinityIsDeterministic 确认哈希不含随机种子：
+// 独立构造的两个均衡器对同一会话键必须选出同一位置的成员，
+// 否则多副本部署与进程重启都会打散缓存。
+func TestBalancedProviderSessionAffinityIsDeterministic(t *testing.T) {
+	t.Parallel()
+
+	pick := func(key string) ProviderName {
+		var a, bCount, c atomic.Int64
+		lb, err := NewBalancedProviderWithOptions([]BalanceMember{
+			{Provider: countingProvider(ProviderDeepSeek, &a, nil), Weight: 1},
+			{Provider: countingProvider(ProviderZhipu, &bCount, nil), Weight: 1},
+			{Provider: countingProvider(ProviderQwen, &c, nil), Weight: 1},
+		}, BalanceOptions{Strategy: BalanceSessionAffinity, SessionKey: testSessionKey})
+		require.NoError(t, err)
+
+		resp, err := lb.Chat(withTestSessionID(t.Context(), key), chatRequest())
+		require.NoError(t, err)
+		return ProviderName(resp.Content)
+	}
+
+	for _, key := range []string{"conv-1", "conv-2", "user-42", ""} {
+		first := pick(key)
+		for range 5 {
+			assert.Equal(t, first, pick(key), "会话键 %q 的归属必须稳定", key)
+		}
+	}
+}
+
+// TestBalancedProviderSessionAffinitySpreadsSessions 确认不同会话被分散到各成员，
+// 粘性针对的是"同一会话"，不是把所有流量压到一个成员上。
+func TestBalancedProviderSessionAffinitySpreadsSessions(t *testing.T) {
+	t.Parallel()
+
+	var a, bCount atomic.Int64
+	lb, err := NewBalancedProviderWithOptions([]BalanceMember{
+		{Provider: countingProvider(ProviderDeepSeek, &a, nil), Weight: 1},
+		{Provider: countingProvider(ProviderZhipu, &bCount, nil), Weight: 1},
+	}, BalanceOptions{Strategy: BalanceSessionAffinity, SessionKey: testSessionKey})
+	require.NoError(t, err)
+
+	const sessions = 200
+	for i := range sessions {
+		ctx := withTestSessionID(t.Context(), fmt.Sprintf("conv-%d", i))
+		_, err := lb.Chat(ctx, chatRequest())
+		require.NoError(t, err)
+	}
+
+	require.EqualValues(t, sessions, a.Load()+bCount.Load())
+	// 等权重下两成员各自应拿到大致一半的会话，放宽到 [25%, 75%] 避免哈希抖动 flaky。
+	ratio := float64(a.Load()) / float64(sessions)
+	assert.Greater(t, ratio, 0.25)
+	assert.Less(t, ratio, 0.75)
+}
+
+// TestBalancedProviderSessionAffinityRespectsWeight 确认会话按权重分配：
+// 权重高的成员承载更多会话。
+func TestBalancedProviderSessionAffinityRespectsWeight(t *testing.T) {
+	t.Parallel()
+
+	var a, bCount atomic.Int64
+	lb, err := NewBalancedProviderWithOptions([]BalanceMember{
+		{Provider: countingProvider(ProviderDeepSeek, &a, nil), Weight: 9},
+		{Provider: countingProvider(ProviderZhipu, &bCount, nil), Weight: 1},
+	}, BalanceOptions{Strategy: BalanceSessionAffinity, SessionKey: testSessionKey})
+	require.NoError(t, err)
+
+	const sessions = 2000
+	for i := range sessions {
+		ctx := withTestSessionID(t.Context(), fmt.Sprintf("conv-%d", i))
+		_, err := lb.Chat(ctx, chatRequest())
+		require.NoError(t, err)
+	}
+
+	require.EqualValues(t, sessions, a.Load()+bCount.Load())
+	ratio := float64(a.Load()) / float64(sessions)
+	assert.Greater(t, ratio, 0.80, "权重 9 的成员应承载绝大多数会话")
+	assert.Less(t, ratio, 0.98)
+}
+
+// TestBalancedProviderSessionAffinityFailsOver 确认粘附成员失败时仍会转移，
+// 粘性不能把故障转移堵死。
+func TestBalancedProviderSessionAffinityFailsOver(t *testing.T) {
+	t.Parallel()
+
+	retryable := &ProviderError{Code: ErrorCodeServerError, Retryable: true}
+	var failed, healthy atomic.Int64
+	lb, err := NewBalancedProviderWithOptions([]BalanceMember{
+		{Provider: countingProvider(ProviderDeepSeek, &failed, retryable), Weight: 1},
+		{Provider: countingProvider(ProviderZhipu, &healthy, nil), Weight: 1},
+	}, BalanceOptions{Strategy: BalanceSessionAffinity, SessionKey: testSessionKey})
+	require.NoError(t, err)
+
+	for _, key := range []string{"conv-1", "conv-2", "conv-3", "conv-4"} {
+		resp, err := lb.Chat(withTestSessionID(t.Context(), key), chatRequest())
+		require.NoError(t, err, "会话 %q 应转移到健康成员", key)
+		assert.Equal(t, string(ProviderZhipu), resp.Content)
+	}
+	assert.Positive(t, healthy.Load())
+}
+
+// TestBalancedProviderSessionAffinityWithoutKeyFallsBackToRoundRobin 确认会话键为空时
+// 退化为平滑加权轮询，而不是把全部流量压到同一个成员。
+func TestBalancedProviderSessionAffinityWithoutKeyFallsBackToRoundRobin(t *testing.T) {
+	t.Parallel()
+
+	var a, bCount atomic.Int64
+	lb, err := NewBalancedProviderWithOptions([]BalanceMember{
+		{Provider: countingProvider(ProviderDeepSeek, &a, nil), Weight: 1},
+		{Provider: countingProvider(ProviderZhipu, &bCount, nil), Weight: 1},
+	}, BalanceOptions{Strategy: BalanceSessionAffinity, SessionKey: testSessionKey})
+	require.NoError(t, err)
+
+	// ctx 不含会话标识，SessionKey 返回空串。
+	const rounds = 10
+	for range rounds {
+		_, err := lb.Chat(t.Context(), chatRequest())
+		require.NoError(t, err)
+	}
+
+	assert.EqualValues(t, rounds/2, a.Load())
+	assert.EqualValues(t, rounds/2, bCount.Load())
+}
+
+// TestBalancedProviderSessionAffinityStreamIsSticky 确认流式路径同样走会话粘性。
+func TestBalancedProviderSessionAffinityStreamIsSticky(t *testing.T) {
+	t.Parallel()
+
+	var a, bCount atomic.Int64
+	lb, err := NewBalancedProviderWithOptions([]BalanceMember{
+		{Provider: countingProvider(ProviderDeepSeek, &a, nil), Weight: 1},
+		{Provider: countingProvider(ProviderZhipu, &bCount, nil), Weight: 1},
+	}, BalanceOptions{Strategy: BalanceSessionAffinity, SessionKey: testSessionKey})
+	require.NoError(t, err)
+
+	ctx := withTestSessionID(t.Context(), "conv-stream")
+	const rounds = 10
+	for range rounds {
+		stream, err := lb.ChatStream(ctx, chatRequest())
+		require.NoError(t, err)
+		require.NoError(t, stream.Close())
+	}
+
+	assert.True(t, a.Load() == rounds || bCount.Load() == rounds,
+		"流式路径的会话粘性必须与非流式一致")
 }

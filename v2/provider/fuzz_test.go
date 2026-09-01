@@ -121,6 +121,7 @@ func FuzzFormatMicros(f *testing.F) {
 func oraclePricingCost(usage Usage, rate ModelRate) (int64, error) {
 	for _, r := range []int64{
 		rate.InputPer1M, rate.OutputPer1M, rate.CacheReadPer1M, rate.CacheWritePer1M, rate.ReasoningPer1M,
+		rate.CacheWrite5mPer1M, rate.CacheWrite1hPer1M,
 		rate.WebSearchPer1K, rate.GroundedPromptPer1K,
 	} {
 		if r < 0 || r > maxRatePer1M {
@@ -134,6 +135,7 @@ func oraclePricingCost(usage Usage, rate ModelRate) (int64, error) {
 	for _, n := range []int{
 		usage.PromptTokens, usage.CompletionTokens, usage.ReasoningTokens,
 		usage.CacheReadTokens, usage.CacheWriteTokens, usage.TotalTokens,
+		usage.CacheWrite5mTokens, usage.CacheWrite1hTokens,
 		usage.WebSearchRequests, usage.WebSearchGroundedPrompts,
 	} {
 		if n < 0 {
@@ -141,6 +143,9 @@ func oraclePricingCost(usage Usage, rate ModelRate) (int64, error) {
 		}
 	}
 	if usage.CacheReadTokens > usage.PromptTokens-usage.CacheWriteTokens {
+		return 0, ErrInvalidPricing
+	}
+	if usage.CacheWrite5mTokens+usage.CacheWrite1hTokens > usage.CacheWriteTokens {
 		return 0, ErrInvalidPricing
 	}
 	if usage.ReasoningTokens > usage.CompletionTokens {
@@ -180,7 +185,10 @@ func oraclePricingCost(usage Usage, rate ModelRate) (int64, error) {
 	}
 	addTerm(usage.PromptTokens-usage.CacheReadTokens-usage.CacheWriteTokens, rate.InputPer1M)
 	addTerm(usage.CacheReadTokens, fallback(rate.CacheReadPer1M, rate.InputPer1M))
-	addTerm(usage.CacheWriteTokens, fallback(rate.CacheWritePer1M, rate.InputPer1M))
+	cacheWriteRate := fallback(rate.CacheWritePer1M, rate.InputPer1M)
+	addTerm(usage.CacheWriteTokens-usage.CacheWrite5mTokens-usage.CacheWrite1hTokens, cacheWriteRate)
+	addTerm(usage.CacheWrite5mTokens, fallback(rate.CacheWrite5mPer1M, cacheWriteRate))
+	addTerm(usage.CacheWrite1hTokens, fallback(rate.CacheWrite1hPer1M, cacheWriteRate))
 	addTerm(usage.CompletionTokens-usage.ReasoningTokens, rate.OutputPer1M)
 	addTerm(usage.ReasoningTokens, fallback(rate.ReasoningPer1M, rate.OutputPer1M))
 	addTerm(searchUnits*searchUnitScale, searchRate)
@@ -303,6 +311,60 @@ func FuzzInjectExtraFields(f *testing.F) {
 		// 字段名不受此影响：encodeExtraFields 直接拒绝非法 UTF-8 的字段名。
 		if utf8.ValidString(value) && got != value {
 			t.Fatalf("字段值不一致: name=%q want=%q got=%v", name, value, got)
+		}
+	})
+}
+
+// FuzzPricingTableCostCacheWriteTiers 专注缓存写入分档维度的差分校验：
+// 任意分档 token 与分档费率组合下，Cost 都必须与 math/big 预言机逐位一致，
+// 包括分档超总量的拒绝分类与各级回落（5m/1h -> CacheWrite -> Input）。
+func FuzzPricingTableCostCacheWriteTiers(f *testing.F) {
+	// 种子覆盖：无明细（向后兼容路径）、明细齐全、部分分档、分档超总量（拒绝）、
+	// 分档为负（拒绝）、未配分档费率（回落）、上界费率×极端 token（溢出）。
+	f.Add(10_000, 2_000, 0, 0, int64(3_000_000), int64(3_750_000), int64(3_750_000), int64(6_000_000))
+	f.Add(10_000, 2_000, 1_500, 500, int64(3_000_000), int64(3_750_000), int64(3_750_000), int64(6_000_000))
+	f.Add(10_000, 2_000, 0, 500, int64(3_000_000), int64(3_750_000), int64(0), int64(6_000_000))
+	f.Add(10_000, 1_000, 800, 500, int64(3_000_000), int64(3_750_000), int64(3_750_000), int64(6_000_000))
+	f.Add(10_000, 1_000, -1, 0, int64(3_000_000), int64(3_750_000), int64(0), int64(0))
+	f.Add(10_000, 2_000, 1_500, 500, int64(3_000_000), int64(0), int64(0), int64(0))
+	f.Add(math.MaxInt, math.MaxInt, math.MaxInt, 0, int64(maxRatePer1M), int64(maxRatePer1M), int64(maxRatePer1M), int64(maxRatePer1M))
+	f.Add(0, 0, 0, 0, int64(0), int64(0), int64(0), int64(0))
+
+	f.Fuzz(func(t *testing.T,
+		prompt, cacheWrite, write5m, write1h int,
+		inputRate, cacheWriteRate, write5mRate, write1hRate int64,
+	) {
+		usage := Usage{
+			PromptTokens:       prompt,
+			CacheWriteTokens:   cacheWrite,
+			CacheWrite5mTokens: write5m,
+			CacheWrite1hTokens: write1h,
+		}
+		rate := ModelRate{
+			InputPer1M:        inputRate,
+			CacheWritePer1M:   cacheWriteRate,
+			CacheWrite5mPer1M: write5mRate,
+			CacheWrite1hPer1M: write1hRate,
+			Currency:          "CNY",
+		}
+
+		gotMicros, _, err := PricingTable{"m": rate}.Cost("m", usage)
+		wantMicros, wantErr := oraclePricingCost(usage, rate)
+
+		if wantErr == nil {
+			if err != nil {
+				t.Fatalf("预言机判定合法但 Cost 报错: usage=%+v rate=%+v err=%v", usage, rate, err)
+			}
+			if gotMicros != wantMicros {
+				t.Fatalf("金额不一致: got=%d want=%d usage=%+v rate=%+v", gotMicros, wantMicros, usage, rate)
+			}
+			return
+		}
+		if err == nil {
+			t.Fatalf("预言机判定非法但 Cost 未报错: got=%d usage=%+v rate=%+v", gotMicros, usage, rate)
+		}
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("错误类别不一致: want %v, got %v (usage=%+v rate=%+v)", wantErr, err, usage, rate)
 		}
 	})
 }

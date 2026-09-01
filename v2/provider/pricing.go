@@ -20,6 +20,14 @@ type ModelRate struct {
 	CacheWritePer1M int64 // 缓存写入输入单价；0 表示未配置，回落到 InputPer1M
 	ReasoningPer1M  int64 // 推理 token 单价；0 表示未配置，回落到 OutputPer1M（主流平台按输出价计）
 
+	// CacheWrite5mPer1M 与 CacheWrite1hPer1M 是按缓存 TTL 分档的写入单价，
+	// 对应 Usage.CacheWrite5mTokens 与 CacheWrite1hTokens。
+	// 长 TTL 的写入单价通常更高，两档配置不同费率才能算准；
+	// 0 表示未配置，该档回落到 CacheWritePer1M（再回落到 InputPer1M）。
+	// 平台未上报分档明细时这两项不参与计算，写入总量整体按 CacheWritePer1M 计价。
+	CacheWrite5mPer1M int64
+	CacheWrite1hPer1M int64
+
 	// WebSearchPer1K 是"按搜索次数"口径的原生联网搜索单价（微元 / 1000 次），
 	// 对应 Usage.WebSearchRequests（Anthropic 全系、Gemini 3 系按 query 计费）。
 	// 与 GroundedPromptPer1K 无条件互斥：一个模型只可能按一种口径计费，
@@ -47,13 +55,21 @@ type PricingTable map[string]ModelRate
 // Cost 计算一次调用的费用（微元）。
 //
 // Usage 的统一包含关系（ReasoningTokens ⊆ CompletionTokens、
-// CacheRead/WriteTokens ⊆ PromptTokens）保证各计费项互斥，不会重复计费：
+// CacheRead/WriteTokens ⊆ PromptTokens、CacheWrite5m/1hTokens ⊆ CacheWriteTokens）
+// 保证各计费项互斥，不会重复计费：
 //
-//	inputBase  = PromptTokens - CacheReadTokens - CacheWriteTokens
-//	outputBase = CompletionTokens - ReasoningTokens
-//	cost = inputBase*Input + CacheRead*CacheRead + CacheWrite*CacheWrite
+//	inputBase      = PromptTokens - CacheReadTokens - CacheWriteTokens
+//	outputBase     = CompletionTokens - ReasoningTokens
+//	cacheWriteBase = CacheWriteTokens - CacheWrite5mTokens - CacheWrite1hTokens
+//	cost = inputBase*Input + CacheRead*CacheRead
+//	     + cacheWriteBase*CacheWrite
+//	     + CacheWrite5m*CacheWrite5m + CacheWrite1h*CacheWrite1h
 //	     + outputBase*Output + Reasoning*Reasoning
 //	     + searchUnits*1000*searchRate  （各项 / 1M，末尾一次整除）
+//
+// 缓存写入按 TTL 分档计价：平台上报明细时各档按自己的费率计，未被分档覆盖的
+// 部分按 CacheWritePer1M 计；平台未上报明细时写入总量整体按 CacheWritePer1M 计，
+// 与未配置分档费率时的结果一致。
 //
 // 原生搜索按次计价（微元/1000 次），换算到统一的 1M 基数后与 token 项一并累加。
 // 两种搜索口径（WebSearchRequests / WebSearchGroundedPrompts）按费率配置二选一：
@@ -85,10 +101,14 @@ func (t PricingTable) Cost(model string, usage Usage) (micros int64, currency st
 
 	cacheReadRate := fallbackRate(rate.CacheReadPer1M, rate.InputPer1M)
 	cacheWriteRate := fallbackRate(rate.CacheWritePer1M, rate.InputPer1M)
+	cacheWrite5mRate := fallbackRate(rate.CacheWrite5mPer1M, cacheWriteRate)
+	cacheWrite1hRate := fallbackRate(rate.CacheWrite1hPer1M, cacheWriteRate)
 	reasoningRate := fallbackRate(rate.ReasoningPer1M, rate.OutputPer1M)
 
 	inputBase := usage.PromptTokens - usage.CacheReadTokens - usage.CacheWriteTokens
 	outputBase := usage.CompletionTokens - usage.ReasoningTokens
+	// 写入总量中未被 TTL 分档覆盖的部分按总档单价计；validateUsage 已保证不为负。
+	cacheWriteBase := usage.CacheWriteTokens - usage.CacheWrite5mTokens - usage.CacheWrite1hTokens
 
 	var totalHi, totalLo uint64
 	for _, term := range []struct {
@@ -97,7 +117,9 @@ func (t PricingTable) Cost(model string, usage Usage) (micros int64, currency st
 	}{
 		{inputBase, rate.InputPer1M},
 		{usage.CacheReadTokens, cacheReadRate},
-		{usage.CacheWriteTokens, cacheWriteRate},
+		{cacheWriteBase, cacheWriteRate},
+		{usage.CacheWrite5mTokens, cacheWrite5mRate},
+		{usage.CacheWrite1hTokens, cacheWrite1hRate},
 		{outputBase, rate.OutputPer1M},
 		{usage.ReasoningTokens, reasoningRate},
 		{searchUnits * searchUnitScale, searchRate},
@@ -155,6 +177,7 @@ func webSearchCostTerm(model string, usage Usage, rate ModelRate) (units int, pe
 func validateRate(model string, rate ModelRate) error {
 	for _, per1M := range []int64{
 		rate.InputPer1M, rate.OutputPer1M, rate.CacheReadPer1M, rate.CacheWritePer1M, rate.ReasoningPer1M,
+		rate.CacheWrite5mPer1M, rate.CacheWrite1hPer1M,
 		rate.WebSearchPer1K, rate.GroundedPromptPer1K,
 	} {
 		if per1M < 0 || per1M > maxRatePer1M {
@@ -187,6 +210,7 @@ func validateUsage(usage Usage) error {
 	for _, n := range []int{
 		usage.PromptTokens, usage.CompletionTokens, usage.ReasoningTokens,
 		usage.CacheReadTokens, usage.CacheWriteTokens, usage.TotalTokens,
+		usage.CacheWrite5mTokens, usage.CacheWrite1hTokens,
 		usage.WebSearchRequests, usage.WebSearchGroundedPrompts,
 	} {
 		if n < 0 {
@@ -195,6 +219,11 @@ func validateUsage(usage Usage) error {
 	}
 	if usage.CacheReadTokens > usage.PromptTokens-usage.CacheWriteTokens {
 		return fmt.Errorf("%w: cache read/write tokens exceed prompt tokens", ErrInvalidPricing)
+	}
+	// 分档必须是写入总量的子集，否则 Cost 的未分档部分会变成负数、算出偏低的金额。
+	if usage.CacheWrite5mTokens+usage.CacheWrite1hTokens > usage.CacheWriteTokens {
+		return fmt.Errorf("%w: cache write tier tokens (5m %d + 1h %d) exceed cache write tokens %d",
+			ErrInvalidPricing, usage.CacheWrite5mTokens, usage.CacheWrite1hTokens, usage.CacheWriteTokens)
 	}
 	if usage.ReasoningTokens > usage.CompletionTokens {
 		return fmt.Errorf("%w: reasoning tokens exceed completion tokens", ErrInvalidPricing)

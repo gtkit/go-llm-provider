@@ -131,11 +131,27 @@ type anthropicResponse struct {
 }
 
 type anthropicUsage struct {
-	InputTokens              int                    `json:"input_tokens"`
-	OutputTokens             int                    `json:"output_tokens"`
-	CacheCreationInputTokens int                    `json:"cache_creation_input_tokens"`
-	CacheReadInputTokens     int                    `json:"cache_read_input_tokens"`
-	ServerToolUse            anthropicServerToolUse `json:"server_tool_use"`
+	InputTokens              int                     `json:"input_tokens"`
+	OutputTokens             int                     `json:"output_tokens"`
+	CacheCreationInputTokens int                     `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int                     `json:"cache_read_input_tokens"`
+	CacheCreation            *anthropicCacheCreation `json:"cache_creation"`
+	ServerToolUse            anthropicServerToolUse  `json:"server_tool_use"`
+}
+
+// anthropicCacheCreation 是缓存写入 token 的 TTL 分档明细。
+// 平台按档位差异计价（1 小时档写入单价高于 5 分钟档），旧模型可能不返回该对象。
+type anthropicCacheCreation struct {
+	Ephemeral5mInputTokens int `json:"ephemeral_5m_input_tokens"`
+	Ephemeral1hInputTokens int `json:"ephemeral_1h_input_tokens"`
+}
+
+// tierTokens 返回 5 分钟档与 1 小时档的写入 token 数，接收者为 nil 时返回零值。
+func (c *anthropicCacheCreation) tierTokens() (write5m, write1h int) {
+	if c == nil {
+		return 0, 0
+	}
+	return c.Ephemeral5mInputTokens, c.Ephemeral1hInputTokens
 }
 
 type anthropicServerToolUse struct {
@@ -145,15 +161,23 @@ type anthropicServerToolUse struct {
 // usageFromAnthropic 将 anthropicUsage 归一化为统一 Usage。
 // Anthropic 的 input_tokens 不含缓存读写部分，这里归一化为
 // PromptTokens = input + cache_read + cache_write，与其他 provider 语义对齐。
+//
+// 缓存写入总数取 cache_creation_input_tokens 与 TTL 分档明细之和的较大值：
+// 归一化层的职责是产出自洽数据（保证分档是总数的子集），
+// 平台只给明细不给总数、或两者不一致时都不会让子集关系破裂。
 func usageFromAnthropic(usage anthropicUsage) Usage {
-	prompt := usage.InputTokens + usage.CacheReadInputTokens + usage.CacheCreationInputTokens
+	write5m, write1h := usage.CacheCreation.tierTokens()
+	cacheWrite := max(usage.CacheCreationInputTokens, write5m+write1h)
+	prompt := usage.InputTokens + usage.CacheReadInputTokens + cacheWrite
 	return Usage{
-		PromptTokens:      prompt,
-		CompletionTokens:  usage.OutputTokens,
-		CacheReadTokens:   usage.CacheReadInputTokens,
-		CacheWriteTokens:  usage.CacheCreationInputTokens,
-		TotalTokens:       prompt + usage.OutputTokens,
-		WebSearchRequests: usage.ServerToolUse.WebSearchRequests,
+		PromptTokens:       prompt,
+		CompletionTokens:   usage.OutputTokens,
+		CacheReadTokens:    usage.CacheReadInputTokens,
+		CacheWriteTokens:   cacheWrite,
+		CacheWrite5mTokens: write5m,
+		CacheWrite1hTokens: write1h,
+		TotalTokens:        prompt + usage.OutputTokens,
+		WebSearchRequests:  usage.ServerToolUse.WebSearchRequests,
 	}
 }
 
@@ -169,6 +193,15 @@ func mergeAnthropicStreamUsage(acc *anthropicUsage, event anthropicUsage) {
 	}
 	if event.CacheCreationInputTokens > 0 {
 		acc.CacheCreationInputTokens = event.CacheCreationInputTokens
+	}
+	// TTL 分档明细整体覆盖而非逐档覆盖：两档同属一个 cache_creation 快照，
+	// 分开覆盖会把不同事件的档位数据拼成一个不存在的组合。
+	// 复制而不复用 event 的指针，避免累积值与事件对象共享底层数据。
+	if write5m, write1h := event.CacheCreation.tierTokens(); write5m > 0 || write1h > 0 {
+		acc.CacheCreation = &anthropicCacheCreation{
+			Ephemeral5mInputTokens: write5m,
+			Ephemeral1hInputTokens: write1h,
+		}
 	}
 	if event.CacheReadInputTokens > 0 {
 		acc.CacheReadInputTokens = event.CacheReadInputTokens

@@ -1447,3 +1447,277 @@ func (r *trackingReadCloser) Close() error {
 	r.closed = true
 	return nil
 }
+
+// TestUsageFromAnthropicCacheWriteTiers 覆盖缓存写入分档明细的归一化。
+// 归一化层的契约是"产出自洽数据"：无论平台给的总数与明细是否一致，
+// 输出都必须满足 CacheWrite5m + CacheWrite1h <= CacheWriteTokens，
+// 即能通过 validateUsage——否则计价会直接失败。
+func TestUsageFromAnthropicCacheWriteTiers(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		body       string
+		wantPrompt int
+		wantWrite  int
+		want5m     int
+		want1h     int
+		wantRead   int
+	}{
+		{
+			name:       "总数与明细一致",
+			body:       `{"input_tokens":100,"output_tokens":20,"cache_creation_input_tokens":2000,"cache_read_input_tokens":500,"cache_creation":{"ephemeral_5m_input_tokens":1500,"ephemeral_1h_input_tokens":500}}`,
+			wantPrompt: 2600, // 100 + 500 + 2000
+			wantWrite:  2000,
+			want5m:     1500,
+			want1h:     500,
+			wantRead:   500,
+		},
+		{
+			name:       "只有明细未给总数：总数由明细之和兜底",
+			body:       `{"input_tokens":100,"output_tokens":20,"cache_creation":{"ephemeral_5m_input_tokens":1500,"ephemeral_1h_input_tokens":500}}`,
+			wantPrompt: 2100, // 100 + 0 + 2000
+			wantWrite:  2000,
+			want5m:     1500,
+			want1h:     500,
+		},
+		{
+			name:       "只有总数未给明细（旧模型）：两档为 0，整体按总档计价",
+			body:       `{"input_tokens":100,"output_tokens":20,"cache_creation_input_tokens":2000,"cache_read_input_tokens":500}`,
+			wantPrompt: 2600,
+			wantWrite:  2000,
+			wantRead:   500,
+		},
+		{
+			name:       "总数小于明细之和：取较大值，保证子集关系不破裂",
+			body:       `{"input_tokens":100,"output_tokens":20,"cache_creation_input_tokens":100,"cache_creation":{"ephemeral_5m_input_tokens":1500,"ephemeral_1h_input_tokens":500}}`,
+			wantPrompt: 2100,
+			wantWrite:  2000,
+			want5m:     1500,
+			want1h:     500,
+		},
+		{
+			name:       "cache_creation 为空对象",
+			body:       `{"input_tokens":100,"output_tokens":20,"cache_creation_input_tokens":300,"cache_creation":{}}`,
+			wantPrompt: 400,
+			wantWrite:  300,
+		},
+		{
+			name:       "无缓存",
+			body:       `{"input_tokens":100,"output_tokens":20}`,
+			wantPrompt: 100,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var raw anthropicUsage
+			require.NoError(t, json.Unmarshal([]byte(tc.body), &raw))
+
+			usage := usageFromAnthropic(raw)
+			assert.Equal(t, tc.wantPrompt, usage.PromptTokens)
+			assert.Equal(t, tc.wantWrite, usage.CacheWriteTokens)
+			assert.Equal(t, tc.want5m, usage.CacheWrite5mTokens)
+			assert.Equal(t, tc.want1h, usage.CacheWrite1hTokens)
+			assert.Equal(t, tc.wantRead, usage.CacheReadTokens)
+
+			// 归一化结果必须可直接计价，不因内部不一致被拒。
+			require.NoError(t, validateUsage(usage),
+				"归一化输出必须自洽：分档需为写入总量的子集")
+		})
+	}
+}
+
+// TestMergeAnthropicStreamUsageCacheWriteTiers 是"后续事件不清空已累积明细"的反证：
+// 若改为无条件覆盖，只带 output_tokens 的 message_delta 会把分档明细清零，
+// 导致流式调用按总档计价、少算长 TTL 写入成本。
+func TestMergeAnthropicStreamUsageCacheWriteTiers(t *testing.T) {
+	t.Parallel()
+
+	var acc anthropicUsage
+
+	// message_start 携带输入侧统计与分档明细
+	mergeAnthropicStreamUsage(&acc, anthropicUsage{
+		InputTokens:              100,
+		CacheCreationInputTokens: 2000,
+		CacheReadInputTokens:     500,
+		CacheCreation: &anthropicCacheCreation{
+			Ephemeral5mInputTokens: 1500,
+			Ephemeral1hInputTokens: 500,
+		},
+	})
+	usage := usageFromAnthropic(acc)
+	require.Equal(t, 1500, usage.CacheWrite5mTokens)
+	require.Equal(t, 500, usage.CacheWrite1hTokens)
+
+	// message_delta 只携带累计输出，不得清空已累积的分档明细
+	mergeAnthropicStreamUsage(&acc, anthropicUsage{OutputTokens: 30})
+	usage = usageFromAnthropic(acc)
+	assert.Equal(t, 30, usage.CompletionTokens)
+	assert.Equal(t, 1500, usage.CacheWrite5mTokens)
+	assert.Equal(t, 500, usage.CacheWrite1hTokens)
+	assert.Equal(t, 2000, usage.CacheWriteTokens)
+
+	// 携带新明细的事件整体覆盖两档，不与旧值逐档混合
+	mergeAnthropicStreamUsage(&acc, anthropicUsage{
+		CacheCreation: &anthropicCacheCreation{Ephemeral1hInputTokens: 900},
+	})
+	usage = usageFromAnthropic(acc)
+	assert.Equal(t, 0, usage.CacheWrite5mTokens, "整体覆盖后 5m 档应随新快照归零")
+	assert.Equal(t, 900, usage.CacheWrite1hTokens)
+}
+
+// TestMergeAnthropicStreamUsageDoesNotAliasEventCacheCreation 确认累积值不与事件对象
+// 共享底层数据：若直接复用事件指针，事件对象被复用或修改时累积值会被连带改写。
+func TestMergeAnthropicStreamUsageDoesNotAliasEventCacheCreation(t *testing.T) {
+	t.Parallel()
+
+	event := anthropicUsage{
+		CacheCreation: &anthropicCacheCreation{Ephemeral5mInputTokens: 1500},
+	}
+	var acc anthropicUsage
+	mergeAnthropicStreamUsage(&acc, event)
+
+	event.CacheCreation.Ephemeral5mInputTokens = 999
+	assert.Equal(t, 1500, usageFromAnthropic(acc).CacheWrite5mTokens)
+}
+
+// TestAnthropicProviderChatThinkingEndToEnd 端到端验证推理控制整条链路：
+// thinking 参数确实被序列化下发（单元测试只验证到请求结构体，
+// 字段若被标成不序列化，各段单测仍会全绿而功能已失效），
+// 且响应中的 thinking 块归位到 Reasoning 而非正文。
+func TestAnthropicProviderChatThinkingEndToEnd(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// handler 跑在另一个 goroutine：用 assert 而非 require，
+		// require 的 FailNow 只允许在测试 goroutine 中调用。
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&captured))
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id": "msg_1",
+			"type": "message",
+			"role": "assistant",
+			"model": "claude-sonnet-4-5",
+			"stop_reason": "end_turn",
+			"content": [
+				{"type":"thinking","thinking":"先分解问题"},
+				{"type":"redacted_thinking","data":"ENCRYPTED"},
+				{"type":"text","text":"答案是 42"}
+			],
+			"usage": {"input_tokens": 10, "output_tokens": 7}
+		}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	p, err := NewAnthropicProvider(NativeProviderConfig{
+		APIKey:  "test-key",
+		BaseURL: srv.URL,
+		Model:   "claude-sonnet-4-5",
+	})
+	require.NoError(t, err)
+
+	budget := 2048
+	resp, err := p.Chat(t.Context(), &ChatRequest{
+		Messages:  []Message{UserText("hi")},
+		MaxTokens: 8192,
+		Thinking:  &Thinking{BudgetTokens: &budget},
+	})
+	require.NoError(t, err)
+
+	// 请求侧：thinking 参数真的出现在 HTTP 请求体里。
+	thinking, ok := captured["thinking"].(map[string]any)
+	require.True(t, ok, "请求体应携带 thinking 参数，实际 body=%v", captured)
+	assert.Equal(t, "enabled", thinking["type"])
+	assert.EqualValues(t, 2048, thinking["budget_tokens"])
+
+	// 响应侧：思考内容归位到 Reasoning，正文不含思考内容与加密块。
+	assert.Equal(t, "答案是 42", resp.Content)
+	assert.Equal(t, "先分解问题", resp.Reasoning)
+	assert.NotContains(t, resp.Content, "先分解问题")
+	assert.NotContains(t, resp.Content, "ENCRYPTED")
+	assert.NotContains(t, resp.Reasoning, "ENCRYPTED")
+}
+
+// TestAnthropicProviderChatCacheWriteTiersEndToEnd 端到端验证缓存写入分档：
+// HTTP 响应里的 cache_creation 明细一路到达 Usage，并能直接用于分档计价。
+func TestAnthropicProviderChatCacheWriteTiersEndToEnd(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id": "msg_1",
+			"type": "message",
+			"role": "assistant",
+			"model": "claude-sonnet-4-5",
+			"stop_reason": "end_turn",
+			"content": [{"type":"text","text":"ok"}],
+			"usage": {
+				"input_tokens": 100,
+				"output_tokens": 7,
+				"cache_read_input_tokens": 300,
+				"cache_creation_input_tokens": 2000,
+				"cache_creation": {"ephemeral_5m_input_tokens": 1500, "ephemeral_1h_input_tokens": 500}
+			}
+		}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	p, err := NewAnthropicProvider(NativeProviderConfig{
+		APIKey:  "test-key",
+		BaseURL: srv.URL,
+		Model:   "claude-sonnet-4-5",
+	})
+	require.NoError(t, err)
+
+	resp, err := p.Chat(t.Context(), &ChatRequest{Messages: []Message{UserText("hi")}})
+	require.NoError(t, err)
+
+	assert.Equal(t, Usage{
+		PromptTokens:       2400, // 100 + 300 + 2000
+		CompletionTokens:   7,
+		CacheReadTokens:    300,
+		CacheWriteTokens:   2000,
+		CacheWrite5mTokens: 1500,
+		CacheWrite1hTokens: 500,
+		TotalTokens:        2407,
+	}, resp.Usage)
+
+	// 分档明细可直接计价：1h 档按自己的更高单价计。
+	table := PricingTable{"claude-sonnet-4-5": {
+		InputPer1M: 3_000_000, OutputPer1M: 15_000_000,
+		CacheReadPer1M: 300_000, CacheWritePer1M: 3_750_000,
+		CacheWrite5mPer1M: 3_750_000, CacheWrite1hPer1M: 6_000_000,
+		Currency: "CNY",
+	}}
+	tieredMicros, _, err := table.Cost("claude-sonnet-4-5", resp.Usage)
+	require.NoError(t, err)
+
+	// 同样的 token 数，抹掉分档明细后按单一写入单价计价，金额应更低——
+	// 这正是分档要修复的少算。
+	flat := resp.Usage
+	flat.CacheWrite5mTokens, flat.CacheWrite1hTokens = 0, 0
+	flatMicros, _, err := table.Cost("claude-sonnet-4-5", flat)
+	require.NoError(t, err)
+	assert.Greater(t, tieredMicros, flatMicros,
+		"1h 档单价更高，分档计价必须高于按单一写入单价计价")
+}
+
+// TestAnthropicStreamSignatureDeltaIgnored 是"signature_delta 被忽略"的反证：
+// 思考块的 signature 只用于把思考块回传给平台，本库不回传，
+// 该事件不得产出 chunk、也不得报错中断流。
+func TestAnthropicStreamSignatureDeltaIgnored(t *testing.T) {
+	t.Parallel()
+
+	chunk, ok, err := anthropicStreamChunk(
+		[]byte(`{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"abc123"}}`),
+		&anthropicStreamState{})
+	require.NoError(t, err)
+	assert.False(t, ok, "signature_delta 不应产出 chunk")
+	assert.Nil(t, chunk)
+}

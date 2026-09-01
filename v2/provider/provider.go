@@ -365,6 +365,7 @@ func (r *ChatResponse) AssistantMessage() Message {
 //   - PromptTokens 为全部输入 token，已包含 CacheReadTokens 与 CacheWriteTokens
 //     （Anthropic 原始 input_tokens 不含缓存部分，本库已归一化）；
 //   - CompletionTokens 为全部输出 token，已包含 ReasoningTokens；
+//   - CacheWriteTokens 已包含 CacheWrite5mTokens 与 CacheWrite1hTokens；
 //   - TotalTokens 通常等于 PromptTokens + CompletionTokens；
 //     provider 返回了总量时以其返回值为准。
 type Usage struct {
@@ -380,6 +381,15 @@ type Usage struct {
 	// CacheWriteTokens 是写入提示词缓存的输入 token 数，
 	// 对应 Anthropic cache_creation_input_tokens；缓存写入计价通常高于常规输入。
 	CacheWriteTokens int
+
+	// CacheWrite5mTokens 与 CacheWrite1hTokens 是按缓存 TTL 分档的写入 token 数，
+	// 对应 Anthropic usage.cache_creation 的 ephemeral_5m_input_tokens 与
+	// ephemeral_1h_input_tokens，二者都是 CacheWriteTokens 的子集。
+	// 分档的意义在计价：1 小时缓存的写入单价高于 5 分钟档，
+	// 只有分档统计才能按各自费率算准（见 ModelRate.CacheWrite5mPer1M / CacheWrite1hPer1M）。
+	// 平台未上报明细时二者为 0，CacheWriteTokens 整体按 CacheWritePer1M 计价。
+	CacheWrite5mTokens int
+	CacheWrite1hTokens int
 
 	TotalTokens int
 

@@ -1098,13 +1098,48 @@ if err != nil {
 resp, err := lb.Chat(ctx, req)
 ```
 
-三种策略：
+四种策略：
 
 | 策略 | 行为 | 适用 |
 |------|------|------|
 | `BalanceWeightedRoundRobin`（默认） | 平滑加权轮询，按权重把流量均匀铺开，低权重成员插在中间而非攒到末尾 | 多 key 分摊配额 |
 | `BalanceWeightedRandom` | 加权随机，长期分布与权重一致，短期可能连续命中同一成员 | 无状态、成员很多 |
 | `BalanceLeastPending` | 加权最少在途，选 `在途数/权重` 最小的成员 | 各成员时延差异大 |
+| `BalanceSessionAffinity` | 会话粘性，按会话键哈希稳定选中成员 | 多轮会话 + 提示词缓存 |
+
+#### 会话粘性与提示词缓存
+
+前三种策略把同一会话的多轮请求打散到不同成员，每个成员上游的提示词缓存都是冷的。
+缓存命中的输入单价通常只有常规输入的一小部分，把长会话打散等于让这部分收益消失——
+`BalanceSessionAffinity` 用来解决这个问题。
+
+本代码线不内置会话标识，会话键一律由 `BalanceOptions.SessionKey` 提供
+（缺失时构造返回 `ErrInvalidBalanceStrategy`，不会静默退化成普通轮询）：
+
+```go
+lb, err := provider.NewBalancedProviderWithOptions(members, provider.BalanceOptions{
+    Strategy: provider.BalanceSessionAffinity,
+    SessionKey: func(ctx context.Context, _ *provider.ChatRequest) string {
+        return myapp.ConversationIDFromContext(ctx) // 业务自己的会话标识
+    },
+})
+if err != nil {
+    log.Fatal(err)
+}
+resp, err := lb.Chat(ctx, req)
+```
+
+行为约定：
+
+- **按权重分配会话**：权重大的成员占据更宽的哈希区间、承载更多会话，
+  粘的是"同一会话"，不是把所有流量压到一个成员。
+- **哈希确定性**：不含随机种子，同一会话键在所有副本、进程重启前后都落到同一成员，
+  多副本部署无需共享状态。
+- **会话键为空**时该次调用退化为平滑加权轮询，不会恒选同一成员。
+- **故障转移不受影响**：粘附成员失败或熔断时，从粘附位置环形向后取下一个未尝试的成员，
+  顺序确定；转移后该轮请求落在冷缓存成员上，属于预期代价。
+- **成员增减会重新分布会话**：哈希区间随权重总和变化，增删 key 后大部分会话会换成员、
+  缓存需要重新预热。调整成员列表宜安排在低峰期。
 
 - **成员级熔断**：`BalanceMember.Breaker` 由均衡器负责申请与上报，不要再用
   `WithBreaker` 包一层（会双重计数）。熔断打开的成员会以 `ErrBreakerOpen`
