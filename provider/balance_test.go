@@ -726,3 +726,47 @@ func TestBalancedProviderSessionAffinityStreamIsSticky(t *testing.T) {
 	assert.True(t, a.Load() == rounds || bCount.Load() == rounds,
 		"流式路径的会话粘性必须与非流式一致")
 }
+
+// TestBalancedProviderSessionAffinityMixedConcurrency 覆盖会话粘性下两条选择路径
+// 并发共存的场景：带会话键的调用走哈希定位（只读成员权重），不带键的调用退化为
+// 平滑加权轮询（需要加锁改写动态权重）。两条路径共用同一组成员，
+// 必须在 -race 下无数据竞争，且权重分布仍然成立。
+func TestBalancedProviderSessionAffinityMixedConcurrency(t *testing.T) {
+	t.Parallel()
+
+	var a, b atomic.Int64
+	lb, err := NewBalancedProviderWithOptions([]BalanceMember{
+		{Provider: countingProvider(ProviderDeepSeek, &a, nil), Weight: 3},
+		{Provider: countingProvider(ProviderZhipu, &b, nil), Weight: 1},
+	}, BalanceOptions{Strategy: BalanceSessionAffinity, SessionKey: testSessionKey})
+	require.NoError(t, err)
+
+	const (
+		workers  = 40
+		perRound = 100
+	)
+	var wg sync.WaitGroup
+	for i := range workers {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			for j := range perRound {
+				ctx := t.Context()
+				// 一半带会话键，一半不带，逼出两条选择路径的并发交错。
+				if (worker+j)%2 == 0 {
+					ctx = withTestSessionID(ctx, fmt.Sprintf("conv-%d", worker))
+				}
+				if _, err := lb.Chat(ctx, chatRequest()); err != nil {
+					t.Errorf("worker %d: %v", worker, err)
+					return
+				}
+				_ = lb.Stats()
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	assert.EqualValues(t, workers*perRound, a.Load()+b.Load())
+	assert.Positive(t, a.Load())
+	assert.Positive(t, b.Load())
+}
