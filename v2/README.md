@@ -110,7 +110,7 @@ go get github.com/gtkit/go-llm-provider/v2
 | 平台 | Chat | Streaming | Tools | Structured Output | Vision | File | File Upload | Reasoning | Embedding | Rerank | Web Search | 协议 |
 |------|------|-----------|-------|-------------------|--------|------|-------------|-----------|-----------|------|------------|------|
 | DeepSeek | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 是 | 否 | 否 | 否 | OpenAI 兼容 |
-| 通义千问（百炼） | 是 | 是 | 是 | 是 | 否 | 否 | 是 | 否 | 是 | 否 | 否 | OpenAI 兼容 |
+| 通义千问（百炼） | 是 | 是 | 是 | 是 | 否 | 否 | 是 | 是 | 是 | 否 | 否 | OpenAI 兼容 |
 | 智谱 AI / GLM | 是 | 是 | 是 | 是 | 否 | 否 | 是 | 否 | 是 | 否 | 否 | OpenAI 兼容 |
 | 百度千帆 | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 否 | 是 | 否 | 否 | OpenAI 兼容 |
 | 硅基流动 | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 否 | 是 | 是 | 否 | OpenAI 兼容 |
@@ -1128,6 +1128,7 @@ type Thinking struct {
 | OpenAI / Azure OpenAI | | ✅ | |
 | 火山方舟 Ark | ✅ | ✅ | |
 | DeepSeek | ✅ | | |
+| 阿里云百炼（通义千问） | ✅ | | ✅ |
 | Anthropic（原生） | ✅ | | ✅ |
 | Gemini（原生） | ✅ | | ✅ |
 
@@ -1159,7 +1160,8 @@ p, err := provider.NewProvider(provider.ProviderConfig{
 两条边界：
 
 - **只解锁 `Effort`。** `Enabled` 与 `BudgetTokens` 在各平台落在互不相同的私有字段上
-  （DeepSeek 用 `chat_template_kwargs`、火山方舟用顶层 `thinking`），库无从代为映射，
+  （DeepSeek 用 `chat_template_kwargs`、火山方舟用顶层 `thinking`、百炼用顶层
+  `enable_thinking`），库无从代为映射，
   对未收录平台始终返回 `ErrInvalidRequest`。
 - **内置预设优先。** 对已收录的平台声明该字段不生效，它们的支持范围由库判定——
   内置平台的映射属于库的实现，不交给调用方覆盖。
@@ -1193,6 +1195,26 @@ nil 时不下发该字段，由方舟按模型默认行为决定），`Effort` �
 `reasoning_effort` 都会原样下发，本库不做取舍，最终以方舟侧的裁决为准。
 
 DeepSeek 只映射 `Enabled`，写入 `chat_template_kwargs.enable_thinking`。
+
+#### 阿里云百炼（通义千问）
+
+百炼映射 `Enabled` 与 `BudgetTokens` 两个字段，都落在请求体顶层：`Enabled` 映射
+`enable_thinking`（true / false），`BudgetTokens` 映射 `thinking_budget`。两者互相独立，
+只设置其一时只下发其一；字段为 nil 时不下发，由百炼按模型自身的行为决定。
+
+```go
+enabled, budget := true, 1024
+resp, err := p.Chat(ctx, &provider.ChatRequest{
+    Messages: []provider.Message{provider.UserText("逐步分析这道题")},
+    Thinking: &provider.Thinking{
+        Enabled:      &enabled,
+        BudgetTokens: &budget,
+    },
+})
+```
+
+`BudgetTokens` 原样透传，取值是否被目标模型接受由平台校验。响应中的 `reasoning_content`
+进入 `ChatResponse.Reasoning`（流式为 `StreamChunk.ReasoningDelta`），不混入正文。
 
 #### 预算口径（Anthropic / Gemini 原生路径）
 

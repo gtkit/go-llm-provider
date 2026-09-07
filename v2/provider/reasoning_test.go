@@ -55,7 +55,7 @@ func TestBuildRequestThinkingUnmappedProviderRejected(t *testing.T) {
 	t.Parallel()
 
 	enabled := true
-	p := &openaiProvider{name: ProviderQwen, model: "qwen-plus"}
+	p := &openaiProvider{name: ProviderQianfan, model: "ernie-4.5-turbo-32k"}
 
 	_, err := p.buildRequest(&ChatRequest{
 		Messages: []Message{UserText("hello")},
@@ -424,9 +424,9 @@ func TestUnsupportedThinkingFieldErrorListsMappedFields(t *testing.T) {
 		},
 		{
 			name:         "完全无推理映射的平台说明自身不支持",
-			provider:     ProviderQwen,
+			provider:     ProviderQianfan,
 			thinking:     &Thinking{Enabled: &enabled},
-			wantMentions: []string{"reasoning control", string(ProviderQwen)},
+			wantMentions: []string{"reasoning control", string(ProviderQianfan)},
 		},
 	}
 

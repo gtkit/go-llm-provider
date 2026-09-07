@@ -28,7 +28,8 @@ type extraFieldsBuilder func(*ChatRequest) map[string]any
 // 注入"的唯一来源：构造时据此决定是否包装 HTTPDoer，请求时据此产出字段。
 // 初始化后只读，因此可被并发的 NewProvider 与请求路径同时查表。
 var extraFieldsBuilders = map[ProviderName]extraFieldsBuilder{
-	ProviderArk: arkExtraFields,
+	ProviderArk:  arkExtraFields,
+	ProviderQwen: qwenExtraFields,
 }
 
 // extraFieldsCtxKey 是 context 传递顶层扩展字段的私有 key 类型。

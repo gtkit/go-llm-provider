@@ -74,6 +74,7 @@ var presetCatalog = map[ProviderName]Preset{
 				CapabilityStreaming,
 				CapabilityTools,
 				CapabilityStructuredOutput,
+				CapabilityReasoning,
 				CapabilityEmbedding,
 				CapabilityFileUpload,
 			},

@@ -6,7 +6,12 @@
 
 ### Added
 
+- `ProviderQwen` 支持深度思考控制：`Thinking.Enabled` 映射阿里云百炼请求体顶层的 `enable_thinking`，`Thinking.BudgetTokens` 映射顶层 `thinking_budget`，两者互相独立，字段为 nil 时不下发。此前对百炼设置任一 `Thinking` 字段都会返回 `ErrInvalidRequest`。`Thinking.Effort` 仍不映射——百炼 OpenAI 兼容 Chat Completions 端点没有对应字段，传入时返回 `ErrInvalidRequest` 并列出已映射的两个字段
+- `ProviderQwen` 预设的 `ModelCapabilities` 增加 `CapabilityReasoning`，`Supports(CapabilityReasoning)` 现在返回 `true`
+
 ### Changed
+
+- ⚠ 破坏性变更：`ProviderQwen` 进入库内推理映射表后，其 `Thinking` 字段支持范围改由库判定，`ProviderConfig.SupportsReasoningEffort` 对该平台不再生效。此前用 `ProviderConfig{Name: provider.ProviderQwen, SupportsReasoningEffort: true}` 下发 `reasoning_effort` 的接入会开始返回 `ErrInvalidRequest`；继续按调用方声明生效需改用非 `qwen` 的自定义 `Name`
 
 ### Deprecated
 

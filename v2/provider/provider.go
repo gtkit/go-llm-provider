@@ -1005,7 +1005,8 @@ func applyThinking(req *openai.ChatCompletionRequest, p *openaiProvider, thinkin
 	}
 
 	// Enabled 在各平台落在互不相同的私有字段上，只能按平台映射。
-	// DeepSeek 用 chat_template_kwargs；火山方舟的顶层 thinking 见 ark.go。
+	// DeepSeek 用 chat_template_kwargs；火山方舟的顶层 thinking 见 ark.go，
+	// 百炼的顶层 enable_thinking / thinking_budget 见 qwen.go。
 	if providerName == ProviderDeepSeek && thinking.Enabled != nil {
 		if req.ChatTemplateKwargs == nil {
 			req.ChatTemplateKwargs = make(map[string]any, 1)

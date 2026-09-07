@@ -16,6 +16,7 @@ import (
 //	OpenAI / Azure         -       ✓          -
 //	火山方舟 Ark           ✓       ✓          -
 //	DeepSeek               ✓       -          -
+//	阿里云百炼 Qwen        ✓       -          ✓
 //	Anthropic（原生）      ✓       -          ✓
 //	Gemini（原生）         ✓       -          ✓
 //
@@ -32,10 +33,11 @@ type Thinking struct {
 	Effort string
 
 	// BudgetTokens 按 token 预算控制推理深度，nil 表示不指定预算。
-	// 两个平台对取值的语义不同：
+	// 各平台对取值的语义不同：
 	//   - Anthropic 只接受正数，非正数返回 ErrInvalidRequest；
 	//     预算还需小于本次请求的 MaxTokens（未显式设置时为 4096），该上限由平台校验；
-	//   - Gemini 以 0 表示禁用思考、-1 表示由模型动态决定预算，取值由平台校验。
+	//   - Gemini 以 0 表示禁用思考、-1 表示由模型动态决定预算，取值由平台校验；
+	//   - 百炼原样透传为顶层 thinking_budget，取值由平台校验。
 	BudgetTokens *int
 }
 
@@ -65,6 +67,7 @@ var thinkingSupportByProvider = map[ProviderName]thinkingSupport{
 	ProviderAzureOpenAI: {effort: true},
 	ProviderArk:         {enabled: true, effort: true},
 	ProviderDeepSeek:    {enabled: true},
+	ProviderQwen:        {enabled: true, budget: true},
 	ProviderAnthropic:   {enabled: true, budget: true},
 	ProviderGemini:      {enabled: true, budget: true},
 }
