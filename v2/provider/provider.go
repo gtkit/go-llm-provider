@@ -990,6 +990,17 @@ func usageFromOpenAI(usage openai.Usage) Usage {
 	}
 }
 
+// thinkingApplier 把统一 Thinking 写入该平台的 go-openai 类型化请求字段。
+// thinking 已通过支持范围校验，实现方只需处理自己映射的字段。
+type thinkingApplier func(*openai.ChatCompletionRequest, *Thinking)
+
+// thinkingAppliers 按 provider 名登记类型化字段的厂商专属推理映射，是"哪些平台
+// 需要改写请求结构体"的唯一来源；实现放在各平台自己的 compat_*.go 里。
+// 初始化后只读，可被并发的请求路径同时查表。
+var thinkingAppliers = map[ProviderName]thinkingApplier{
+	ProviderDeepSeek: applyDeepSeekThinking,
+}
+
 // applyThinking 把统一 Thinking 映射为 OpenAI 兼容平台的推理参数。
 // 无映射的字段被拦下并返回 ErrInvalidRequest，不静默丢弃。
 // 支持范围按 resolveThinkingSupport 解析：内置预设取 thinkingSupportByProvider，
@@ -1004,14 +1015,11 @@ func applyThinking(req *openai.ChatCompletionRequest, p *openaiProvider, thinkin
 		return err
 	}
 
-	// Enabled 在各平台落在互不相同的私有字段上，只能按平台映射。
-	// DeepSeek 用 chat_template_kwargs；火山方舟的顶层 thinking 见 ark.go，
-	// 百炼的顶层 enable_thinking / thinking_budget 见 qwen.go。
-	if providerName == ProviderDeepSeek && thinking.Enabled != nil {
-		if req.ChatTemplateKwargs == nil {
-			req.ChatTemplateKwargs = make(map[string]any, 1)
-		}
-		req.ChatTemplateKwargs["enable_thinking"] = *thinking.Enabled
+	// Enabled 在各平台落在互不相同的私有字段上，只能按平台映射：
+	// 能用 go-openai 类型化字段表达的走这里的 thinkingAppliers，
+	// 只能以顶层扩展字段下发的（方舟 thinking、百炼 enable_thinking）走 extrafields.go。
+	if apply, ok := thinkingAppliers[providerName]; ok {
+		apply(req, thinking)
 	}
 
 	// Effort 走 OpenAI 标准的 reasoning_effort，所有支持该字段的平台共用一套映射——

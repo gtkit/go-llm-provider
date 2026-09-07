@@ -32,6 +32,12 @@ llm-provider/
 │   ├── helpers.go             # Chat 便捷函数：SimpleChat、CollectStream
 │   ├── toolrun.go             # RunToolLoop：Tool Use 自动循环执行器
 │   ├── reasoning.go           # Thinking 结构与推理模式常量
+│   ├── compat_ark.go          # 火山方舟专属映射（顶层 thinking 扩展字段）
+│   ├── compat_qwen.go         # 百炼专属映射（顶层 enable_thinking / thinking_budget）
+│   ├── compat_deepseek.go     # DeepSeek 专属映射（chat_template_kwargs）
+│   ├── native_anthropic.go    # Anthropic Messages API 原生实现
+│   ├── native_gemini.go       # Gemini Generative Language API 原生实现
+│   ├── native_ollama.go       # Ollama /api/chat 原生实现
 │   ├── response_format.go     # Structured Output 结构与构造器
 │   ├── embedder.go            # Embedder 接口、请求/响应、openaiEmbedder 实现
 │   ├── embedder_helpers.go    # Embedding 便捷函数：SimpleEmbed、EmbedBatch
@@ -72,6 +78,8 @@ llm-provider/
     ├── billingstore/          # 计费存储参考实现（Redis + GORM，独立 go.mod）
     └── embedding/main.go      # Embedding + RAG 最小闭环示例
 ```
+
+> 文件前缀标记协议适配的归属：`native_<平台>.go` 是非 OpenAI 兼容协议的原生 HTTP 实现，`compat_<平台>.go` 是 OpenAI 兼容协议下该平台的专属字段映射。请求构建路径（`provider.go`）不含平台分支，平台与实现的对应关系集中在 `presetCatalog`、`thinkingSupportByProvider`、`thinkingAppliers`、`extraFieldsBuilders` 四张表里；构造入口 `presets.go` / `embedder.go` 按平台分派到原生实现。
 
 ## 安装
 

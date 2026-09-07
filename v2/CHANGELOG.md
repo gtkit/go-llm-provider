@@ -11,6 +11,7 @@
 
 ### Changed
 
+- 平台专属实现的文件命名统一为 `native_<平台>.go`（原生协议）与 `compat_<平台>.go`（OpenAI 兼容协议下的专属映射），DeepSeek 的 `chat_template_kwargs` 映射从请求构建函数移入 `compat_deepseek.go`，改由 `thinkingAppliers` 表分发。纯内部整理，导出 API 与请求体均无变化
 - ⚠ 破坏性变更：`ProviderQwen` 进入库内推理映射表后，其 `Thinking` 字段支持范围改由库判定，`ProviderConfig.SupportsReasoningEffort` 对该平台不再生效。此前用 `ProviderConfig{Name: provider.ProviderQwen, SupportsReasoningEffort: true}` 下发 `reasoning_effort` 的接入会开始返回 `ErrInvalidRequest`；继续按调用方声明生效需改用非 `qwen` 的自定义 `Name`
 
 ### Deprecated

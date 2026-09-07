@@ -62,7 +62,7 @@ func TestQwenExtraFields(t *testing.T) {
 	t.Parallel()
 
 	enabled, disabled := true, false
-	budget, zero, negative, huge := 1024, 0, -1, 1<<40
+	budget, zero, negative, huge := 1024, 0, -1, 1<<30
 
 	tests := []struct {
 		name string
@@ -108,7 +108,7 @@ func TestQwenExtraFields(t *testing.T) {
 		{
 			name: "huge budget",
 			req:  &ChatRequest{Thinking: &Thinking{BudgetTokens: &huge}},
-			want: map[string]any{"thinking_budget": 1 << 40},
+			want: map[string]any{"thinking_budget": 1 << 30},
 		},
 	}
 
@@ -265,7 +265,7 @@ func TestQwenChatRejectsEffort(t *testing.T) {
 	t.Parallel()
 
 	var called atomic.Bool
-	p := newQwenTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+	p := newQwenTestProvider(t, func(w http.ResponseWriter, _ *http.Request) {
 		called.Store(true)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(qwenChatResponseFixture))
@@ -288,7 +288,7 @@ func TestQwenIgnoresSupportsReasoningEffort(t *testing.T) {
 	t.Parallel()
 
 	var called atomic.Bool
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		called.Store(true)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(qwenChatResponseFixture))
@@ -315,7 +315,10 @@ func TestQwenIgnoresSupportsReasoningEffort(t *testing.T) {
 func TestQwenChatStreamInjectsThinking(t *testing.T) {
 	t.Parallel()
 
-	var captured map[string]any
+	var captured struct {
+		EnableThinking bool `json:"enable_thinking"`
+		ThinkingBudget int  `json:"thinking_budget"`
+	}
 	p := newQwenTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
 		assert.NoError(t, json.NewDecoder(r.Body).Decode(&captured))
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -338,8 +341,8 @@ func TestQwenChatStreamInjectsThinking(t *testing.T) {
 	_, err = stream.Recv()
 	require.ErrorIs(t, err, io.EOF)
 
-	assert.Equal(t, true, captured["enable_thinking"])
-	assert.Equal(t, float64(1024), captured["thinking_budget"])
+	assert.True(t, captured.EnableThinking)
+	assert.Equal(t, 1024, captured.ThinkingBudget)
 }
 
 // ============================================================
