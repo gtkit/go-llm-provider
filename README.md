@@ -301,6 +301,58 @@ if err != nil {
 }
 ```
 
+### 方式四：走网关 / 代理覆盖 Host
+
+内置平台的流量要经过自建网关、企业代理或中转服务时，保留原来的 `ProviderName`，只把 `BaseURL` 换成网关地址即可，平台标识不变。
+
+```go
+preset := provider.AllPresets()[provider.ProviderDeepSeek] // 复用预设的默认模型
+
+p, err := provider.NewProvider(provider.ProviderConfig{
+    Name:    provider.ProviderDeepSeek,                    // 平台标识保持不变
+    BaseURL: "https://llm-gw.corp.internal/deepseek/v1",   // 换成网关地址
+    APIKey:  os.Getenv("DEEPSEEK_API_KEY"),
+    Model:   preset.DefaultModel,
+})
+if err != nil {
+    log.Fatal(err)
+}
+reg.Register(p)
+```
+
+Claude / Gemini 走网关用原生构造函数的同名字段：
+
+```go
+claude, err := provider.NewAnthropicProvider(provider.NativeProviderConfig{
+    APIKey:  os.Getenv("ANTHROPIC_API_KEY"),
+    BaseURL: "https://llm-gw.corp.internal/anthropic",  // 版本段 /v1 由库补
+    Model:   "claude-sonnet-4-5",
+})
+```
+
+Embedding 同理，`EmbedderConfig` 上也有 `BaseURL`：
+
+```go
+e, err := provider.NewEmbedder(provider.EmbedderConfig{
+    Name:    provider.ProviderQwen,
+    BaseURL: "https://llm-gw.corp.internal/dashscope/compatible-mode/v1",
+    APIKey:  os.Getenv("QWEN_API_KEY"),
+    Model:   "text-embedding-v3",
+})
+```
+
+网关地址写到哪一层，取决于各构造函数的路径拼接规则：
+
+| 构造函数 | 实际请求路径 | `BaseURL` 写到 | 留空时 |
+| --- | --- | --- | --- |
+| `NewProvider` / `NewEmbedder`（OpenAI 兼容） | `{BaseURL}/chat/completions`、`{BaseURL}/embeddings` | 含 `/v1` 这类版本段 | 使用 OpenAI 官方地址 `https://api.openai.com/v1` |
+| `NewAnthropicProvider` | `{BaseURL}/v1/messages` | 版本段之前（库会补 `/v1`） | 使用预设的 `https://api.anthropic.com` |
+| `NewGeminiProvider` | `{BaseURL}/models/{model}:generateContent` | 含 `/v1beta` | 使用预设的 `https://generativelanguage.googleapis.com/v1beta` |
+
+末尾多余的 `/` 会被忽略，`https://gw.example.com/v1` 与 `https://gw.example.com/v1/` 等价。
+
+预设构造入口（`QuickRegistry`、`NewProviderFromPreset`、`NewEmbedderFromPreset`）使用预设中的官方地址；要指向网关就用上面这组全量配置构造函数。
+
 ## 调用方式
 
 ### 非流式对话
