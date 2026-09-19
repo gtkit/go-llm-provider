@@ -1,4 +1,4 @@
-.PHONY: tool check tag release-check-root release-check-v2 release-check-billingstore release-check
+.PHONY: tool check tag release-check-root release-check-v2 release-check-billingstore release-check-websearch release-check
 
 
 LINT_TARGETS ?= ./...
@@ -42,7 +42,12 @@ release-check-billingstore: ## Run release checks for the billingstore example m
 	cd v2/example/billingstore && golangci-lint run ./...
 	cd v2/example/billingstore && go test -race -count=1 -timeout=5m ./...
 
-release-check: release-check-root release-check-v2 release-check-billingstore ## Run release checks for all modules
+release-check-websearch: ## Run release checks for the websearch example module
+	cd v2/example/websearch && go vet ./...
+	cd v2/example/websearch && golangci-lint run ./...
+	cd v2/example/websearch && go test -race -count=1 -timeout=5m ./...
+
+release-check: release-check-root release-check-v2 release-check-billingstore release-check-websearch ## Run release checks for all modules
 
 ## 推送标签到远程仓库时，通常不需要指定分支
 tag: ## Create a local annotated tag. Usage: make tag VERSION=v1.5.0 MESSAGE='- fix: 修复问题'

@@ -76,6 +76,7 @@ llm-provider/
     ├── middleware/main.go     # Middleware：Logging / TokenStats / Retry 参考实现
     ├── chatbilling/main.go    # 按用户计费端到端：计费 hook / 配额 / 余额硬限 / 流式工具循环 / 摘要压缩 / 账单
     ├── billingstore/          # 计费存储参考实现（Redis + GORM，独立 go.mod）
+    ├── websearch/             # 联网搜索工具参考实现（博查接入 + 注入防护），独立 go.mod
     └── embedding/main.go      # Embedding + RAG 最小闭环示例
 ```
 
@@ -922,6 +923,10 @@ if resp.Search != nil {
 要点：
 
 - **平台映射**：Anthropic 映射为 `web_search_20250305` server tool；Gemini 映射为 `google_search`（Grounding with Google Search）。其他 provider（含全部 OpenAI 兼容平台与 Ollama）收到该工具返回 `ErrInvalidRequest`，不静默丢弃；切换平台前可用 `caps.Supports(provider.CapabilityWebSearch)` 预检。
+
+国产 OpenAI 兼容平台（DeepSeek、通义千问、智谱、Kimi、豆包）没有内建搜索，联网走**普通函数工具 + `RunToolLoop`**：模型决定搜什么，你的代码去搜，结果回传模型。这条路径的完整参考实现见
+[`example/websearch`](example/websearch/)（独立 go.mod，含博查接入、三道提示注入防线、引用校验与可运行 demo），
+换搜索服务商只需替换一个 `SearchClient` 实现。
 - **仅保证单轮**：Anthropic 的 `AssistantMessage()` 不保存服务端工具块、引用与 `encrypted_content`，无法无损回传续跑，因此原生搜索当前**仅保证单轮**（一次 `Chat`/`ChatStream`）；多轮追问请每轮重新发起，或改用函数工具模式。
 - **不能与函数工具混用**：Anthropic 的服务端工具块尚不支持跨轮往返、Gemini 2.5 系平台不支持 `google_search` 与函数声明同用，两条路径都在客户端返回 `ErrInvalidRequest`；Anthropic 侧同理禁止与结构化输出组合。Gemini 3 官方已支持搜索与函数工具组合，但本库当前不做模型嗅探、统一按 2.5 系口径拒绝，该组合待后续版本支持。纯搜索场景与 `RunToolLoop` 兼容（服务端执行，不产生客户端 `ToolCall`）。
 - **输入约束**：纯搜索请求的 `ToolChoice` 只接受 `nil` / `ToolChoiceAuto`（由模型决定是否搜索，Gemini 侧此时不下发 `functionCallingConfig`）；重复声明搜索工具、同一 `Tool` 同时设 `Function` 与 `WebSearch`、`ToolChoiceRequired`/`ToolChoiceFunction`/`ToolChoiceNone` 与服务端搜索工具组合、Gemini 搜索叠加 `CandidateCount > 1`，均返回 `ErrInvalidRequest`。
