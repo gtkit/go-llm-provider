@@ -684,7 +684,10 @@ func (p *openaiProvider) buildRequest(req *ChatRequest) (openai.ChatCompletionRe
 	}
 
 	if req.MaxTokens > 0 {
-		oReq.MaxTokens = req.MaxTokens
+		// v1 维护线对所有 OpenAI 兼容平台统一下发 max_tokens：除 OpenAI 官方与 Azure 外，
+		// 各平台只认这个字段。OpenAI 推理模型已改用 max_completion_tokens，
+		// 需要对 OpenAI 设置输出上限请使用 v2（按平台分发，见 v2 CHANGELOG 2.16.0）。
+		oReq.MaxTokens = req.MaxTokens //nolint:staticcheck // 兼容平台只认 max_tokens
 	}
 	if req.Temperature != nil {
 		oReq.Temperature = *req.Temperature

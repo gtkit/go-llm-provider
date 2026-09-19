@@ -290,7 +290,7 @@ func TestBuildRequest(t *testing.T) {
 		assert.Len(t, req.Messages, 2)
 		assert.Equal(t, "system", req.Messages[0].Role)
 		assert.Equal(t, "user", req.Messages[1].Role)
-		assert.Equal(t, 1024, req.MaxTokens)
+		assert.Equal(t, 1024, req.MaxTokens) //nolint:staticcheck // v1 统一下发 max_tokens
 		assert.InDelta(t, 0.7, req.Temperature, 0.0001)
 		assert.Equal(t, []string{"\n"}, req.Stop)
 	})
