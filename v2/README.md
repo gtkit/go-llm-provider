@@ -37,6 +37,7 @@ llm-provider/
 │   ├── native_anthropic.go    # Anthropic Messages API 原生实现
 │   ├── native_gemini.go       # Gemini Generative Language API 原生实现
 │   ├── native_ollama.go       # Ollama /api/chat 原生实现
+│   ├── native_openai_responses.go # OpenAI Responses API（/responses）实现
 │   ├── response_format.go     # Structured Output 结构与构造器
 │   ├── embedder.go            # Embedder 接口、请求/响应、openaiEmbedder 实现
 │   ├── embedder_helpers.go    # Embedding 便捷函数：SimpleEmbed、EmbedBatch
@@ -402,6 +403,30 @@ gemini, err := provider.NewGeminiProvider(provider.NativeProviderConfig{
 ```
 
 当前原生实现支持文本、图片、文件输入、非流式、SSE 流式、request id 元数据与错误分类。`Chat` 已支持 Tool Use / Function Calling 和结构化输出；流式 Tool Use 会通过 `StreamChunk.ToolCalls` 暴露增量工具调用。Gemini 3 系要求把 `functionCall` 上的 `thoughtSignature` 原样回传、`functionResponse` 携带函数名，库已在 `ToolCall.ThoughtSignature` 与 `Message.ToolName` 上承载并自动回填。
+
+### OpenAI Responses API
+
+OpenAI 官方已把 Responses API（`POST {BaseURL}/responses`）作为推理、工具调用与多轮的推荐入口，
+DeepSeek、火山方舟、智谱、Kimi 也提供同形端点。`NewOpenAIResponsesProvider` 返回的仍是统一的
+`Provider`，业务代码、`RunToolLoop`、观测与计费都不需要改：
+
+```go
+p, err := provider.NewOpenAIResponsesProvider(provider.OpenAIResponsesConfig{
+    APIKey: os.Getenv("OPENAI_API_KEY"),
+    Model:  "gpt-5.6-terra",
+    // Name 留空即 ProviderOpenAI；接 DeepSeek 等平台的 Responses 端点时填对应 ProviderName 并覆盖 BaseURL
+})
+```
+
+与 Chat Completions 路径的差异：
+
+- **推理项一等往返**：默认 `store: false`（零数据保留友好），请求 `reasoning.encrypted_content`，推理项以
+  `ThinkingBlocks{Signature: 项 id, Redacted: encrypted_content}` 返回并随 `AssistantMessage()` 回放；
+  `Thinking.Effort` 映射 `reasoning.effort` 并请求 `summary: auto`，摘要进 `Reasoning`。
+- **原生联网搜索**：`WebSearchTool()` 映射内建 `web_search`（支持 `AllowedDomains`，不支持 `MaxUses` / `BlockedDomains`），
+  查询与 `url_citation` 引用进 `ChatResponse.Search`，搜索次数计入 `Usage.WebSearchRequests`。
+- **不支持的采样参数**：`Stop`、`Seed`、`CandidateCount` 在该协议下没有对应字段，返回 `ErrInvalidRequest`。
+- 结构化输出走 `text.format`，函数工具与 `tool_choice` 用 Responses API 的扁平形态，`FunctionDef.Strict` 生效。
 
 ### Azure OpenAI / Amazon Bedrock
 

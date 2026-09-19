@@ -162,11 +162,16 @@ func newThinkingAssembler() *thinkingAssembler {
 
 func (a *thinkingAssembler) add(chunk *StreamChunk) {
 	a.pending.WriteString(chunk.ReasoningDelta)
-	if chunk.ThinkingSignature != "" {
-		a.blocks = append(a.blocks, ThinkingBlock{Thinking: a.pending.String(), Signature: chunk.ThinkingSignature})
+	switch {
+	case chunk.ThinkingSignature != "":
+		// 签名与加密内容同帧到达（OpenAI Responses 的推理项）时属于同一个块。
+		a.blocks = append(a.blocks, ThinkingBlock{
+			Thinking:  a.pending.String(),
+			Signature: chunk.ThinkingSignature,
+			Redacted:  chunk.RedactedThinking,
+		})
 		a.pending.Reset()
-	}
-	if chunk.RedactedThinking != "" {
+	case chunk.RedactedThinking != "":
 		a.blocks = append(a.blocks, ThinkingBlock{Redacted: chunk.RedactedThinking})
 	}
 }

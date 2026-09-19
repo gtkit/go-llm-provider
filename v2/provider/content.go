@@ -203,9 +203,10 @@ func (p ContentPart) preferredImageSource() (string, bool) {
 		return "", false
 	}
 
-	return fmt.Sprintf(
-		"data:%s;base64,%s",
-		p.MIMEType,
-		base64.StdEncoding.EncodeToString(p.ImageData),
-	), true
+	return dataURL(p.MIMEType, p.ImageData), true
+}
+
+// dataURL 把内联字节编码为 base64 data URL。
+func dataURL(mimeType string, data []byte) string {
+	return fmt.Sprintf("data:%s;base64,%s", mimeType, base64.StdEncoding.EncodeToString(data))
 }
