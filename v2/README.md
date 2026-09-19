@@ -3714,6 +3714,8 @@ ANTHROPIC_API_KEY="<ANTHROPIC_API_KEY>" go test ./provider -run TestAnthropicSmo
 GEMINI_API_KEY="<GEMINI_API_KEY>" go test ./provider -run TestGeminiSmoke -count=1 -v
 GEMINI_API_KEY="<GEMINI_API_KEY>" go test ./provider -run TestGeminiEmbeddingSmoke -count=1 -v
 OLLAMA_MODEL="llama3.2" OLLAMA_BASE_URL="http://localhost:11434" go test ./provider -run TestOllamaSmoke -count=1 -v
+# 待真实 key 验证的协议细节（清单见仓库根目录 ROADMAP.md），缺 key 的用例自动跳过
+go test ./provider -run 'TestVerify' -count=1 -v
 ```
 
 不要把真实 API Key 写入源码、README、测试 fixture 或 shell history；本命令中的值只应使用临时密钥或本地安全注入方式。

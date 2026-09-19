@@ -14,6 +14,7 @@
   - `ProviderOllama` 预设声明 `CapabilityTools` / `CapabilityStructuredOutput` / `CapabilityReasoning` / `CapabilityVision`，推理支持表加入 Ollama（Enabled + Effort）
 - 新增 `NewOpenAIResponsesProvider` / `OpenAIResponsesConfig`：走 OpenAI Responses API（`/responses`）的 `Provider` 实现，OpenAI 官方已将其作为推理 / 工具调用 / 多轮的推荐入口，DeepSeek、方舟、智谱、Kimi 也提供同形端点（`Name` 填对应 ProviderName 即可归账）。映射覆盖：system → `instructions`，历史拆为 reasoning / message / function_call / function_call_output 输入项；默认 `store: false` 并请求 `reasoning.encrypted_content`，推理项以 `ThinkingBlocks{Signature: 项 id, Redacted: encrypted_content}` 往返；`Thinking.Effort` → `reasoning.effort`（附 `summary: auto`，摘要进 `Reasoning`）；`WebSearchTool` → 内建 `web_search`（支持 `AllowedDomains`），查询与 `url_citation` 进 `Search`、次数计入 `WebSearchRequests`；结构化输出 → `text.format`；`FunctionDef.Strict`、扁平 `tool_choice`；流式事件归一为 `StreamChunk`（推理项完成帧同时给出 `ThinkingSignature` 与 `RedactedThinking`）。`Stop` / `Seed` / `CandidateCount` 该协议无对应字段，返回 `ErrInvalidRequest`
 - `thinkingAssembler`（`RunToolLoopStream` 内部）同帧到达的 `ThinkingSignature` 与 `RedactedThinking` 现并入同一个 `ThinkingBlock`，以承载 Responses API 的推理项；Anthropic 的两类块仍分别到达，行为不变
+- 新增仓库根目录 `ROADMAP.md` 与 `provider/verification_smoke_test.go`：记录 2.16 起按官方文档实现、尚未用真实 key 实测的 6 条协议细节（V-01 ~ V-06，`TestVerify*` 用例缺 key 自动跳过）以及待排期功能（Anthropic compaction、音视频 ContentPart、Batch API）
 
 ### Changed
 
