@@ -60,18 +60,18 @@ func TestNewProviderFromPresetUsesApprovedDefaultModels(t *testing.T) {
 		providerName  ProviderName
 		expectedModel string
 	}{
-		{name: "deepseek", providerName: ProviderDeepSeek, expectedModel: "deepseek-chat"},
-		{name: "qwen", providerName: ProviderQwen, expectedModel: "qwen3.6-plus"},
-		{name: "zhipu", providerName: ProviderZhipu, expectedModel: "glm-5.1"},
-		{name: "qianfan", providerName: ProviderQianfan, expectedModel: "ernie-4.5-turbo-32k"},
-		{name: "siliconflow", providerName: ProviderSiliconFlow, expectedModel: "deepseek-ai/DeepSeek-V3"},
-		{name: "moonshot", providerName: ProviderMoonshot, expectedModel: "kimi-k2-turbo-preview"},
-		{name: "ark", providerName: ProviderArk, expectedModel: "doubao-seed-2-0-pro-260215"},
-		{name: "openai", providerName: ProviderOpenAI, expectedModel: "gpt-5.4-mini"},
-		{name: "xai", providerName: ProviderXAI, expectedModel: "grok-4-1-fast-non-reasoning"},
-		{name: "groq", providerName: ProviderGroq, expectedModel: "llama-3.3-70b-versatile"},
+		{name: "deepseek", providerName: ProviderDeepSeek, expectedModel: "deepseek-v4-flash"},
+		{name: "qwen", providerName: ProviderQwen, expectedModel: "qwen3.7-plus"},
+		{name: "zhipu", providerName: ProviderZhipu, expectedModel: "glm-5.3"},
+		{name: "qianfan", providerName: ProviderQianfan, expectedModel: "ernie-5.1"},
+		{name: "siliconflow", providerName: ProviderSiliconFlow, expectedModel: "deepseek-ai/DeepSeek-V4-Flash"},
+		{name: "moonshot", providerName: ProviderMoonshot, expectedModel: "kimi-k2.6"},
+		{name: "ark", providerName: ProviderArk, expectedModel: "doubao-seed-2-1-pro-260628"},
+		{name: "openai", providerName: ProviderOpenAI, expectedModel: "gpt-5.6-terra"},
+		{name: "xai", providerName: ProviderXAI, expectedModel: "grok-4.6"},
+		{name: "groq", providerName: ProviderGroq, expectedModel: "openai/gpt-oss-120b"},
 		{name: "mistral", providerName: ProviderMistral, expectedModel: "mistral-large-latest"},
-		{name: "cohere", providerName: ProviderCohere, expectedModel: "command-a-03-2025"},
+		{name: "cohere", providerName: ProviderCohere, expectedModel: "command-a-plus-05-2026"},
 	}
 
 	for _, tc := range testCases {
@@ -296,7 +296,7 @@ func TestBuildRequest(t *testing.T) {
 		assert.Len(t, req.Messages, 2)
 		assert.Equal(t, "system", req.Messages[0].Role)
 		assert.Equal(t, "user", req.Messages[1].Role)
-		assert.Equal(t, 1024, req.MaxTokens)
+		assert.Equal(t, 1024, req.MaxTokens) //nolint:staticcheck // DeepSeek 等兼容平台仍走 max_tokens
 		assert.InDelta(t, 0.7, req.Temperature, 0.0001)
 		assert.Equal(t, []string{"\n"}, req.Stop)
 	})

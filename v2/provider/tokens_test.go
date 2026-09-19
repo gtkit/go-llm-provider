@@ -91,7 +91,10 @@ func TestAnthropicProviderCountTokensMapsRequestAndResponse(t *testing.T) {
 	assert.Equal(t, 23, resp.TotalTokens)
 
 	assert.Equal(t, "claude-sonnet-4-5", captured["model"])
-	assert.Equal(t, "be concise", captured["system"])
+	system, ok := captured["system"].([]any)
+	require.True(t, ok, "system 以内容块数组下发")
+	require.Len(t, system, 1)
+	assert.Equal(t, "be concise", system[0].(map[string]any)["text"])
 	require.Len(t, captured["messages"], 1)
 	require.Len(t, captured["tools"], 1)
 	// count_tokens 端点不接受生成参数，请求体不得携带。

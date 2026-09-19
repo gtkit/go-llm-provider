@@ -160,7 +160,7 @@ func BenchmarkAnthropicStreamChunk(b *testing.B) {
 func BenchmarkInjectExtraFields(b *testing.B) {
 	const prefix = `{"model":"doubao-seed-2-0-pro-260215","messages":[{"role":"user","content":`
 
-	fields := arkExtraFields(&ChatRequest{Thinking: &Thinking{Enabled: boolPtr(true)}})
+	fields := thinkingTypeExtraFields(&ChatRequest{Thinking: &Thinking{Enabled: boolPtr(true)}})
 	if len(fields) == 0 {
 		// 字段为空时 injectExtraFields 直接返回原字节，压测的就不是注入路径了。
 		b.Fatal("extra fields must not be empty")

@@ -27,12 +27,14 @@ type Preset struct {
 
 var presetCatalog = map[ProviderName]Preset{
 	ProviderDeepSeek: {
-		BaseURL:      "https://api.deepseek.com/v1",
-		DefaultModel: "deepseek-chat", // DeepSeek-V3.2 非思考模式
+		BaseURL: "https://api.deepseek.com/v1",
+		// DeepSeek V4 Flash：1M 上下文，思考由 thinking / reasoning_effort 参数控制；
+		// 旧的 deepseek-chat / deepseek-reasoner 已于 2026-07-24 停用。
+		DefaultModel: "deepseek-v4-flash",
 		// DeepSeek 官方暂无 embedding 模型
 		Capabilities: ModelCapabilities{
 			Provider:  ProviderDeepSeek,
-			ChatModel: "deepseek-chat",
+			ChatModel: "deepseek-v4-flash",
 			Capabilities: []Capability{
 				CapabilityChat,
 				CapabilityStreaming,
@@ -44,31 +46,12 @@ var presetCatalog = map[ProviderName]Preset{
 	},
 	ProviderZhipu: {
 		BaseURL:        "https://open.bigmodel.cn/api/paas/v4/",
-		DefaultModel:   "glm-5.1",
+		DefaultModel:   "glm-5.3",
 		EmbeddingModel: "embedding-3",
 		Capabilities: ModelCapabilities{
 			Provider:       ProviderZhipu,
-			ChatModel:      "glm-5.1",
+			ChatModel:      "glm-5.3",
 			EmbeddingModel: "embedding-3",
-			Capabilities: []Capability{
-				CapabilityChat,
-				CapabilityStreaming,
-				CapabilityTools,
-				CapabilityStructuredOutput,
-				CapabilityEmbedding,
-				CapabilityFileUpload,
-			},
-		},
-	},
-	ProviderQwen: {
-		// 阿里百炼 / DashScope OpenAI 兼容端点
-		BaseURL:        "https://dashscope.aliyuncs.com/compatible-mode/v1",
-		DefaultModel:   "qwen3.6-plus",
-		EmbeddingModel: "text-embedding-v3",
-		Capabilities: ModelCapabilities{
-			Provider:       ProviderQwen,
-			ChatModel:      "qwen3.6-plus",
-			EmbeddingModel: "text-embedding-v3",
 			Capabilities: []Capability{
 				CapabilityChat,
 				CapabilityStreaming,
@@ -80,32 +63,54 @@ var presetCatalog = map[ProviderName]Preset{
 			},
 		},
 	},
+	ProviderQwen: {
+		// 阿里百炼 / DashScope OpenAI 兼容端点
+		BaseURL:        "https://dashscope.aliyuncs.com/compatible-mode/v1",
+		DefaultModel:   "qwen3.7-plus",
+		EmbeddingModel: "text-embedding-v4",
+		Capabilities: ModelCapabilities{
+			Provider:       ProviderQwen,
+			ChatModel:      "qwen3.7-plus",
+			EmbeddingModel: "text-embedding-v4",
+			Capabilities: []Capability{
+				CapabilityChat,
+				CapabilityStreaming,
+				CapabilityTools,
+				CapabilityStructuredOutput,
+				CapabilityReasoning,
+				CapabilityVision,
+				CapabilityEmbedding,
+				CapabilityFileUpload,
+			},
+		},
+	},
 	ProviderQianfan: {
 		// 百度千帆 OpenAI 兼容 V2 接口
 		BaseURL:        "https://qianfan.baidubce.com/v2",
-		DefaultModel:   "ernie-4.5-turbo-32k",
+		DefaultModel:   "ernie-5.1",
 		EmbeddingModel: "embedding-v1",
 		Capabilities: ModelCapabilities{
 			Provider:       ProviderQianfan,
-			ChatModel:      "ernie-4.5-turbo-32k",
+			ChatModel:      "ernie-5.1",
 			EmbeddingModel: "embedding-v1",
 			Capabilities: []Capability{
 				CapabilityChat,
 				CapabilityStreaming,
 				CapabilityTools,
 				CapabilityStructuredOutput,
+				CapabilityVision,
 				CapabilityEmbedding,
 			},
 		},
 	},
 	ProviderSiliconFlow: {
 		BaseURL:        "https://api.siliconflow.cn/v1",
-		DefaultModel:   "deepseek-ai/DeepSeek-V3",
+		DefaultModel:   "deepseek-ai/DeepSeek-V4-Flash",
 		EmbeddingModel: "BAAI/bge-m3",
 		RerankModel:    "BAAI/bge-reranker-v2-m3",
 		Capabilities: ModelCapabilities{
 			Provider:       ProviderSiliconFlow,
-			ChatModel:      "deepseek-ai/DeepSeek-V3",
+			ChatModel:      "deepseek-ai/DeepSeek-V4-Flash",
 			EmbeddingModel: "BAAI/bge-m3",
 			RerankModel:    "BAAI/bge-reranker-v2-m3",
 			Capabilities: []Capability{
@@ -119,17 +124,20 @@ var presetCatalog = map[ProviderName]Preset{
 		},
 	},
 	ProviderMoonshot: {
-		BaseURL:      "https://api.moonshot.cn/v1",
-		DefaultModel: "kimi-k2-turbo-preview",
+		BaseURL: "https://api.moonshot.cn/v1",
+		// Kimi K2.6：通用模型，思考可开关（K3 始终思考且采样参数固定，按需显式选用）。
+		DefaultModel: "kimi-k2.6",
 		// Moonshot 官方暂无 embedding 模型
 		Capabilities: ModelCapabilities{
 			Provider:  ProviderMoonshot,
-			ChatModel: "kimi-k2-turbo-preview",
+			ChatModel: "kimi-k2.6",
 			Capabilities: []Capability{
 				CapabilityChat,
 				CapabilityStreaming,
 				CapabilityTools,
 				CapabilityStructuredOutput,
+				CapabilityReasoning,
+				CapabilityVision,
 				CapabilityFileUpload,
 			},
 		},
@@ -137,11 +145,11 @@ var presetCatalog = map[ProviderName]Preset{
 	ProviderArk: {
 		// 火山方舟 OpenAI 兼容端点（豆包等模型）
 		BaseURL:        "https://ark.cn-beijing.volces.com/api/v3",
-		DefaultModel:   "doubao-seed-2-0-pro-260215",
+		DefaultModel:   "doubao-seed-2-1-pro-260628",
 		EmbeddingModel: "doubao-embedding-text-240515",
 		Capabilities: ModelCapabilities{
 			Provider:       ProviderArk,
-			ChatModel:      "doubao-seed-2-0-pro-260215",
+			ChatModel:      "doubao-seed-2-1-pro-260628",
 			EmbeddingModel: "doubao-embedding-text-240515",
 			Capabilities: []Capability{
 				CapabilityChat,
@@ -155,12 +163,13 @@ var presetCatalog = map[ProviderName]Preset{
 		},
 	},
 	ProviderOpenAI: {
-		BaseURL:        "https://api.openai.com/v1",
-		DefaultModel:   "gpt-5.4-mini",
+		BaseURL: "https://api.openai.com/v1",
+		// GPT-5.6 Terra：智能与成本均衡档（对应早期的 mini 档位）。
+		DefaultModel:   "gpt-5.6-terra",
 		EmbeddingModel: "text-embedding-3-small",
 		Capabilities: ModelCapabilities{
 			Provider:       ProviderOpenAI,
-			ChatModel:      "gpt-5.4-mini",
+			ChatModel:      "gpt-5.6-terra",
 			EmbeddingModel: "text-embedding-3-small",
 			Capabilities: []Capability{
 				CapabilityChat,
@@ -224,10 +233,10 @@ var presetCatalog = map[ProviderName]Preset{
 	},
 	ProviderXAI: {
 		BaseURL:      "https://api.x.ai/v1",
-		DefaultModel: "grok-4-1-fast-non-reasoning",
+		DefaultModel: "grok-4.6",
 		Capabilities: ModelCapabilities{
 			Provider:  ProviderXAI,
-			ChatModel: "grok-4-1-fast-non-reasoning",
+			ChatModel: "grok-4.6",
 			Capabilities: []Capability{
 				CapabilityChat,
 				CapabilityStreaming,
@@ -237,11 +246,12 @@ var presetCatalog = map[ProviderName]Preset{
 		},
 	},
 	ProviderGroq: {
-		BaseURL:      "https://api.groq.com/openai/v1",
-		DefaultModel: "llama-3.3-70b-versatile",
+		BaseURL: "https://api.groq.com/openai/v1",
+		// llama-3.3-70b-versatile 已于 2026-08-16 关停，Groq 推荐迁移到 gpt-oss-120b。
+		DefaultModel: "openai/gpt-oss-120b",
 		Capabilities: ModelCapabilities{
 			Provider:  ProviderGroq,
-			ChatModel: "llama-3.3-70b-versatile",
+			ChatModel: "openai/gpt-oss-120b",
 			Capabilities: []Capability{
 				CapabilityChat,
 				CapabilityStreaming,
@@ -269,11 +279,11 @@ var presetCatalog = map[ProviderName]Preset{
 	},
 	ProviderCohere: {
 		BaseURL:        "https://api.cohere.ai/compatibility/v1",
-		DefaultModel:   "command-a-03-2025",
+		DefaultModel:   "command-a-plus-05-2026",
 		EmbeddingModel: "embed-v4.0",
 		Capabilities: ModelCapabilities{
 			Provider:       ProviderCohere,
-			ChatModel:      "command-a-03-2025",
+			ChatModel:      "command-a-plus-05-2026",
 			EmbeddingModel: "embed-v4.0",
 			Capabilities: []Capability{
 				CapabilityChat,

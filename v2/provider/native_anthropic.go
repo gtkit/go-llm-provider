@@ -12,17 +12,18 @@ import (
 )
 
 type anthropicRequest struct {
-	Model         string               `json:"model"`
-	MaxTokens     int                  `json:"max_tokens"`
-	Messages      []anthropicMessage   `json:"messages"`
-	System        string               `json:"system,omitempty"`
-	Temperature   *float32             `json:"temperature,omitempty"`
-	TopP          *float32             `json:"top_p,omitempty"`
-	StopSequences []string             `json:"stop_sequences,omitempty"`
-	Stream        bool                 `json:"stream,omitempty"`
-	Tools         []anthropicTool      `json:"tools,omitempty"`
-	ToolChoice    *anthropicToolChoice `json:"tool_choice,omitempty"`
-	Thinking      *anthropicThinking   `json:"thinking,omitempty"`
+	Model         string                 `json:"model"`
+	MaxTokens     int                    `json:"max_tokens"`
+	Messages      []anthropicMessage     `json:"messages"`
+	System        []anthropicContentPart `json:"system,omitempty"`
+	Temperature   *float32               `json:"temperature,omitempty"`
+	TopP          *float32               `json:"top_p,omitempty"`
+	StopSequences []string               `json:"stop_sequences,omitempty"`
+	Stream        bool                   `json:"stream,omitempty"`
+	Tools         []anthropicTool        `json:"tools,omitempty"`
+	ToolChoice    *anthropicToolChoice   `json:"tool_choice,omitempty"`
+	Thinking      *anthropicThinking     `json:"thinking,omitempty"`
+	OutputConfig  *anthropicOutputConfig `json:"output_config,omitempty"`
 }
 
 // anthropicThinking 是 Messages API 的 thinking 参数。
@@ -32,16 +33,36 @@ type anthropicThinking struct {
 }
 
 const (
+	// anthropicThinkingAdaptive 由模型按任务复杂度自行决定是否思考及思考多少，
+	// Claude 4.6 起的推荐口径，推理强度经 output_config.effort 控制。
+	anthropicThinkingAdaptive = "adaptive"
+	// anthropicThinkingEnabled 是带固定预算的旧式开启口径（Claude 4.5 及更早）。
 	anthropicThinkingEnabled  = "enabled"
 	anthropicThinkingDisabled = "disabled"
 )
 
+// anthropicOutputConfig 是 Messages API 的 output_config 参数：
+// effort 控制推理强度，format 声明原生结构化输出。
+type anthropicOutputConfig struct {
+	Effort string                 `json:"effort,omitempty"`
+	Format *anthropicOutputFormat `json:"format,omitempty"`
+}
+
+type anthropicOutputFormat struct {
+	Type   string `json:"type"`
+	Schema any    `json:"schema"`
+}
+
 // anthropicThinkingParam 把统一 Thinking 映射为 Anthropic 的 thinking 参数。
-// 只处理 Enabled 与 BudgetTokens——Effort 无对应参数，已由 validateThinking 拦下。
+// Effort 不在这里处理，它落在 output_config.effort（见 anthropicOutputConfigParam）。
 //
-// 开启思考时 budget_tokens 必填且须为正数，缺失或非正数返回 ErrInvalidRequest
-// 而不代为推导：推理 token 按输出价计费，预算大小必须由调用方决定。
-// "预算须小于 max_tokens"这一上限由平台校验。
+// 映射规则：
+//   - Enabled=false → disabled（此时给预算是矛盾配置，拒绝）；
+//   - 给出 BudgetTokens → 旧式 enabled + budget_tokens，预算须为正数：
+//     推理 token 按输出价计费，预算大小必须由调用方决定，不代为推导；
+//     该口径 Claude 4.6 起废弃、4.7 起被平台拒绝，取值是否被接受由平台校验；
+//   - Enabled=true 且未给预算 → adaptive（Claude 4.6 及之后的推荐口径）；
+//   - 其余情况不下发，由平台按模型默认行为决定。
 func anthropicThinkingParam(thinking *Thinking) (*anthropicThinking, error) {
 	if thinking == nil {
 		return nil, nil
@@ -53,25 +74,53 @@ func anthropicThinkingParam(thinking *Thinking) (*anthropicThinking, error) {
 		}
 		return &anthropicThinking{Type: anthropicThinkingDisabled}, nil
 	}
-	// Enabled 未显式设置时，给出预算即视为开启。
-	if thinking.Enabled == nil && thinking.BudgetTokens == nil {
+	if thinking.BudgetTokens != nil {
+		// 非正数预算无法表达"开启思考"，且 0 会被 budget_tokens 的 omitempty 吞掉，
+		// 发出只含 type 的不完整参数——在本地拒绝，不让平台收到语义损坏的请求。
+		if *thinking.BudgetTokens <= 0 {
+			return nil, fmt.Errorf(
+				"%w: anthropic thinking budget must be positive, got %d",
+				ErrInvalidRequest, *thinking.BudgetTokens)
+		}
+		return &anthropicThinking{
+			Type:         anthropicThinkingEnabled,
+			BudgetTokens: *thinking.BudgetTokens,
+		}, nil
+	}
+	if thinking.Enabled != nil {
+		return &anthropicThinking{Type: anthropicThinkingAdaptive}, nil
+	}
+	return nil, nil
+}
+
+// anthropicOutputConfigParam 组装 output_config：Effort 与原生结构化输出。
+//
+// 结构化输出走平台原生的 json_schema 格式而非"强制调用假工具"——新模型
+// （Fable 5.1 起）拒绝强制工具调用，且原生格式能与真正的工具调用并存。
+// JSONObject 没有调用方 schema，用最宽松的对象 schema 表达"任意 JSON 对象"。
+func anthropicOutputConfigParam(thinking *Thinking, format *ResponseFormat) (*anthropicOutputConfig, error) {
+	var out anthropicOutputConfig
+	if thinking != nil {
+		out.Effort = thinking.Effort
+	}
+	if format != nil && format.Type != ResponseFormatText {
+		switch format.Type {
+		case ResponseFormatJSONObject:
+			out.Format = &anthropicOutputFormat{Type: "json_schema", Schema: ParamSchema{Type: "object"}}
+		case ResponseFormatJSONSchema:
+			schema := format.Schema
+			if schema == nil {
+				schema = ParamSchema{Type: "object"}
+			}
+			out.Format = &anthropicOutputFormat{Type: "json_schema", Schema: schema}
+		default:
+			return nil, fmt.Errorf("%w: unsupported anthropic response format %q", ErrInvalidRequest, format.Type)
+		}
+	}
+	if out.Effort == "" && out.Format == nil {
 		return nil, nil
 	}
-	if thinking.BudgetTokens == nil {
-		return nil, fmt.Errorf(
-			"%w: anthropic thinking requires Thinking.BudgetTokens when enabled", ErrInvalidRequest)
-	}
-	// 非正数预算无法表达"开启思考"，且 0 会被 budget_tokens 的 omitempty 吞掉，
-	// 发出只含 type 的不完整参数——在本地拒绝，不让平台收到语义损坏的请求。
-	if *thinking.BudgetTokens <= 0 {
-		return nil, fmt.Errorf(
-			"%w: anthropic thinking budget must be positive, got %d",
-			ErrInvalidRequest, *thinking.BudgetTokens)
-	}
-	return &anthropicThinking{
-		Type:         anthropicThinkingEnabled,
-		BudgetTokens: *thinking.BudgetTokens,
-	}, nil
+	return &out, nil
 }
 
 type anthropicMessage struct {
@@ -83,6 +132,8 @@ type anthropicContentPart struct {
 	Type         string                 `json:"type"`
 	Text         string                 `json:"text,omitempty"`
 	Thinking     string                 `json:"thinking,omitempty"`
+	Signature    string                 `json:"signature,omitempty"`
+	Data         string                 `json:"data,omitempty"`
 	Title        string                 `json:"title,omitempty"`
 	Source       *anthropicImageSource  `json:"source,omitempty"`
 	ID           string                 `json:"id,omitempty"`
@@ -103,17 +154,18 @@ type anthropicImageSource struct {
 
 type anthropicCacheControl struct {
 	Type string `json:"type"`
+	TTL  string `json:"ttl,omitempty"`
 }
 
 // anthropicCountTokensRequest 是 /v1/messages/count_tokens 的请求体。
 // 该端点只接受消息语义字段，携带 max_tokens / stream 等生成参数会被平台拒绝，
 // 因此不复用 anthropicRequest。
 type anthropicCountTokensRequest struct {
-	Model      string               `json:"model"`
-	Messages   []anthropicMessage   `json:"messages"`
-	System     string               `json:"system,omitempty"`
-	Tools      []anthropicTool      `json:"tools,omitempty"`
-	ToolChoice *anthropicToolChoice `json:"tool_choice,omitempty"`
+	Model      string                 `json:"model"`
+	Messages   []anthropicMessage     `json:"messages"`
+	System     []anthropicContentPart `json:"system,omitempty"`
+	Tools      []anthropicTool        `json:"tools,omitempty"`
+	ToolChoice *anthropicToolChoice   `json:"tool_choice,omitempty"`
 }
 
 type anthropicCountTokensResponse struct {
@@ -216,6 +268,7 @@ type anthropicTool struct {
 	Name           string   `json:"name"`
 	Description    string   `json:"description,omitempty"`
 	InputSchema    any      `json:"input_schema,omitempty"`
+	Strict         *bool    `json:"strict,omitempty"`
 	MaxUses        int      `json:"max_uses,omitempty"`
 	AllowedDomains []string `json:"allowed_domains,omitempty"`
 	BlockedDomains []string `json:"blocked_domains,omitempty"`
@@ -301,6 +354,7 @@ type anthropicStreamDelta struct {
 	Type        string `json:"type"`
 	Text        string `json:"text"`
 	Thinking    string `json:"thinking"`
+	Signature   string `json:"signature"`
 	PartialJSON string `json:"partial_json"`
 	StopReason  string `json:"stop_reason"`
 }
@@ -349,14 +403,21 @@ func anthropicContentParts(parts []ContentPart) ([]anthropicContentPart, error) 
 	return out, nil
 }
 
+// anthropicAssistantParts 组装 assistant 消息的内容块：思考块在前（平台要求
+// 开启思考并使用工具时原样回传，且必须位于文本与 tool_use 之前），然后是正文，
+// 最后是工具调用。
 func anthropicAssistantParts(msg Message) ([]anthropicContentPart, error) {
-	parts, err := anthropicContentParts(msg.Content)
+	parts := anthropicThinkingParts(msg.ThinkingBlocks)
+	content, err := anthropicContentParts(msg.Content)
 	if err != nil {
 		return nil, err
 	}
-	if len(parts) == 1 && parts[0].Type == "text" && parts[0].Text == "" && len(msg.ToolCalls) > 0 {
-		parts = parts[:0]
+	// 平台拒绝空文本块：正文为空且另有思考块或工具调用时省略该文本块。
+	if len(content) == 1 && content[0].Type == "text" && content[0].Text == "" &&
+		(len(parts) > 0 || len(msg.ToolCalls) > 0) {
+		content = content[:0]
 	}
+	parts = append(parts, content...)
 	for _, call := range msg.ToolCalls {
 		input, err := rawJSONArgument(call.Function.Arguments)
 		if err != nil {
@@ -372,12 +433,42 @@ func anthropicAssistantParts(msg Message) ([]anthropicContentPart, error) {
 	return parts, nil
 }
 
-func anthropicToolResultPart(msg Message) anthropicContentPart {
-	return anthropicContentPart{
-		Type:      "tool_result",
-		ToolUseID: msg.ToolCallID,
-		Content:   msg.Content,
+// anthropicThinkingParts 把签名思考块还原为平台内容块。只回传带签名或加密数据的块：
+// 无签名的思考文本（如来自其他平台、或调用方手工构造）平台无法校验，会被拒绝。
+func anthropicThinkingParts(blocks []ThinkingBlock) []anthropicContentPart {
+	out := make([]anthropicContentPart, 0, len(blocks))
+	for _, block := range blocks {
+		switch {
+		case block.Redacted != "":
+			out = append(out, anthropicContentPart{Type: "redacted_thinking", Data: block.Redacted})
+		case block.Signature != "":
+			out = append(out, anthropicContentPart{Type: "thinking", Thinking: block.Thinking, Signature: block.Signature})
+		}
 	}
+	return out
+}
+
+// anthropicToolResultPart 构造 tool_result 块。纯文本结果以字符串下发（平台最常见形态），
+// 含图片等多模态结果时转换为内容块数组——直接序列化库内 ContentPart 会产出平台不认识的字段。
+func anthropicToolResultPart(msg Message) (anthropicContentPart, error) {
+	part := anthropicContentPart{Type: "tool_result", ToolUseID: msg.ToolCallID}
+	textOnly := true
+	for _, content := range msg.Content {
+		if content.Type != ContentTypeText {
+			textOnly = false
+			break
+		}
+	}
+	if textOnly {
+		part.Content = contentText(msg.Content)
+		return part, nil
+	}
+	blocks, err := anthropicContentParts(msg.Content)
+	if err != nil {
+		return anthropicContentPart{}, err
+	}
+	part.Content = blocks
+	return part, nil
 }
 
 func anthropicImagePart(part ContentPart) (anthropicContentPart, error) {
@@ -463,8 +554,22 @@ func withAnthropicCacheControl(part anthropicContentPart, control *CacheControl)
 	if control == nil {
 		return part
 	}
-	part.CacheControl = &anthropicCacheControl{Type: string(control.Type)}
+	part.CacheControl = &anthropicCacheControl{Type: string(control.Type), TTL: string(control.TTL)}
 	return part
+}
+
+// anthropicSystemParts 把 system 消息映射为 system 内容块数组，保留片段级缓存断点——
+// system 提示词是提示词缓存最常见的命中对象，以字符串形态下发会丢掉 cache_control。
+// 非文本片段在 system 中没有平台语义，与既有行为一致地忽略。
+func anthropicSystemParts(parts []ContentPart) []anthropicContentPart {
+	out := make([]anthropicContentPart, 0, len(parts))
+	for _, part := range parts {
+		if part.Type != ContentTypeText || part.Text == "" {
+			continue
+		}
+		out = append(out, withAnthropicCacheControl(anthropicContentPart{Type: "text", Text: part.Text}, part.CacheControl))
+	}
+	return out
 }
 
 func anthropicRole(role Role) string {
@@ -524,6 +629,7 @@ func anthropicTools(tools []Tool) ([]anthropicTool, error) {
 			Name:        tool.Function.Name,
 			Description: tool.Function.Description,
 			InputSchema: tool.Function.Parameters,
+			Strict:      tool.Function.Strict,
 		})
 	}
 	// 混用时响应会同时携带服务端与客户端工具块，续跑要求把服务端工具块
@@ -547,37 +653,6 @@ func anthropicWebSearchTool(opts *WebSearchOptions) (anthropicTool, error) {
 		MaxUses:        max(opts.MaxUses, 0),
 		AllowedDomains: opts.AllowedDomains,
 		BlockedDomains: opts.BlockedDomains,
-	}, nil
-}
-
-func anthropicStructuredTool(format *ResponseFormat) (*anthropicTool, *anthropicToolChoice, error) {
-	if format == nil || format.Type == ResponseFormatText {
-		return nil, nil, nil
-	}
-	switch format.Type {
-	case ResponseFormatJSONObject, ResponseFormatJSONSchema:
-	default:
-		return nil, nil, fmt.Errorf("%w: unsupported anthropic response format %q", ErrInvalidRequest, format.Type)
-	}
-
-	name := format.Name
-	if name == "" {
-		name = "json_response"
-	}
-	schema := format.Schema
-	if schema == nil {
-		schema = ParamSchema{
-			Type:                 "object",
-			AdditionalProperties: boolPtr(true),
-		}
-	}
-	return &anthropicTool{
-		Name:        name,
-		Description: "Return the response as structured JSON.",
-		InputSchema: schema,
-	}, &anthropicToolChoice{
-		Type: "tool",
-		Name: name,
 	}, nil
 }
 
@@ -624,11 +699,12 @@ func buildAnthropicToolChoice(req *ChatRequest) (*anthropicToolChoice, error) {
 
 // anthropicParsedContent 是 Anthropic 响应内容的解析结果。
 type anthropicParsedContent struct {
-	Text         string
-	Reasoning    string
-	FinishReason string
-	ToolCalls    []ToolCall
-	Search       *SearchMetadata
+	Text           string
+	Reasoning      string
+	ThinkingBlocks []ThinkingBlock
+	FinishReason   string
+	ToolCalls      []ToolCall
+	Search         *SearchMetadata
 }
 
 func anthropicResponseContent(resp anthropicResponse) (anthropicParsedContent, error) {
@@ -640,8 +716,13 @@ func anthropicResponseContent(resp anthropicResponse) (anthropicParsedContent, e
 		case "text":
 			text.WriteString(part.Text)
 		case "thinking":
-			// 思考内容单独归位到 ChatResponse.Reasoning，不混入正文。
+			// 思考内容单独归位到 ChatResponse.Reasoning，不混入正文；
+			// 带签名的块原样保留，供后续轮次回传。
 			thinking.WriteString(part.Thinking)
+			out.ThinkingBlocks = append(out.ThinkingBlocks, ThinkingBlock{Thinking: part.Thinking, Signature: part.Signature})
+		case "redacted_thinking":
+			// 加密块不可读，不进入任何文本字段，但必须原样回传。
+			out.ThinkingBlocks = append(out.ThinkingBlocks, ThinkingBlock{Redacted: part.Data})
 		case "tool_use":
 			arguments, marshalErr := json.Marshal(part.Input)
 			if marshalErr != nil {
@@ -757,20 +838,6 @@ func appendSearchError(search *SearchMetadata, searchErr *SearchError) *SearchMe
 	search = ensureSearch(search)
 	search.Errors = append(search.Errors, *searchErr)
 	return search
-}
-
-func anthropicStructuredContent(resp anthropicResponse) (content string, ok bool, err error) {
-	for _, part := range resp.Content {
-		if part.Type != "tool_use" {
-			continue
-		}
-		data, err := json.Marshal(part.Input)
-		if err != nil {
-			return "", false, fmt.Errorf("marshal anthropic structured input: %w", err)
-		}
-		return string(data), true, nil
-	}
-	return "", false, nil
 }
 
 func decodeAnthropicError(provider ProviderName, statusCode int, status string, body []byte) error {

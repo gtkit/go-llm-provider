@@ -21,7 +21,7 @@ func TestDeepSeekSmoke(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
 	defer cancel()
 
-	p, err := NewProviderFromPreset(ProviderDeepSeek, apiKey, "deepseek-chat")
+	p, err := NewProviderFromPreset(ProviderDeepSeek, apiKey, "deepseek-v4-flash")
 	require.NoError(t, err)
 
 	resp, err := p.Chat(ctx, &ChatRequest{
@@ -50,7 +50,7 @@ func TestDeepSeekCacheUsageSmoke(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
 	defer cancel()
 
-	p, err := NewProviderFromPreset(ProviderDeepSeek, apiKey, "deepseek-chat")
+	p, err := NewProviderFromPreset(ProviderDeepSeek, apiKey, "deepseek-v4-flash")
 	require.NoError(t, err)
 
 	// prompt 需超过缓存最小粒度（64 token），用重复长文本保证。
@@ -92,7 +92,7 @@ func TestDeepSeekStreamUsageSmoke(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
 	defer cancel()
 
-	base, err := NewProviderFromPreset(ProviderDeepSeek, apiKey, "deepseek-chat")
+	base, err := NewProviderFromPreset(ProviderDeepSeek, apiKey, "deepseek-v4-flash")
 	require.NoError(t, err)
 
 	var complete ObserveEvent
@@ -136,7 +136,7 @@ func TestDeepSeekStreamUsageSmoke(t *testing.T) {
 	// 定价口径用 RequestModel，Model 留作审计。
 	assert.Equal(t, ObserveOperationStreamComplete, complete.Operation)
 	assert.Equal(t, usage, complete.Usage)
-	assert.Equal(t, "deepseek-chat", complete.RequestModel)
+	assert.Equal(t, "deepseek-v4-flash", complete.RequestModel)
 	assert.NotEmpty(t, complete.Model)
 	assert.Equal(t, StreamFinishEOF, complete.StreamFinish)
 	t.Logf("流式计费链路实测：usage=%+v request_model=%s effective_model=%s request_id=%s",
@@ -152,7 +152,7 @@ func TestDeepSeekStructuredSmoke(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
 	defer cancel()
 
-	p, err := NewProviderFromPreset(ProviderDeepSeek, apiKey, "deepseek-chat")
+	p, err := NewProviderFromPreset(ProviderDeepSeek, apiKey, "deepseek-v4-flash")
 	require.NoError(t, err)
 
 	type smokeResult struct {

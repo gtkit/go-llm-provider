@@ -16,6 +16,40 @@
 
 ### Security
 
+## [2.16.0] - 2026-09-19
+
+> 面向 2026-09 各厂商现状的一次对齐：修复会直接失败的默认模型与参数形态，补齐思考模型在工具循环中必需的推理往返机制。
+
+### Added
+
+- **推理内容往返**：`Message` 新增 `Reasoning`、`ThinkingBlocks`、`ToolName`，`ToolCall` / `ToolCallDelta` 新增 `ThoughtSignature`，`ChatResponse` 新增 `ThinkingBlocks`，`StreamChunk` 新增 `ThinkingSignature` / `RedactedThinking`。思考模型在工具循环中普遍要求回传上一轮推理（DeepSeek 带 tools 时缺失直接 400、Kimi K3 要求回传完整 assistant 消息、Anthropic 要求回传带签名的 thinking 块、Gemini 3 要求回传 functionCall 的 thoughtSignature），此前 `AssistantMessage()` 全部丢弃，`RunToolLoop` 在这些模型上第二轮必然失败。现在 `AssistantMessage()`、`RunToolLoop`、`RunToolLoopStream` 自动携带；OpenAI 兼容路径把 `Reasoning` 映射为 `reasoning_content`，只对已知接受该字段的平台下发（DeepSeek / 智谱 / Kimi / 百炼 / 方舟），自定义平台用新增的 `ProviderConfig.SupportsReasoningContent` 声明
+- 新增 `ToolResultMessageFor` / `ToolResultMessageJSONFor`：按 `ToolCall` 构造工具结果并带上函数名。Gemini 的 `functionResponse.name` 必须是函数名，此前被填成 `ToolCallID`（Gemini 3 同时校验 id 与 name，必被拒绝）；只给 `ToolCallID` 的既有调用在同一请求内按 ID 反查函数名，反查不到返回 `ErrInvalidRequest`
+- `Thinking.Effort` 现已映射到 DeepSeek / 智谱 / Moonshot（`reasoning_effort`）、Anthropic（`output_config.effort`）与 Gemini（`thinkingConfig.thinkingLevel`，Gemini 3 系推荐口径，与 `BudgetTokens` 互斥）；`Thinking.Enabled` 现已映射到 DeepSeek / 智谱 / Moonshot（顶层 `thinking.type`，与方舟同形，共享 `compat_thinking.go` 的映射）。新增常量 `ThinkingEffortNone` / `ThinkingEffortXHigh` / `ThinkingEffortMax`
+- Anthropic 自适应思考：`Thinking.Enabled: true` 且无预算时下发 `thinking.type = adaptive`（Claude 4.6 起的推荐口径，Claude 5 默认）；`BudgetTokens` 保留为 4.5 及更早模型的旧式固定预算
+- Anthropic 原生结构化输出：`ResponseFormat` 改走 `output_config.format`（json_schema），不再借用"强制调用假工具"——Fable 5.1 拒绝强制工具调用，且原生格式可与真正的工具调用、原生搜索并存（此前互斥）
+- Anthropic 提示词缓存补齐：`CacheControl` 新增 `TTL`（`CacheControlTTL5m` / `CacheControlTTL1h`）与 `CacheControlEphemeralTTL`；system 提示词改以内容块数组下发，片段级 `CacheControl` 不再在 system 上丢失（此前 system 被拼成字符串，最常见的缓存对象反而缓存不了）
+- `NativeProviderConfig` 新增 `Headers`：附加到每个请求的自定义请求头，在库默认头之后写入、同名覆盖，是 `anthropic-beta`（服务端 compaction、按轮次 effort 等）与企业网关鉴权头的入口；Anthropic / Gemini provider 与 Gemini embedder 均支持
+- `FunctionDef` 新增 `Strict`，映射 OpenAI 兼容路径与 Anthropic 的工具级 `strict`
+- Embedding 面向 RAG 的两项补齐：`EmbeddingRequest` 新增 `TaskType`（`EmbeddingTaskQuery` / `Document` / `Similarity` / `Classification` / `Clustering`，当前映射 Gemini `task_type`，OpenAI 兼容端点无该字段、模型对称编码，该提示被忽略）；新增 `EmbedBatchWithOptions` 与 `EmbedBatchOptions`，按平台已知单次上限（OpenAI 2048、Gemini 100、Cohere 96、百炼 10，未知平台 10）自动分片、可选并发，任一分片失败即整体报错并取消在途请求，不返回带空洞的半成品；`EmbedBatch` 现等价于零值选项调用
+- Gemini 结构化输出改走 `responseJsonSchema`（接受标准 JSON Schema，含 `additionalProperties`），此前的 `responseSchema` 只认 OpenAPI 子集
+- 预设能力矩阵更新：智谱与 Moonshot 声明 `CapabilityReasoning`；百炼、千帆、Moonshot 声明 `CapabilityVision`
+
+### Changed
+
+- ⚠ 预设默认模型对照 2026-09 官方现状全面更新：DeepSeek `deepseek-chat` → `deepseek-v4-flash`（旧名已于 2026-07-24 停用）、Groq `llama-3.3-70b-versatile` → `openai/gpt-oss-120b`（已于 2026-08-16 关停）、Gemini `gemini-2.5-flash` → `gemini-3.5-flash`（2.5 系计划 2026-10 关停）、Anthropic `claude-sonnet-4-5` → `claude-sonnet-5`、OpenAI `gpt-5.4-mini` → `gpt-5.6-terra`、百炼 `qwen3.6-plus` → `qwen3.7-plus` 且 embedding `text-embedding-v3` → `text-embedding-v4`、智谱 `glm-5.1` → `glm-5.3`、千帆 `ernie-4.5-turbo-32k` → `ernie-5.1`、硅基流动 `deepseek-ai/DeepSeek-V3` → `deepseek-ai/DeepSeek-V4-Flash`、Moonshot `kimi-k2-turbo-preview` → `kimi-k2.6`、方舟 `doubao-seed-2-0-pro-260215` → `doubao-seed-2-1-pro-260628`、xAI `grok-4-1-fast-non-reasoning` → `grok-4.6`、Cohere `command-a-03-2025` → `command-a-plus-05-2026`。显式指定 `Model` 的调用方不受影响
+- ⚠ OpenAI 与 Azure OpenAI 路径的 `ChatRequest.MaxTokens` 改下发 `max_completion_tokens`：OpenAI 推理模型（gpt-5 系 / o 系）已拒绝 `max_tokens`。其余 OpenAI 兼容平台仍下发 `max_tokens`
+- ⚠ DeepSeek 的 `Thinking.Enabled` 改为顶层 `thinking.type`，不再写 `chat_template_kwargs.enable_thinking`——后者是 vLLM 自部署的约定，DeepSeek 官方端点并不识别，此前该开关实际无效
+- ⚠ Anthropic 的 `Thinking.Enabled: true` 且无 `BudgetTokens` 从返回 `ErrInvalidRequest` 改为下发 `adaptive`；`Thinking.Effort` 从被拒改为映射 `output_config.effort`。Gemini 的 `Thinking.Effort` 从被拒改为映射 `thinkingLevel`
+- ⚠ `DefaultHTTPClient` 的 `ResponseHeaderTimeout` 从 60 秒放宽到 15 分钟：非流式调用下平台要等整段生成完才发响应头，思考模型高强度推理一次可达数分钟，60 秒会把正常的长推理请求误判为网络故障。总时长预算仍由调用方 ctx 控制
+- Anthropic `tool_result` 的内容改为字符串（纯文本）或平台内容块数组（含图片），此前直接序列化库内 `ContentPart` 会发出平台不认识的字段名
+- `AssistantMessage()` 与 `RunToolLoopStream` 组装的 assistant 消息现携带推理内容与签名思考块（见 Added）；不需要回传推理文本时可自行清空 `Message.Reasoning`
+- Moonshot 开放平台入口更新为 platform.kimi.com；README 模型速查表更新到 2026-09（含 GPT-5.6 / GPT-6 Astra、Claude 5 系、Gemini 3.x、DeepSeek V4、Qwen 3.7 / 3.8、GLM-5.3、Kimi K3、Doubao Seed 2.1、ERNIE 5.1、Grok 4.6、Command A+）
+
+### Fixed
+
+- Gemini 3 系工具循环第二轮 400：响应 `functionCall` 上的 `thoughtSignature` 此前被解析丢弃，现在随 `ToolCall.ThoughtSignature` 保留并在回传时原样携带（流式路径同样保留）
+- Anthropic 开启思考并使用工具时第二轮被拒：响应中的 `thinking` 块签名与 `redacted_thinking` 数据此前被丢弃，现在随 `ThinkingBlocks` 保留并按平台要求置于 assistant 内容最前回传；流式 `signature_delta` 从被忽略改为透出 `StreamChunk.ThinkingSignature`
+
 ## [2.15.0] - 2026-09-07
 
 ### Added

@@ -87,17 +87,18 @@ go get github.com/gtkit/go-llm-provider
 
 | 平台 | ProviderName | 预设 BaseURL | 默认 Chat 模型 | 默认 Embedding 模型 | API Key 获取 |
 |------|-------------|-------------|---------|---------|-------------|
-| DeepSeek | `deepseek` | `https://api.deepseek.com/v1` | `deepseek-chat` | — | [platform.deepseek.com](https://platform.deepseek.com/) |
-| 通义千问（百炼） | `qwen` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen3.6-plus` | `text-embedding-v3` | [百炼控制台](https://bailian.console.aliyun.com/) |
-| 智谱 AI / GLM | `zhipu`（别名：`ProviderGLM`） | `https://open.bigmodel.cn/api/paas/v4/` | `glm-5.1` | `embedding-3` | [open.bigmodel.cn](https://open.bigmodel.cn/) |
-| 百度千帆 | `qianfan` | `https://qianfan.baidubce.com/v2` | `ernie-4.5-turbo-32k` | `embedding-v1` | [千帆控制台](https://console.bce.baidu.com/qianfan/) |
-| 硅基流动 | `siliconflow` | `https://api.siliconflow.cn/v1` | `deepseek-ai/DeepSeek-V3` | `BAAI/bge-m3` | [siliconflow.cn](https://siliconflow.cn/) |
-| Moonshot / Kimi | `moonshot`（别名：`ProviderKimi`） | `https://api.moonshot.cn/v1` | `kimi-k2-turbo-preview` | — | [platform.moonshot.cn](https://platform.moonshot.cn/) |
-| OpenAI | `openai` | `https://api.openai.com/v1` | `gpt-5.4-mini` | `text-embedding-3-small` | [platform.openai.com](https://platform.openai.com/) |
-| Anthropic / Claude | `anthropic` | `https://api.anthropic.com` | `claude-sonnet-4-5` | — | [console.anthropic.com](https://console.anthropic.com/) |
-| Google Gemini | `gemini` | `https://generativelanguage.googleapis.com/v1beta` | `gemini-2.5-flash` | — | [aistudio.google.com](https://aistudio.google.com/) |
+| DeepSeek | `deepseek` | `https://api.deepseek.com/v1` | `deepseek-v4-flash` | — | [platform.deepseek.com](https://platform.deepseek.com/) |
+| 通义千问（百炼） | `qwen` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen3.7-plus` | `text-embedding-v4` | [百炼控制台](https://bailian.console.aliyun.com/) |
+| 智谱 AI / GLM | `zhipu`（别名：`ProviderGLM`） | `https://open.bigmodel.cn/api/paas/v4/` | `glm-5.3` | `embedding-3` | [open.bigmodel.cn](https://open.bigmodel.cn/) |
+| 百度千帆 | `qianfan` | `https://qianfan.baidubce.com/v2` | `ernie-5.1` | `embedding-v1` | [千帆控制台](https://console.bce.baidu.com/qianfan/) |
+| 硅基流动 | `siliconflow` | `https://api.siliconflow.cn/v1` | `deepseek-ai/DeepSeek-V4-Flash` | `BAAI/bge-m3` | [siliconflow.cn](https://siliconflow.cn/) |
+| Moonshot / Kimi | `moonshot`（别名：`ProviderKimi`） | `https://api.moonshot.cn/v1` | `kimi-k2.6` | — | [platform.kimi.com](https://platform.kimi.com/) |
+| OpenAI | `openai` | `https://api.openai.com/v1` | `gpt-5.6-terra` | `text-embedding-3-small` | [platform.openai.com](https://platform.openai.com/) |
+| Anthropic / Claude | `anthropic` | `https://api.anthropic.com` | `claude-sonnet-5` | — | [console.anthropic.com](https://console.anthropic.com/) |
+| Google Gemini | `gemini` | `https://generativelanguage.googleapis.com/v1beta` | `gemini-3.5-flash` | — | [aistudio.google.com](https://aistudio.google.com/) |
 
-> 预设地址和默认模型可能随平台更新而变化，建议定期对照各平台官方文档确认。
+> 预设默认模型截至 2026-09 对照官方文档更新（DeepSeek 旧的 `deepseek-chat` 已于 2026-07-24 停用）。预设地址和默认模型仍可能随平台更新而变化，建议定期对照各平台官方文档确认。
+> v1 的 `EnableThinking` 仍按旧口径下发，思考模型的推理往返、Claude 5 / Gemini 3 的新参数形态仅 v2 支持，思考模型 + 工具循环的场景请使用 v2。
 > Embedding 列显示"—"的平台表示官方暂无 embedding 接口，`NewEmbedderFromPreset` 会返回错误。
 
 ### 能力矩阵
@@ -142,7 +143,7 @@ defer cancel()
 claude, err := provider.NewProviderFromPreset(
     provider.ProviderAnthropic,
     os.Getenv("ANTHROPIC_API_KEY"),
-    "", // 留空使用 claude-sonnet-4-5
+    "", // 留空使用 claude-sonnet-5
 )
 if err != nil {
     return err
@@ -159,7 +160,7 @@ Gemini 可以走同样的预设构造，也可以显式覆盖 BaseURL / HTTP cli
 ```go
 gemini, err := provider.NewGeminiProvider(provider.NativeProviderConfig{
     APIKey: os.Getenv("GEMINI_API_KEY"),
-    Model:  "gemini-2.5-flash",
+    Model:  "gemini-3.5-flash",
 })
 if err != nil {
     return err
@@ -326,7 +327,7 @@ Claude / Gemini 走网关用原生构造函数的同名字段：
 claude, err := provider.NewAnthropicProvider(provider.NativeProviderConfig{
     APIKey:  os.Getenv("ANTHROPIC_API_KEY"),
     BaseURL: "https://llm-gw.corp.internal/anthropic",  // 版本段 /v1 由库补
-    Model:   "claude-sonnet-4-5",
+    Model:   "claude-sonnet-5",
 })
 ```
 
@@ -337,7 +338,7 @@ e, err := provider.NewEmbedder(provider.EmbedderConfig{
     Name:    provider.ProviderQwen,
     BaseURL: "https://llm-gw.corp.internal/dashscope/compatible-mode/v1",
     APIKey:  os.Getenv("QWEN_API_KEY"),
-    Model:   "text-embedding-v3",
+    Model:   "text-embedding-v4",
 })
 ```
 
@@ -1433,63 +1434,49 @@ curl -X POST http://localhost:8080/chat \
 
 ## 各平台常用模型速查
 
-> 以下为截至 **2026-04** 各厂商在线可调用的主流模型。模型名随平台更新变化较快，建议调用前对照官方文档。
+> 以下为截至 **2026-09** 各厂商在线可调用的主流模型。模型名随平台更新变化较快，建议调用前对照官方文档；完整速查（含 Anthropic / Gemini / xAI 等）见 [`v2/README.md`](./v2/README.md#各平台常用模型速查)。
 
 **DeepSeek**
 
 | 模型名 | 说明 |
 |--------|------|
-| `deepseek-chat` | DeepSeek-V3.2 非思考模式，128K 上下文 |
-| `deepseek-reasoner` | DeepSeek-V3.2 思考模式，原生链式思考（CoT） |
+| `deepseek-v4-flash` | V4 Flash，1M 上下文，思考由 `thinking` / `reasoning_effort` 参数控制 |
+| `deepseek-v4-pro` | V4 Pro 旗舰 |
+
+> `deepseek-chat` / `deepseek-reasoner` 已于 2026-07-24 停用。v1 的 `EnableThinking` 仍按旧口径下发，DeepSeek V4 的思考控制与工具循环所需的 `reasoning_content` 回传请使用 v2。
 
 **通义千问（百炼 DashScope）**
 
 | 模型名 | 说明 |
 |--------|------|
-| `qwen3-max` | 旗舰，复杂任务能力最强 |
-| `qwen3.6-plus` | 2026 新一代 Plus，性能/成本平衡 |
-| `qwen-plus-latest` | Plus 自动跟随最新快照 |
-| `qwen-flash` | 速度优先，分档计费 |
-| `qwen-long` | 长文档处理，最高 10M tokens |
+| `qwen3.8-max` / `qwen3.8-flash` | 最新旗舰 / 轻量 |
+| `qwen3.7-max` / `qwen3.7-plus` | 3.7 旗舰 / 高性价比（默认） |
 | `qwen3-coder-plus` | 代码 Agent 专精 |
-| `qwen3-vl-plus` | 视觉多模态 |
-| `qwq-plus` | 深度推理模型 |
+| `qwen-long` | 长文档处理，最高 10M tokens |
 
 **智谱 AI**
 
 | 模型名 | 说明 |
 |--------|------|
-| `glm-5.1` | 最新旗舰，Coding 能力对标 Claude Opus 4.6 |
-| `glm-5` | 高智能基座，擅长长程规划 |
-| `glm-4.7` | 通用对话推理升级 |
-| `glm-4.7-flash` | 免费普惠版 |
-| `glm-4.6` | 200K 上下文 |
-| `glm-4.5-air` | 高性价比 |
-| `glm-4.6v` | 视觉推理，原生工具调用 |
+| `glm-5.3` | 最新旗舰，1M 上下文，始终思考 |
+| `glm-5.3-flash` | 原生多模态轻量版 |
+| `glm-5.2` / `glm-5.1` | 上两代 |
 
 **百度千帆**
 
 | 模型名 | 说明 |
 |--------|------|
-| `ernie-4.5-turbo-128k` | 文心 4.5 Turbo 长上下文 |
-| `ernie-4.5-turbo-32k` | 文心 4.5 Turbo 通用 |
-| `ernie-x1-turbo-32k` | X1 Turbo 推理模型（思维链 + 工具调用） |
-| `ernie-4.5-turbo-vl-32k` | 文心 4.5 VL 多模态 |
-| `ernie-speed-128k` | 经济高速 |
-| `ernie-lite-8k` | 超经济轻量 |
+| `ernie-5.1` | 文心 5.1 旗舰，原生全模态 |
+| `ernie-5.0-thinking-preview` | 文心 5.0 思考版 |
+| `ernie-x1.1-preview` | X1.1 推理模型 |
 
 **硅基流动**
 
 | 模型名 | 说明 |
 |--------|------|
-| `deepseek-ai/DeepSeek-V3.2` | DeepSeek V3.2，含思考模式 |
-| `deepseek-ai/DeepSeek-V3.1-Terminus` | V3.1 终结版 |
-| `Qwen/Qwen3.5-397B-A17B` | 千问 3.5 MoE 旗舰 |
-| `Qwen/Qwen3.5-122B-A10B` | 千问 3.5 MoE 中等 |
-| `Qwen/Qwen3.5-35B-A3B` | 千问 3.5 MoE 轻量 |
-| `moonshotai/Kimi-K2.5` | Kimi K2.5（256K 上下文） |
-| `Pro/zai-org/GLM-5.1` | 智谱 GLM-5.1（Pro 付费通道） |
-| `Pro/zai-org/GLM-4.7` | 智谱 GLM-4.7（Pro 付费通道） |
+| `deepseek-ai/DeepSeek-V4-Flash` / `deepseek-ai/DeepSeek-V4-Pro` | DeepSeek V4 |
+| `Pro/zai-org/GLM-5.2` | 智谱 GLM-5.2（Pro 付费通道） |
+| `Qwen/Qwen3-Embedding-8B` | 千问 Embedding |
 
 > `Pro/` 前缀为付费稳定通道，不带前缀为社区免费通道，能力相同但限流更严。
 
@@ -1497,25 +1484,18 @@ curl -X POST http://localhost:8080/chat \
 
 | 模型名 | 说明 |
 |--------|------|
-| `kimi-k2-turbo-preview` | Kimi K2 Turbo 高速版，256K 上下文 |
-| `kimi-k2-0905-preview` | Kimi K2.5 最新快照，1T 总参 / 32B 激活 MoE |
-| `kimi-k2-thinking` | K2 思考模式，深度推理 |
-| `kimi-latest` | 自动选择最新模型 |
-| `moonshot-v1-128k` | 经典 V1 系列 128K |
+| `kimi-k3` | 旗舰，1M 上下文，始终思考，采样参数固定 |
+| `kimi-k2.7-code-highspeed` | 编程专用高速版 |
+| `kimi-k2.6` | 通用模型（默认），思考可开关 |
 
 **OpenAI**
 
 | 模型名 | 说明 |
 |--------|------|
-| `gpt-5.4` | 旗舰，推理/编码综合最强，1M 上下文（2026-03） |
-| `gpt-5.4-pro` | Pro 版，能力更强 |
-| `gpt-5.4-mini` | 经济款，400K 上下文（2026-03） |
-| `gpt-5.4-nano` | 极低成本 |
-| `gpt-5.3-codex` | 代码专用（legacy） |
-| `o3` | 推理系列旗舰 |
-| `o3-pro` | 推理增强 |
-| `o3-mini` | 轻量推理 |
-| `o4-mini` | 新一代推理 |
+| `gpt-6-astra` | 官方模型页当前列出的旗舰 |
+| `gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-5.6-luna` | 5.6 旗舰 / 均衡（默认）/ 低成本 |
+
+> OpenAI 推理模型已拒绝 `max_tokens`；v1 仍下发该字段，需要 `MaxTokens` 的 OpenAI 调用请使用 v2（下发 `max_completion_tokens`）。
 
 > 模型列表会随平台更新而变化，建议使用前查阅各平台最新文档。
 
@@ -1535,9 +1515,8 @@ curl -X POST http://localhost:8080/chat \
 
 | 模型名 | 维度 | 说明 |
 |--------|------|------|
-| `text-embedding-v3` | 1024 | 默认推荐，支持 `dimensions` 截断（64/128/256/512/768/1024） |
-| `text-embedding-v4` | 最高 2048 | 2026 最新版，支持多语言增强 |
-| `text-embedding-v2` | 1536 | 上一代 |
+| `text-embedding-v4` | 最高 2048 | 默认推荐，多语言增强，支持 `dimensions` 截断 |
+| `text-embedding-v3` | 1024 | 上一代，与 v4 维度兼容、可平滑迁移 |
 
 **智谱 AI**
 

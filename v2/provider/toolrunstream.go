@@ -63,10 +63,11 @@ func RunToolLoopStreamWithOptions(ctx context.Context, p Provider, req *ChatRequ
 		// 模型没有请求 tool call，返回最终结果。
 		if len(result.toolCalls) == 0 {
 			resp := &ChatResponse{
-				Content:      result.content,
-				Reasoning:    result.reasoning,
-				FinishReason: result.finishReason,
-				Usage:        result.usage,
+				Content:        result.content,
+				Reasoning:      result.reasoning,
+				ThinkingBlocks: result.thinkingBlocks,
+				FinishReason:   result.finishReason,
+				Usage:          result.usage,
 			}
 			if opts.AccumulateUsage {
 				resp.Usage = totalUsage
@@ -79,10 +80,14 @@ func RunToolLoopStreamWithOptions(ctx context.Context, p Provider, req *ChatRequ
 			return resp, nil
 		}
 
+		// 推理内容与签名思考块随 assistant 消息回传：思考模型在工具循环中要求如此，
+		// 各协议映射只对接受它们的平台下发（语义同 ChatResponse.AssistantMessage）。
 		messages = append(messages, Message{
-			Role:      RoleAssistant,
-			Content:   []ContentPart{TextPart(result.content)},
-			ToolCalls: result.toolCalls,
+			Role:           RoleAssistant,
+			Content:        []ContentPart{TextPart(result.content)},
+			Reasoning:      result.reasoning,
+			ThinkingBlocks: result.thinkingBlocks,
+			ToolCalls:      result.toolCalls,
 		})
 		toolMessages, err := executeToolCalls(ctx, result.toolCalls, handler, encoder, opts.ToolResultTransformer, opts.ParallelToolCalls, retry)
 		if err != nil {
@@ -96,11 +101,12 @@ func RunToolLoopStreamWithOptions(ctx context.Context, p Provider, req *ChatRequ
 
 // streamRoundResult 是流式工具循环单轮消费完毕后的聚合结果。
 type streamRoundResult struct {
-	content      string
-	reasoning    string
-	finishReason string
-	usage        Usage
-	toolCalls    []ToolCall
+	content        string
+	reasoning      string
+	thinkingBlocks []ThinkingBlock
+	finishReason   string
+	usage          Usage
+	toolCalls      []ToolCall
 }
 
 func consumeToolLoopStream(stream *StreamReader, onChunk func(StreamChunk)) (result streamRoundResult, err error) {
@@ -110,6 +116,7 @@ func consumeToolLoopStream(stream *StreamReader, onChunk func(StreamChunk)) (res
 
 	var content, reasoning strings.Builder
 	assembler := newToolCallAssembler()
+	thinking := newThinkingAssembler()
 	for {
 		chunk, recvErr := stream.Recv()
 		if recvErr != nil {
@@ -123,6 +130,7 @@ func consumeToolLoopStream(stream *StreamReader, onChunk func(StreamChunk)) (res
 		}
 		content.WriteString(chunk.Delta)
 		reasoning.WriteString(chunk.ReasoningDelta)
+		thinking.add(chunk)
 		if chunk.FinishReason != "" {
 			result.finishReason = chunk.FinishReason
 		}
@@ -135,8 +143,36 @@ func consumeToolLoopStream(stream *StreamReader, onChunk func(StreamChunk)) (res
 	}
 	result.content = content.String()
 	result.reasoning = reasoning.String()
+	result.thinkingBlocks = thinking.result()
 	result.toolCalls = assembler.result()
 	return result, nil
+}
+
+// thinkingAssembler 把流上的思考增量与签名拼装为可回传的 ThinkingBlock：
+// 签名到达即闭合一个块（此前累积的增量是它的正文），加密块整块到达直接收下。
+// 没有任何签名的思考文本不产出块——平台无法校验，回传会被拒绝。
+type thinkingAssembler struct {
+	pending strings.Builder
+	blocks  []ThinkingBlock
+}
+
+func newThinkingAssembler() *thinkingAssembler {
+	return &thinkingAssembler{}
+}
+
+func (a *thinkingAssembler) add(chunk *StreamChunk) {
+	a.pending.WriteString(chunk.ReasoningDelta)
+	if chunk.ThinkingSignature != "" {
+		a.blocks = append(a.blocks, ThinkingBlock{Thinking: a.pending.String(), Signature: chunk.ThinkingSignature})
+		a.pending.Reset()
+	}
+	if chunk.RedactedThinking != "" {
+		a.blocks = append(a.blocks, ThinkingBlock{Redacted: chunk.RedactedThinking})
+	}
+}
+
+func (a *thinkingAssembler) result() []ThinkingBlock {
+	return a.blocks
 }
 
 // toolCallAssembler 将流式 ToolCallDelta 片段按 Index 拼装为完整 ToolCall。
@@ -146,9 +182,10 @@ type toolCallAssembler struct {
 }
 
 type pendingToolCall struct {
-	id        string
-	name      string
-	arguments strings.Builder
+	id               string
+	name             string
+	thoughtSignature string
+	arguments        strings.Builder
 }
 
 func newToolCallAssembler() *toolCallAssembler {
@@ -168,6 +205,9 @@ func (a *toolCallAssembler) add(delta ToolCallDelta) {
 	if delta.Function.Name != "" {
 		pending.name = delta.Function.Name
 	}
+	if delta.ThoughtSignature != "" {
+		pending.thoughtSignature = delta.ThoughtSignature
+	}
 	pending.arguments.WriteString(delta.Function.Arguments)
 }
 
@@ -184,6 +224,7 @@ func (a *toolCallAssembler) result() []ToolCall {
 				Name:      pending.name,
 				Arguments: pending.arguments.String(),
 			},
+			ThoughtSignature: pending.thoughtSignature,
 		})
 	}
 	return out

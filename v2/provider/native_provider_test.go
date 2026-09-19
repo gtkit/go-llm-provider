@@ -75,7 +75,11 @@ func TestAnthropicProviderChatMapsRequestAndResponse(t *testing.T) {
 	assert.Equal(t, "req-anthropic", resp.Metadata.RequestID)
 
 	assert.Equal(t, "claude-sonnet-4-5", captured["model"])
-	assert.Equal(t, "be concise", captured["system"])
+	// system 以内容块数组下发，才能承载片段级 cache_control。
+	system, ok := captured["system"].([]any)
+	require.True(t, ok)
+	require.Len(t, system, 1)
+	assert.Equal(t, "be concise", system[0].(map[string]any)["text"])
 	assert.InDelta(t, 128, captured["max_tokens"], 0.0001)
 	assert.InDelta(t, 0.2, captured["temperature"], 0.0001)
 
@@ -234,7 +238,10 @@ func TestAnthropicProviderChatMapsToolsAndToolCalls(t *testing.T) {
 	assert.Equal(t, "get_weather", toolChoice["name"])
 }
 
-func TestAnthropicProviderChatMapsJSONSchemaResponseFormatToToolChoice(t *testing.T) {
+// TestAnthropicProviderChatMapsJSONSchemaResponseFormatToOutputConfig 锁定结构化输出走
+// 平台原生 output_config.format 而非"强制调用假工具"：新模型拒绝强制工具调用，
+// 且原生格式不占用 tools / tool_choice，可与真正的工具调用并存。
+func TestAnthropicProviderChatMapsJSONSchemaResponseFormatToOutputConfig(t *testing.T) {
 	t.Parallel()
 
 	var captured map[string]any
@@ -246,14 +253,9 @@ func TestAnthropicProviderChatMapsJSONSchemaResponseFormatToToolChoice(t *testin
 			"id": "msg_1",
 			"type": "message",
 			"role": "assistant",
-			"model": "claude-sonnet-4-5",
-			"stop_reason": "tool_use",
-			"content": [{
-				"type": "tool_use",
-				"id": "toolu_json",
-				"name": "city_response",
-				"input": {"city":"Paris"}
-			}],
+			"model": "claude-sonnet-5",
+			"stop_reason": "end_turn",
+			"content": [{"type":"text","text":"{\"city\":\"Paris\"}"}],
 			"usage": {"input_tokens": 12, "output_tokens": 8}
 		}`))
 	}))
@@ -262,7 +264,7 @@ func TestAnthropicProviderChatMapsJSONSchemaResponseFormatToToolChoice(t *testin
 	p, err := NewAnthropicProvider(NativeProviderConfig{
 		APIKey:  "test-key",
 		BaseURL: srv.URL,
-		Model:   "claude-sonnet-4-5",
+		Model:   "claude-sonnet-5",
 	})
 	require.NoError(t, err)
 
@@ -277,20 +279,20 @@ func TestAnthropicProviderChatMapsJSONSchemaResponseFormatToToolChoice(t *testin
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 	assert.JSONEq(t, `{"city":"Paris"}`, resp.Content)
-	assert.Equal(t, "stop", resp.FinishReason)
+	assert.Equal(t, "end_turn", resp.FinishReason)
 	assert.Empty(t, resp.ToolCalls)
 
-	tools, ok := captured["tools"].([]any)
+	assert.NotContains(t, captured, "tools")
+	assert.NotContains(t, captured, "tool_choice")
+	outputConfig, ok := captured["output_config"].(map[string]any)
 	require.True(t, ok)
-	require.Len(t, tools, 1)
-	tool, ok := tools[0].(map[string]any)
+	format, ok := outputConfig["format"].(map[string]any)
 	require.True(t, ok)
-	assert.Equal(t, "city_response", tool["name"])
-	assert.Contains(t, tool, "input_schema")
-	toolChoice, ok := captured["tool_choice"].(map[string]any)
+	assert.Equal(t, "json_schema", format["type"])
+	schema, ok := format["schema"].(map[string]any)
 	require.True(t, ok)
-	assert.Equal(t, "tool", toolChoice["type"])
-	assert.Equal(t, "city_response", toolChoice["name"])
+	assert.Equal(t, "object", schema["type"])
+	assert.Equal(t, []any{"city"}, schema["required"])
 }
 
 func TestAnthropicProviderChatStreamMapsEvents(t *testing.T) {
@@ -771,7 +773,9 @@ func TestGeminiProviderChatMapsJSONSchemaResponseFormat(t *testing.T) {
 	generation, ok := captured["generationConfig"].(map[string]any)
 	require.True(t, ok)
 	assert.Equal(t, "application/json", generation["responseMimeType"])
-	schema, ok := generation["responseSchema"].(map[string]any)
+	// 走标准 JSON Schema 字段，而非只认 OpenAPI 子集的 responseSchema。
+	assert.NotContains(t, generation, "responseSchema")
+	schema, ok := generation["responseJsonSchema"].(map[string]any)
 	require.True(t, ok)
 	assert.Equal(t, "object", schema["type"])
 	assert.NotContains(t, generation, "name")
@@ -1369,7 +1373,43 @@ func TestGeminiProviderChatMapsToolResultMessages(t *testing.T) {
 	response, ok := parts[0].(map[string]any)["functionResponse"].(map[string]any)
 	require.True(t, ok)
 	assert.Equal(t, "call_1", response["id"])
-	assert.Equal(t, "call_1", response["name"])
+	// 工具结果未带 ToolName 时，从同一请求内的 assistant 工具调用按 ID 反查函数名：
+	// Gemini 同时校验 id 与 name，name 填成调用 ID 会被拒绝。
+	assert.Equal(t, "get_weather", response["name"])
+}
+
+// TestGeminiToolResponseNameResolution 覆盖 functionResponse.name 的三种来源：
+// 显式 ToolName 优先，其次按 ToolCallID 反查，都没有时拒绝而非发出平台必拒的请求。
+func TestGeminiToolResponseNameResolution(t *testing.T) {
+	t.Parallel()
+
+	call := ToolCall{ID: "call_1", Function: FunctionCall{Name: "get_weather", Arguments: `{}`}}
+	assistant := Message{Role: RoleAssistant, ToolCalls: []ToolCall{call}}
+
+	t.Run("显式 ToolName 优先", func(t *testing.T) {
+		t.Parallel()
+		out := geminiRequest{}
+		msg := ToolResultMessageFor(call, `{"ok":true}`)
+		require.NoError(t, fillGeminiContents(&out, []Message{msg}))
+		require.Len(t, out.Contents, 1)
+		assert.Equal(t, "get_weather", out.Contents[0].Parts[0].FunctionResponse.Name)
+	})
+
+	t.Run("按 ToolCallID 反查", func(t *testing.T) {
+		t.Parallel()
+		out := geminiRequest{}
+		require.NoError(t, fillGeminiContents(&out, []Message{assistant, ToolResultMessage("call_1", "ok")}))
+		require.Len(t, out.Contents, 2)
+		assert.Equal(t, "get_weather", out.Contents[1].Parts[0].FunctionResponse.Name)
+	})
+
+	t.Run("无法确定函数名时拒绝", func(t *testing.T) {
+		t.Parallel()
+		out := geminiRequest{}
+		err := fillGeminiContents(&out, []Message{ToolResultMessage("call_unknown", "ok")})
+		require.ErrorIs(t, err, ErrInvalidRequest)
+		assert.Contains(t, err.Error(), "ToolResultMessageFor")
+	})
 }
 
 func TestSSEReaderSkipsInvalidJSONAndComments(t *testing.T) {
@@ -1605,7 +1645,7 @@ func TestAnthropicProviderChatThinkingEndToEnd(t *testing.T) {
 			"model": "claude-sonnet-4-5",
 			"stop_reason": "end_turn",
 			"content": [
-				{"type":"thinking","thinking":"先分解问题"},
+				{"type":"thinking","thinking":"先分解问题","signature":"sig-abc"},
 				{"type":"redacted_thinking","data":"ENCRYPTED"},
 				{"type":"text","text":"答案是 42"}
 			],
@@ -1641,6 +1681,11 @@ func TestAnthropicProviderChatThinkingEndToEnd(t *testing.T) {
 	assert.NotContains(t, resp.Content, "先分解问题")
 	assert.NotContains(t, resp.Content, "ENCRYPTED")
 	assert.NotContains(t, resp.Reasoning, "ENCRYPTED")
+	// 签名块与加密块原样保留，供工具循环回传。
+	assert.Equal(t, []ThinkingBlock{
+		{Thinking: "先分解问题", Signature: "sig-abc"},
+		{Redacted: "ENCRYPTED"},
+	}, resp.ThinkingBlocks)
 }
 
 // TestAnthropicProviderChatCacheWriteTiersEndToEnd 端到端验证缓存写入分档：
@@ -1708,16 +1753,31 @@ func TestAnthropicProviderChatCacheWriteTiersEndToEnd(t *testing.T) {
 		"1h 档单价更高，分档计价必须高于按单一写入单价计价")
 }
 
-// TestAnthropicStreamSignatureDeltaIgnored 是"signature_delta 被忽略"的反证：
-// 思考块的 signature 只用于把思考块回传给平台，本库不回传，
-// 该事件不得产出 chunk、也不得报错中断流。
-func TestAnthropicStreamSignatureDeltaIgnored(t *testing.T) {
+// TestAnthropicStreamThinkingBlockEvents 锁定思考块签名与加密块在流上的透出：
+// 开启思考并使用工具时平台要求把思考块原样回传，签名与加密数据缺一不可。
+func TestAnthropicStreamThinkingBlockEvents(t *testing.T) {
 	t.Parallel()
 
 	chunk, ok, err := anthropicStreamChunk(
 		[]byte(`{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"abc123"}}`),
 		&anthropicStreamState{})
 	require.NoError(t, err)
-	assert.False(t, ok, "signature_delta 不应产出 chunk")
+	require.True(t, ok, "signature_delta 必须产出 chunk，否则调用方无法拼出可回传的思考块")
+	assert.Equal(t, "abc123", chunk.ThinkingSignature)
+	assert.Empty(t, chunk.ReasoningDelta)
+
+	chunk, ok, err = anthropicStreamChunk(
+		[]byte(`{"type":"content_block_start","index":1,"content_block":{"type":"redacted_thinking","data":"ENC"}}`),
+		&anthropicStreamState{})
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, "ENC", chunk.RedactedThinking)
+
+	// 普通 thinking 块的 start 事件没有可透出的内容，不产出 chunk。
+	chunk, ok, err = anthropicStreamChunk(
+		[]byte(`{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`),
+		&anthropicStreamState{})
+	require.NoError(t, err)
+	assert.False(t, ok)
 	assert.Nil(t, chunk)
 }

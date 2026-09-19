@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -19,11 +20,15 @@ import (
 var errSkipNativeStreamEvent = errors.New("skip native stream event")
 
 const (
-	defaultAnthropicBaseURL     = "https://api.anthropic.com"
-	defaultAnthropicVersion     = "2023-06-01"
-	defaultAnthropicModel       = "claude-sonnet-4-5"
-	defaultGeminiBaseURL        = "https://generativelanguage.googleapis.com/v1beta"
-	defaultGeminiModel          = "gemini-2.5-flash"
+	defaultAnthropicBaseURL = "https://api.anthropic.com"
+	defaultAnthropicVersion = "2023-06-01"
+	// defaultAnthropicModel 是 Claude 5 代 Sonnet：自适应思考默认开启，1M 上下文。
+	defaultAnthropicModel = "claude-sonnet-5"
+	defaultGeminiBaseURL  = "https://generativelanguage.googleapis.com/v1beta"
+	// defaultGeminiModel 是 Gemini 3.5 Flash（GA）；2.5 系计划于 2026-10 关停。
+	defaultGeminiModel = "gemini-3.5-flash"
+	// defaultGeminiEmbeddingModel 保持 001（GA、纯文本、支持 task_type）；
+	// gemini-embedding-2-preview 为多模态预览版且向量空间与 001 不兼容，由调用方显式选用。
 	defaultGeminiEmbeddingModel = "gemini-embedding-001"
 	defaultNativeMaxTokens      = 4096
 	maxNativeErrorBody          = 1 << 20
@@ -36,6 +41,18 @@ type NativeProviderConfig struct {
 	BaseURL    string
 	Model      string
 	HTTPClient HTTPDoer
+
+	// Headers 是附加到每个请求的自定义请求头，在库默认头之后写入、同名覆盖。
+	// 典型用途：Anthropic 的 anthropic-beta（如服务端 compaction、按轮次 effort）、
+	// 企业网关鉴权头。留空不附加。
+	Headers map[string]string
+}
+
+// applyExtraHeaders 把自定义请求头写入请求，同名覆盖库默认值。
+func applyExtraHeaders(req *http.Request, headers map[string]string) {
+	for name, value := range headers {
+		req.Header.Set(name, value)
+	}
 }
 
 func (cfg NativeProviderConfig) validate(defaultModel string) error {
@@ -66,6 +83,7 @@ func normalizeNativeConfig(cfg NativeProviderConfig, defaultBaseURL, defaultMode
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = DefaultHTTPClient()
 	}
+	cfg.Headers = maps.Clone(cfg.Headers)
 	return cfg, nil
 }
 
@@ -74,6 +92,7 @@ type anthropicProvider struct {
 	baseURL    string
 	model      string
 	httpClient HTTPDoer
+	headers    map[string]string
 }
 
 // NewAnthropicProvider creates a native Anthropic Claude Provider.
@@ -88,6 +107,7 @@ func NewAnthropicProvider(cfg NativeProviderConfig) (Provider, error) {
 		baseURL:    normalized.BaseURL,
 		model:      normalized.Model,
 		httpClient: normalized.HTTPClient,
+		headers:    normalized.Headers,
 	}, nil
 }
 
@@ -133,27 +153,19 @@ func (p *anthropicProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRe
 		// 供观测/计费层提取，不得按零消耗处理。
 		return nil, &PauseTurnError{Usage: usageFromAnthropic(resp.Usage), Search: parsed.Search}
 	}
-	if req.ResponseFormat != nil && req.ResponseFormat.Type != ResponseFormatText {
-		if structured, ok, err := anthropicStructuredContent(resp); err != nil {
-			return nil, err
-		} else if ok {
-			parsed.Text = structured
-			parsed.FinishReason = "stop"
-			parsed.ToolCalls = nil
-		}
-	}
 	if metadata.Model == "" {
 		metadata.Model = firstString(resp.Model, model)
 	}
 
 	return &ChatResponse{
-		Content:      parsed.Text,
-		Reasoning:    parsed.Reasoning,
-		FinishReason: parsed.FinishReason,
-		Usage:        usageFromAnthropic(resp.Usage),
-		Metadata:     metadata,
-		Search:       parsed.Search,
-		ToolCalls:    parsed.ToolCalls,
+		Content:        parsed.Text,
+		Reasoning:      parsed.Reasoning,
+		ThinkingBlocks: parsed.ThinkingBlocks,
+		FinishReason:   parsed.FinishReason,
+		Usage:          usageFromAnthropic(resp.Usage),
+		Metadata:       metadata,
+		Search:         parsed.Search,
+		ToolCalls:      parsed.ToolCalls,
 	}, nil
 }
 
@@ -245,6 +257,7 @@ func (p *anthropicProvider) setHeaders(req *http.Request) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", p.apiKey)
 	req.Header.Set("anthropic-version", defaultAnthropicVersion)
+	applyExtraHeaders(req, p.headers)
 }
 
 // anthropicMaxTokens 决定本次请求下发的 max_tokens。
@@ -280,19 +293,13 @@ func (p *anthropicProvider) buildRequest(req *ChatRequest, stream bool) (anthrop
 	if err != nil {
 		return anthropicRequest{}, "", err
 	}
+	outputConfig, err := anthropicOutputConfigParam(req.Thinking, req.ResponseFormat)
+	if err != nil {
+		return anthropicRequest{}, "", err
+	}
 	toolChoice, err := buildAnthropicToolChoice(req)
 	if err != nil {
 		return anthropicRequest{}, "", err
-	}
-	structuredTool, structuredChoice, err := anthropicStructuredTool(req.ResponseFormat)
-	if err != nil {
-		return anthropicRequest{}, "", err
-	}
-	// 结构化输出通过内部工具 + 强制 tool_choice 实现，与服务端搜索工具
-	// 属于同一类不可往返的组合，禁止而非静默失效。
-	if structuredTool != nil && hasWebSearchTool(req.Tools) {
-		return anthropicRequest{}, "", fmt.Errorf(
-			"%w: anthropic web search cannot be combined with structured output", ErrInvalidRequest)
 	}
 	tools, err := anthropicTools(req.Tools)
 	if err != nil {
@@ -301,16 +308,13 @@ func (p *anthropicProvider) buildRequest(req *ChatRequest, stream bool) (anthrop
 
 	model := firstString(req.Model, p.model)
 	out := anthropicRequest{
-		Model:      model,
-		MaxTokens:  anthropicMaxTokens(req.MaxTokens, thinking),
-		Stream:     stream,
-		Tools:      tools,
-		ToolChoice: toolChoice,
-		Thinking:   thinking,
-	}
-	if structuredTool != nil {
-		out.Tools = append(out.Tools, *structuredTool)
-		out.ToolChoice = structuredChoice
+		Model:        model,
+		MaxTokens:    anthropicMaxTokens(req.MaxTokens, thinking),
+		Stream:       stream,
+		Tools:        tools,
+		ToolChoice:   toolChoice,
+		Thinking:     thinking,
+		OutputConfig: outputConfig,
 	}
 	if req.Temperature != nil {
 		out.Temperature = req.Temperature
@@ -339,7 +343,7 @@ func (p *anthropicProvider) buildRequest(req *ChatRequest, stream bool) (anthrop
 func appendAnthropicMessage(out *anthropicRequest, msg Message) error {
 	switch msg.Role {
 	case RoleSystem:
-		appendSystemText(&out.System, contentText(msg.Content))
+		out.System = append(out.System, anthropicSystemParts(msg.Content)...)
 	case RoleUser, RoleAssistant:
 		parts, err := anthropicContentParts(msg.Content)
 		if msg.Role == RoleAssistant {
@@ -353,9 +357,13 @@ func appendAnthropicMessage(out *anthropicRequest, msg Message) error {
 			Content: parts,
 		})
 	case RoleTool:
+		result, err := anthropicToolResultPart(msg)
+		if err != nil {
+			return err
+		}
 		out.Messages = append(out.Messages, anthropicMessage{
 			Role:    "user",
-			Content: []anthropicContentPart{anthropicToolResultPart(msg)},
+			Content: []anthropicContentPart{result},
 		})
 	default:
 		return fmt.Errorf("%w: unsupported anthropic role %q", ErrInvalidRequest, msg.Role)
@@ -368,6 +376,7 @@ type geminiProvider struct {
 	baseURL    string
 	model      string
 	httpClient HTTPDoer
+	headers    map[string]string
 }
 
 // NewGeminiProvider creates a native Google Gemini Provider.
@@ -382,6 +391,7 @@ func NewGeminiProvider(cfg NativeProviderConfig) (Provider, error) {
 		baseURL:    normalized.BaseURL,
 		model:      normalized.Model,
 		httpClient: normalized.HTTPClient,
+		headers:    normalized.Headers,
 	}, nil
 }
 
@@ -529,6 +539,7 @@ func (p *geminiProvider) CountTokens(ctx context.Context, req *ChatRequest) (*To
 func (p *geminiProvider) setHeaders(req *http.Request) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-goog-api-key", p.apiKey)
+	applyExtraHeaders(req, p.headers)
 }
 
 func (p *geminiProvider) modelURL(model, action string) string {
@@ -911,6 +922,10 @@ func anthropicStreamChunk(data []byte, state *anthropicStreamState) (*StreamChun
 			}
 			return nil, false, nil
 		}
+		// 加密思考块整块到达，原样透出供回传；不可读，不进入任何文本字段。
+		if event.ContentBlock.Type == "redacted_thinking" {
+			return &StreamChunk{RedactedThinking: event.ContentBlock.Data}, true, nil
+		}
 		if event.ContentBlock.Type == "tool_use" {
 			return &StreamChunk{ToolCalls: []ToolCallDelta{{
 				Index: event.Index,
@@ -956,10 +971,14 @@ func anthropicStreamDeltaChunk(event anthropicStreamEvent, state *anthropicStrea
 	case event.Delta.Type == "text_delta" && event.Delta.Text != "":
 		return &StreamChunk{Delta: event.Delta.Text}, true, nil
 
-	// 思考增量走 ReasoningDelta，不混入正文；随 thinking 块到达的
-	// signature_delta 只用于把思考块回传给平台，本库不回传，忽略。
+	// 思考增量走 ReasoningDelta，不混入正文。
 	case event.Delta.Type == "thinking_delta" && event.Delta.Thinking != "":
 		return &StreamChunk{ReasoningDelta: event.Delta.Thinking}, true, nil
+
+	// 签名随思考块结束到达一次，标记"此前累积的思考增量构成一个完整块"，
+	// 供调用方拼装 ThinkingBlock 回传（开启思考并使用工具时平台要求回传）。
+	case event.Delta.Type == "signature_delta" && event.Delta.Signature != "":
+		return &StreamChunk{ThinkingSignature: event.Delta.Signature}, true, nil
 
 	case event.Delta.Type == "input_json_delta" && event.Delta.PartialJSON != "":
 		if state.isServerToolBlock(event.Index) {
@@ -989,6 +1008,7 @@ func toolCallDeltas(calls []ToolCall) []ToolCallDelta {
 				Name:      call.Function.Name,
 				Arguments: call.Function.Arguments,
 			},
+			ThoughtSignature: call.ThoughtSignature,
 		})
 	}
 	return out

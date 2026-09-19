@@ -7,18 +7,20 @@ import (
 
 // Thinking 控制平台侧的推理（思考）行为，零值不下发任何推理参数。
 //
-// 三个字段对应平台的两套控制口径：Effort 是档位口径（OpenAI 的
-// reasoning_effort），BudgetTokens 是预算口径（Anthropic 的
-// thinking.budget_tokens、Gemini 的 thinkingConfig.thinkingBudget）。
-// 各字段的平台支持范围：
+// 三个字段对应平台的两套控制口径：Effort 是档位口径（OpenAI 的 reasoning_effort、
+// Anthropic 的 output_config.effort、Gemini 的 thinkingLevel），BudgetTokens 是
+// 预算口径（Anthropic 旧模型的 thinking.budget_tokens、Gemini 2.5 的 thinkingBudget、
+// 百炼的 thinking_budget）。各字段的平台支持范围：
 //
-//	平台                Enabled  Effort  BudgetTokens
-//	OpenAI / Azure         -       ✓          -
-//	火山方舟 Ark           ✓       ✓          -
-//	DeepSeek               ✓       -          -
-//	阿里云百炼 Qwen        ✓       -          ✓
-//	Anthropic（原生）      ✓       -          ✓
-//	Gemini（原生）         ✓       -          ✓
+//	平台                     Enabled  Effort  BudgetTokens
+//	OpenAI / Azure              -       ✓          -
+//	DeepSeek                    ✓       ✓          -
+//	智谱 GLM                    ✓       ✓          -
+//	Moonshot / Kimi             ✓       ✓          -
+//	火山方舟 Ark                ✓       ✓          -
+//	阿里云百炼 Qwen             ✓       -          ✓
+//	Anthropic（原生）           ✓       ✓          ✓（仅 4.5 及更早模型）
+//	Gemini（原生）              ✓       ✓          ✓（与 Effort 互斥）
 //
 // 传入表中未标注的字段时，请求构建阶段返回 ErrInvalidRequest 并在错误信息中
 // 列出该平台已映射的字段——推理 token 按输出价计费，静默忽略会让调用方
@@ -26,22 +28,32 @@ import (
 // 可用 ModelCapabilities.Supports(CapabilityReasoning) 提前判断平台是否支持推理控制。
 type Thinking struct {
 	// Enabled 显式开启或关闭平台侧思考；nil 表示不干预平台默认行为。
+	// 注意部分模型不允许关闭思考（GLM-5.3、Kimi K3、Gemini 3 系），传 false 由平台报错。
 	Enabled *bool
 
-	// Effort 按档位控制推理深度，取值原样透传给平台的 reasoning_effort，
-	// ThinkingEffort* 是便利常量而非取值全集。
+	// Effort 按档位控制推理深度，取值原样透传给平台的档位字段，
+	// ThinkingEffort* 是便利常量而非取值全集，各平台接受的档位集合不同：
+	//   - OpenAI：none / minimal / low / medium / high / xhigh / max（按模型而异）；
+	//   - DeepSeek / 智谱 / Kimi K3：low / high / max；
+	//   - Anthropic：low / medium / high / xhigh / max（按模型而异）；
+	//   - Gemini：minimal / low / medium / high（按模型而异）。
 	Effort string
 
 	// BudgetTokens 按 token 预算控制推理深度，nil 表示不指定预算。
 	// 各平台对取值的语义不同：
-	//   - Anthropic 只接受正数，非正数返回 ErrInvalidRequest；
+	//   - Anthropic 只接受正数，非正数返回 ErrInvalidRequest；下发为旧式
+	//     thinking.type=enabled + budget_tokens，Claude 4.6 起该口径已废弃、
+	//     4.7 起平台直接拒绝，新模型请改用 Enabled + Effort（自适应思考）；
 	//     预算还需小于本次请求的 MaxTokens（未显式设置时为 4096），该上限由平台校验；
 	//   - Gemini 以 0 表示禁用思考、-1 表示由模型动态决定预算，取值由平台校验；
+	//     Gemini 3 系推荐改用 Effort（thinkingLevel），两者同时设置返回 ErrInvalidRequest；
 	//   - 百炼原样透传为顶层 thinking_budget，取值由平台校验。
 	BudgetTokens *int
 }
 
 const (
+	// ThinkingEffortNone 请求关闭推理（OpenAI gpt-5.1 及之后、Mistral、Cohere 等接受）。
+	ThinkingEffortNone = "none"
 	// ThinkingEffortMinimal 请求最低推理力度。
 	ThinkingEffortMinimal = "minimal"
 	// ThinkingEffortLow 请求较低推理力度。
@@ -50,13 +62,22 @@ const (
 	ThinkingEffortMedium = "medium"
 	// ThinkingEffortHigh 请求较高推理力度。
 	ThinkingEffortHigh = "high"
+	// ThinkingEffortXHigh 请求极高推理力度（OpenAI gpt-5.2 及之后、Anthropic）。
+	ThinkingEffortXHigh = "xhigh"
+	// ThinkingEffortMax 请求最高推理力度（DeepSeek V4、GLM-5.3、Kimi K3、OpenAI gpt-5.6、Anthropic）。
+	ThinkingEffortMax = "max"
 )
 
-// thinkingSupport 描述单个平台对 Thinking 各字段的支持情况。
+// thinkingSupport 描述单个平台对 Thinking 各字段的支持情况，
+// 以及是否接受 assistant 消息上的 reasoning_content 回传。
 type thinkingSupport struct {
 	enabled bool
 	effort  bool
 	budget  bool
+	// reasoningEcho 为 true 时把 Message.Reasoning 映射为 reasoning_content 下发。
+	// 该字段是 OpenAI 兼容协议的扩展，OpenAI 官方端点会拒绝未知字段，只对已知
+	// 接受它的平台开启。
+	reasoningEcho bool
 }
 
 // thinkingSupportByProvider 是 Thinking 字段平台支持范围的单一真源，
@@ -65,11 +86,13 @@ type thinkingSupport struct {
 var thinkingSupportByProvider = map[ProviderName]thinkingSupport{
 	ProviderOpenAI:      {effort: true},
 	ProviderAzureOpenAI: {effort: true},
-	ProviderArk:         {enabled: true, effort: true},
-	ProviderDeepSeek:    {enabled: true},
-	ProviderQwen:        {enabled: true, budget: true},
-	ProviderAnthropic:   {enabled: true, budget: true},
-	ProviderGemini:      {enabled: true, budget: true},
+	ProviderDeepSeek:    {enabled: true, effort: true, reasoningEcho: true},
+	ProviderZhipu:       {enabled: true, effort: true, reasoningEcho: true},
+	ProviderMoonshot:    {enabled: true, effort: true, reasoningEcho: true},
+	ProviderArk:         {enabled: true, effort: true, reasoningEcho: true},
+	ProviderQwen:        {enabled: true, budget: true, reasoningEcho: true},
+	ProviderAnthropic:   {enabled: true, effort: true, budget: true},
+	ProviderGemini:      {enabled: true, effort: true, budget: true},
 }
 
 // Thinking 各字段在错误信息中的名字，集中一处以免措辞漂移。

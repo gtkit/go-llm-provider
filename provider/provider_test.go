@@ -59,13 +59,13 @@ func TestNewProviderFromPresetUsesApprovedDefaultModels(t *testing.T) {
 		providerName  ProviderName
 		expectedModel string
 	}{
-		{name: "deepseek", providerName: ProviderDeepSeek, expectedModel: "deepseek-chat"},
-		{name: "qwen", providerName: ProviderQwen, expectedModel: "qwen3.6-plus"},
-		{name: "zhipu", providerName: ProviderZhipu, expectedModel: "glm-5.1"},
-		{name: "qianfan", providerName: ProviderQianfan, expectedModel: "ernie-4.5-turbo-32k"},
-		{name: "siliconflow", providerName: ProviderSiliconFlow, expectedModel: "deepseek-ai/DeepSeek-V3"},
-		{name: "moonshot", providerName: ProviderMoonshot, expectedModel: "kimi-k2-turbo-preview"},
-		{name: "openai", providerName: ProviderOpenAI, expectedModel: "gpt-5.4-mini"},
+		{name: "deepseek", providerName: ProviderDeepSeek, expectedModel: "deepseek-v4-flash"},
+		{name: "qwen", providerName: ProviderQwen, expectedModel: "qwen3.7-plus"},
+		{name: "zhipu", providerName: ProviderZhipu, expectedModel: "glm-5.3"},
+		{name: "qianfan", providerName: ProviderQianfan, expectedModel: "ernie-5.1"},
+		{name: "siliconflow", providerName: ProviderSiliconFlow, expectedModel: "deepseek-ai/DeepSeek-V4-Flash"},
+		{name: "moonshot", providerName: ProviderMoonshot, expectedModel: "kimi-k2.6"},
+		{name: "openai", providerName: ProviderOpenAI, expectedModel: "gpt-5.6-terra"},
 	}
 
 	for _, tc := range testCases {

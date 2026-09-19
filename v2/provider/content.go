@@ -52,9 +52,22 @@ const (
 	CacheControlTypeEphemeral CacheControlType = "ephemeral"
 )
 
+// CacheControlTTL 标识提示词缓存的存活时长档位。
+type CacheControlTTL string
+
+const (
+	// CacheControlTTL5m 是 5 分钟档（Anthropic 默认档，写入单价较低）。
+	CacheControlTTL5m CacheControlTTL = "5m"
+	// CacheControlTTL1h 是 1 小时档（Anthropic 长缓存，写入单价更高，命中价相同）。
+	CacheControlTTL1h CacheControlTTL = "1h"
+)
+
 // CacheControl 描述内容片段的供应商侧提示词缓存提示。
 type CacheControl struct {
 	Type CacheControlType
+	// TTL 是缓存存活时长档位，空值沿用平台默认（Anthropic 为 5 分钟）。
+	// 用量按档位分别统计在 Usage.CacheWrite5mTokens / CacheWrite1hTokens。
+	TTL CacheControlTTL
 }
 
 // TextPart creates a text content part.
@@ -120,9 +133,14 @@ func FileIDPart(id string) ContentPart {
 	}
 }
 
-// CacheControlEphemeral 创建一个临时提示词缓存控制提示。
+// CacheControlEphemeral 创建一个临时提示词缓存控制提示（平台默认 TTL）。
 func CacheControlEphemeral() *CacheControl {
 	return &CacheControl{Type: CacheControlTypeEphemeral}
+}
+
+// CacheControlEphemeralTTL 创建一个指定存活时长档位的临时提示词缓存控制提示。
+func CacheControlEphemeralTTL(ttl CacheControlTTL) *CacheControl {
+	return &CacheControl{Type: CacheControlTypeEphemeral, TTL: ttl}
 }
 
 // WithCacheControl 返回附加了供应商侧提示词缓存控制的内容片段。

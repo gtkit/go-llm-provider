@@ -32,12 +32,35 @@ type EmbeddingRequest struct {
 	Input []string
 
 	// Dimensions 可选，指针类型用于区分"未设置"与"设为 0"。
-	// 仅部分模型支持（如 OpenAI text-embedding-3 系列、Qwen text-embedding-v3）。
+	// 仅部分模型支持（如 OpenAI text-embedding-3 系列、Qwen text-embedding-v3/v4）。
 	Dimensions *int
 
 	// User 可选，OpenAI 兼容字段，用于平台侧风控。
 	User string
+
+	// TaskType 声明向量用途，供区分"查询侧 / 文档侧"编码的非对称模型使用
+	// （RAG 中 query 与 chunk 用不同任务类型编码召回更准）。
+	// 当前映射到 Gemini 的 task_type；OpenAI 兼容端点的模型对称编码、协议上
+	// 也没有该字段，该提示被忽略——这与 Thinking 的 fail-closed 不同，因为
+	// 忽略它不产生费用或安全影响。
+	TaskType EmbeddingTaskType
 }
+
+// EmbeddingTaskType 标识向量的用途。
+type EmbeddingTaskType string
+
+const (
+	// EmbeddingTaskQuery 编码检索查询（RAG 在线侧）。
+	EmbeddingTaskQuery EmbeddingTaskType = "query"
+	// EmbeddingTaskDocument 编码待检索的文档 / 切片（RAG 建索引侧）。
+	EmbeddingTaskDocument EmbeddingTaskType = "document"
+	// EmbeddingTaskSimilarity 用于对称的语义相似度比较。
+	EmbeddingTaskSimilarity EmbeddingTaskType = "similarity"
+	// EmbeddingTaskClassification 用于分类下游任务。
+	EmbeddingTaskClassification EmbeddingTaskType = "classification"
+	// EmbeddingTaskClustering 用于聚类下游任务。
+	EmbeddingTaskClustering EmbeddingTaskType = "clustering"
+)
 
 // EmbeddingResponse 是向量化调用的响应。
 type EmbeddingResponse struct {

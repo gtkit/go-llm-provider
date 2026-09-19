@@ -22,40 +22,41 @@ type Preset struct {
 
 var presetCatalog = map[ProviderName]Preset{
 	ProviderDeepSeek: {
-		BaseURL:      "https://api.deepseek.com/v1",
-		DefaultModel: "deepseek-chat", // DeepSeek-V3.2 非思考模式
+		BaseURL: "https://api.deepseek.com/v1",
+		// 旧的 deepseek-chat / deepseek-reasoner 已于 2026-07-24 停用。
+		DefaultModel: "deepseek-v4-flash",
 		// DeepSeek 官方暂无 embedding 模型
 	},
 	ProviderZhipu: {
 		BaseURL:        "https://open.bigmodel.cn/api/paas/v4/",
-		DefaultModel:   "glm-5.1",
+		DefaultModel:   "glm-5.3",
 		EmbeddingModel: "embedding-3",
 	},
 	ProviderQwen: {
 		// 阿里百炼 / DashScope OpenAI 兼容端点
 		BaseURL:        "https://dashscope.aliyuncs.com/compatible-mode/v1",
-		DefaultModel:   "qwen3.6-plus",
-		EmbeddingModel: "text-embedding-v3",
+		DefaultModel:   "qwen3.7-plus",
+		EmbeddingModel: "text-embedding-v4",
 	},
 	ProviderQianfan: {
 		// 百度千帆 OpenAI 兼容 V2 接口
 		BaseURL:        "https://qianfan.baidubce.com/v2",
-		DefaultModel:   "ernie-4.5-turbo-32k",
+		DefaultModel:   "ernie-5.1",
 		EmbeddingModel: "embedding-v1",
 	},
 	ProviderSiliconFlow: {
 		BaseURL:        "https://api.siliconflow.cn/v1",
-		DefaultModel:   "deepseek-ai/DeepSeek-V3",
+		DefaultModel:   "deepseek-ai/DeepSeek-V4-Flash",
 		EmbeddingModel: "BAAI/bge-m3",
 	},
 	ProviderMoonshot: {
 		BaseURL:      "https://api.moonshot.cn/v1",
-		DefaultModel: "kimi-k2-turbo-preview",
+		DefaultModel: "kimi-k2.6",
 		// Moonshot 官方暂无 embedding 模型
 	},
 	ProviderOpenAI: {
 		BaseURL:        "https://api.openai.com/v1",
-		DefaultModel:   "gpt-5.4-mini",
+		DefaultModel:   "gpt-5.6-terra",
 		EmbeddingModel: "text-embedding-3-small",
 	},
 	ProviderAnthropic: {

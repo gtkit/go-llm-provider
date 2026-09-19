@@ -22,7 +22,7 @@ import (
 const (
 	demoUserID         = "user-1001"
 	demoConversationID = "conv-20260710-01"
-	demoModel          = "deepseek-chat"
+	demoModel          = "deepseek-v4-flash"
 )
 
 // pricing 是演示费率（微元 / 1M tokens）；生产从配置中心注入，价格随官方调整维护。

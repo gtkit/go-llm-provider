@@ -14,7 +14,7 @@ func TestModelCapabilitiesFromPreset(t *testing.T) {
 	caps, ok := ModelCapabilitiesFromPreset(ProviderOpenAI)
 	require.True(t, ok)
 	assert.Equal(t, ProviderOpenAI, caps.Provider)
-	assert.Equal(t, "gpt-5.4-mini", caps.ChatModel)
+	assert.Equal(t, "gpt-5.6-terra", caps.ChatModel)
 	assert.Equal(t, "text-embedding-3-small", caps.EmbeddingModel)
 	assert.True(t, caps.Supports(CapabilityChat))
 	assert.True(t, caps.Supports(CapabilityStreaming))
@@ -65,7 +65,7 @@ func TestPresetIncludesCapabilities(t *testing.T) {
 
 	presets := AllPresets()
 	preset := presets[ProviderOpenAI]
-	assert.Equal(t, "gpt-5.4-mini", preset.Capabilities.ChatModel)
+	assert.Equal(t, "gpt-5.6-terra", preset.Capabilities.ChatModel)
 	assert.True(t, preset.Capabilities.Supports(CapabilityChat))
 }
 

@@ -357,7 +357,7 @@ func ExampleWithObservability() {
 func ExampleNewAnthropicProvider() {
 	p, err := provider.NewAnthropicProvider(provider.NativeProviderConfig{
 		APIKey: "sk-ant-xxxxxxxx",
-		Model:  "claude-sonnet-4-5",
+		Model:  "claude-sonnet-5",
 	})
 	fmt.Println(p != nil, err == nil)
 	// Output: true true
@@ -366,7 +366,7 @@ func ExampleNewAnthropicProvider() {
 func ExampleNewGeminiProvider() {
 	p, err := provider.NewGeminiProvider(provider.NativeProviderConfig{
 		APIKey: "AIza-xxxxxxxx",
-		Model:  "gemini-2.5-flash",
+		Model:  "gemini-3.5-flash",
 	})
 	fmt.Println(p != nil, err == nil)
 	// Output: true true

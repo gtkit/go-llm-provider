@@ -9,7 +9,7 @@ import (
 func ExampleNewAnthropicProvider() {
 	p, err := provider.NewAnthropicProvider(provider.NativeProviderConfig{
 		APIKey: "anthropic-api-key",
-		Model:  "claude-sonnet-4-5",
+		Model:  "claude-sonnet-5",
 	})
 	fmt.Println(p != nil, err == nil)
 	// Output: true true
@@ -18,7 +18,7 @@ func ExampleNewAnthropicProvider() {
 func ExampleNewGeminiProvider() {
 	p, err := provider.NewGeminiProvider(provider.NativeProviderConfig{
 		APIKey: "gemini-api-key",
-		Model:  "gemini-2.5-flash",
+		Model:  "gemini-3.5-flash",
 	})
 	fmt.Println(p != nil, err == nil)
 	// Output: true true

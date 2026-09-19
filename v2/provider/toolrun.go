@@ -94,7 +94,7 @@ func normalizeToolRetry(opts ToolRetryOptions) ToolRetryOptions {
 
 // DefaultToolErrorEncoder returns a sanitized JSON tool result message.
 func DefaultToolErrorEncoder(_ context.Context, call ToolCall, _ error) (Message, error) {
-	return ToolResultMessageJSON(call.ID, map[string]string{"error": defaultToolExecutionError})
+	return ToolResultMessageJSONFor(call, map[string]string{"error": defaultToolExecutionError})
 }
 
 // WrapToolResultInTag 返回一个 ToolResultTransformer，将工具结果包裹进 <tag>...</tag> 中，
@@ -293,7 +293,7 @@ func executeToolCall(ctx context.Context, call ToolCall, handler ToolHandler, en
 				}
 				result = transformed
 			}
-			return ToolResultMessage(call.ID, result), nil
+			return ToolResultMessageFor(call, result), nil
 		}
 
 		// context 取消：立即上抛，不重试、不编码回模型。

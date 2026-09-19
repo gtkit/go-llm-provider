@@ -145,6 +145,13 @@ type HTTPDoer interface {
 	Do(req *http.Request) (*http.Response, error)
 }
 
+// defaultResponseHeaderTimeout 是等待服务端响应头的传输层上限。
+//
+// 非流式调用下平台要等整段生成完才发响应头，思考模型高强度推理一次可达数分钟，
+// 该值过小会把正常的长推理请求误判为网络故障。总时长预算应由调用方 ctx 控制，
+// 这里只兜住服务端彻底无响应的极端情况。
+const defaultResponseHeaderTimeout = 15 * time.Minute
+
 // DefaultHTTPClient returns the package default reusable HTTP client.
 //
 // The client intentionally leaves http.Client.Timeout unset so request budgets
@@ -160,7 +167,7 @@ func DefaultHTTPClient() *http.Client {
 			MaxIdleConnsPerHost:   10,
 			IdleConnTimeout:       90 * time.Second,
 			TLSHandshakeTimeout:   10 * time.Second,
-			ResponseHeaderTimeout: 60 * time.Second,
+			ResponseHeaderTimeout: defaultResponseHeaderTimeout,
 			ExpectContinueTimeout: 1 * time.Second,
 		},
 	}
@@ -209,9 +216,17 @@ type ProviderConfig struct {
 	// 内置预设（如 ProviderOpenAI、ProviderDeepSeek）的支持范围由库判定，该字段被忽略。
 	//
 	// Thinking.Enabled 与 Thinking.BudgetTokens 没有对应的开关：各平台把它们落在
-	// 互不相同的私有字段上（DeepSeek 用 chat_template_kwargs、火山方舟用顶层
-	// thinking），库无从代为映射，这两个字段对未收录平台始终返回 ErrInvalidRequest。
+	// 互不相同的私有字段上（DeepSeek / 智谱 / Kimi / 火山方舟用顶层 thinking、
+	// 百炼用顶层 enable_thinking），库无从代为映射，这两个字段对未收录平台始终返回 ErrInvalidRequest。
 	SupportsReasoningEffort bool
+
+	// SupportsReasoningContent 声明该平台接受 assistant 消息上的 reasoning_content
+	// 字段回传，从而允许把 Message.Reasoning 随历史一并下发。
+	//
+	// 同样仅对库未收录的平台生效。思考模型开工具后普遍要求把上一轮的推理内容原样
+	// 回传（DeepSeek 缺失直接 400），而 OpenAI 官方端点会拒绝这个非标准字段，
+	// 库无从替未知平台判断，默认不下发；知情的调用方用这个字段解除限制。
+	SupportsReasoningContent bool
 }
 
 // Provider 是统一的大模型调用接口。
@@ -321,6 +336,19 @@ type Message struct {
 	Role    Role
 	Content []ContentPart
 
+	// ---------- 推理往返字段（仅 Role == RoleAssistant） ----------
+
+	// Reasoning 是该轮 assistant 的推理文本。思考模型在工具循环中普遍要求把
+	// 上一轮的推理内容原样回传（DeepSeek 带 tools 时缺失直接 400，Kimi K3 要求
+	// 回传完整 assistant 消息），OpenAI 兼容路径把它映射为 reasoning_content
+	// （仅对已知接受该字段的平台下发，见 ProviderConfig.SupportsReasoningContent）。
+	// 由 ChatResponse.AssistantMessage 自动填充；不需要回传时可置空以节省输入 token。
+	Reasoning string
+
+	// ThinkingBlocks 是 Anthropic 签发的思考块（含签名或加密数据），
+	// 开启思考并使用工具时必须原样回传，否则平台拒绝请求；其他平台忽略该字段。
+	ThinkingBlocks []ThinkingBlock
+
 	// ---------- Tool Use 相关字段 ----------
 
 	// ToolCalls 仅在 Role == RoleAssistant 时有意义，
@@ -330,6 +358,22 @@ type Message struct {
 	// ToolCallID 仅在 Role == RoleTool 时有意义，
 	// 用于将工具执行结果关联到对应的 ToolCall。
 	ToolCallID string
+
+	// ToolName 仅在 Role == RoleTool 时有意义：被调用的函数名。
+	// Gemini 的 functionResponse 要求携带与调用一致的函数名；留空时库会在同一
+	// 请求的历史中按 ToolCallID 反查，用 ToolResultMessageFor 构造可免去反查。
+	ToolName string
+}
+
+// ThinkingBlock 是平台签发的一段思考块，需在后续轮次原样回传（当前仅 Anthropic）。
+// 平台按 Thinking 与 Signature 校验一致性，二者不得改写、拆分或合并。
+type ThinkingBlock struct {
+	// Thinking 是可读的思考文本；平台省略显示时可能为空但 Signature 仍在。
+	Thinking string
+	// Signature 是平台对该思考块的签名。
+	Signature string
+	// Redacted 是加密思考块（redacted_thinking）的数据，非空时 Thinking 与 Signature 为空。
+	Redacted string
 }
 
 // ChatResponse 是非流式对话的完整响应。
@@ -339,6 +383,9 @@ type ChatResponse struct {
 	FinishReason string // "stop", "length", "tool_calls" 等
 	Usage        Usage
 	Metadata     ResponseMetadata
+
+	// ThinkingBlocks 是 Anthropic 返回的带签名思考块，语义见 Message.ThinkingBlocks。
+	ThinkingBlocks []ThinkingBlock
 
 	// Parts 承载非文本输出（如图像生成结果），复用 ContentPart 载体：
 	// 图像为 ImageData + MIMEType。纯文本回复时为 nil，文本始终在 Content。
@@ -361,14 +408,20 @@ func (r *ChatResponse) HasToolCalls() bool {
 // AssistantMessage 将本次响应转换为可追加到对话历史的 assistant Message。
 // 在 Tool Use 多轮循环中，需要将模型的 tool_calls 响应原样回传，
 // 此方法简化了这一步骤。非文本输出（Parts）一并并入消息内容。
+//
+// 推理内容（Reasoning / ThinkingBlocks）与工具调用上的 ThoughtSignature 一并携带：
+// 思考模型在工具循环中要求回传这些内容，各协议映射只对接受它们的平台下发。
+// 不需要回传推理文本时，调用方可自行清空返回消息的 Reasoning。
 func (r *ChatResponse) AssistantMessage() Message {
 	content := make([]ContentPart, 0, 1+len(r.Parts))
 	content = append(content, TextPart(r.Content))
 	content = append(content, r.Parts...)
 	return Message{
-		Role:      RoleAssistant,
-		Content:   content,
-		ToolCalls: r.ToolCalls,
+		Role:           RoleAssistant,
+		Content:        content,
+		Reasoning:      r.Reasoning,
+		ThinkingBlocks: slices.Clone(r.ThinkingBlocks),
+		ToolCalls:      r.ToolCalls,
 	}
 }
 
@@ -449,6 +502,12 @@ type FunctionDef struct {
 	// Parameters 定义函数的参数 JSON Schema。
 	// 推荐使用 ParamSchema 构建，也可直接传入 map[string]any / json.RawMessage。
 	Parameters any
+
+	// Strict 请求平台按 schema 严格约束工具入参（OpenAI 兼容路径的 strict、
+	// Anthropic 的 strict）。nil 表示不下发、沿用平台默认；不支持该字段的
+	// 原生路径（Gemini）忽略。严格模式对 schema 有额外要求（如 OpenAI 要求
+	// 全部属性进 required 且 additionalProperties 为 false），由平台校验。
+	Strict *bool
 }
 
 // ToolCall 是模型返回的一次工具调用请求。
@@ -459,6 +518,10 @@ type ToolCall struct {
 
 	// Function 包含要调用的函数名和参数。
 	Function FunctionCall
+
+	// ThoughtSignature 是 Gemini 3 随 functionCall 签发的不透明签名，
+	// 回传该调用时必须原样携带，缺失时平台返回 400；其他平台为空。
+	ThoughtSignature string
 }
 
 // FunctionCall 是模型请求调用的具体函数信息。
@@ -529,12 +592,21 @@ func (f ToolChoiceFunction) applyToolChoice(req *openai.ChatCompletionRequest) e
 
 // ToolResultMessage 是构建工具执行结果消息的便捷函数。
 // toolCallID 必须与对应 ToolCall.ID 一致。
+// 有 ToolCall 在手时优先用 ToolResultMessageFor，它会一并带上函数名。
 func ToolResultMessage(toolCallID, content string) Message {
 	return Message{
 		Role:       RoleTool,
 		Content:    []ContentPart{TextPart(content)},
 		ToolCallID: toolCallID,
 	}
+}
+
+// ToolResultMessageFor 按对应的 ToolCall 构建工具执行结果消息，
+// 同时携带 ToolCallID 与函数名（Gemini functionResponse 必需）。
+func ToolResultMessageFor(call ToolCall, content string) Message {
+	msg := ToolResultMessage(call.ID, content)
+	msg.ToolName = call.Function.Name
+	return msg
 }
 
 // ToolResultMessageJSON 与 ToolResultMessage 相同，但自动将 result 序列化为 JSON。
@@ -544,6 +616,16 @@ func ToolResultMessageJSON(toolCallID string, result any) (Message, error) {
 		return Message{}, fmt.Errorf("marshal tool result: %w", err)
 	}
 	return ToolResultMessage(toolCallID, string(data)), nil
+}
+
+// ToolResultMessageJSONFor 与 ToolResultMessageFor 相同，但自动将 result 序列化为 JSON。
+func ToolResultMessageJSONFor(call ToolCall, result any) (Message, error) {
+	msg, err := ToolResultMessageJSON(call.ID, result)
+	if err != nil {
+		return Message{}, err
+	}
+	msg.ToolName = call.Function.Name
+	return msg, nil
 }
 
 // ============================================================
@@ -589,6 +671,13 @@ type StreamChunk struct {
 	ReasoningDelta string // 增量推理文本
 	FinishReason   string // 非空时表示流结束
 
+	// ThinkingSignature 是 Anthropic 对当前思考块的签名，随该块结束时到达一次；
+	// 非空表示"此前累积的 ReasoningDelta 构成一个完整思考块"。回传见 Message.ThinkingBlocks。
+	ThinkingSignature string
+
+	// RedactedThinking 是 Anthropic 整块到达的加密思考块数据，语义见 ThinkingBlock.Redacted。
+	RedactedThinking string
+
 	// Model 是响应侧回传的实际模型名（请求未指定 model 时即 provider 的默认模型），
 	// 通常仅部分 chunk 携带非空值；计费按最后一个非空值采用。
 	Model string
@@ -618,6 +707,9 @@ type ToolCallDelta struct {
 	Index    int    // tool call 在列表中的索引
 	ID       string // 仅在首个 chunk 中非空
 	Function FunctionCallDelta
+
+	// ThoughtSignature 是 Gemini 3 随 functionCall 下发的签名，语义见 ToolCall.ThoughtSignature。
+	ThoughtSignature string
 }
 
 // FunctionCallDelta 是流式模式下函数调用的增量片段。
@@ -680,11 +772,12 @@ func (r *StreamReader) Close() error {
 type openaiProvider struct {
 	name  ProviderName
 	model string
-	// supportsReasoningEffort 是 ProviderConfig 同名字段的副本。
+	// supportsReasoningEffort / supportsReasoningContent 是 ProviderConfig 同名字段的副本。
 	// 这里只保存调用方的声明、不保存解析结果：内置映射表始终优先，
 	// 零值因此等价于"完全按库内映射表判定"，与不使用该声明时的行为一致。
-	supportsReasoningEffort bool
-	client                  *openai.Client
+	supportsReasoningEffort  bool
+	supportsReasoningContent bool
+	client                   *openai.Client
 }
 
 // Validate reports missing required ProviderConfig fields.
@@ -733,10 +826,11 @@ func NewProvider(cfg ProviderConfig) (Provider, error) {
 	ocfg.HTTPClient = httpClient
 
 	return &openaiProvider{
-		name:                    cfg.Name,
-		model:                   cfg.Model,
-		supportsReasoningEffort: cfg.SupportsReasoningEffort,
-		client:                  openai.NewClientWithConfig(ocfg),
+		name:                     cfg.Name,
+		model:                    cfg.Model,
+		supportsReasoningEffort:  cfg.SupportsReasoningEffort,
+		supportsReasoningContent: cfg.SupportsReasoningContent,
+		client:                   openai.NewClientWithConfig(ocfg),
 	}, nil
 }
 
@@ -890,9 +984,13 @@ func (p *openaiProvider) buildRequest(req *ChatRequest) (openai.ChatCompletionRe
 		model = p.model
 	}
 
+	support := resolveThinkingSupport(p.name, thinkingSupport{
+		effort:        p.supportsReasoningEffort,
+		reasoningEcho: p.supportsReasoningContent,
+	})
 	msgs := make([]openai.ChatCompletionMessage, 0, len(req.Messages))
 	for _, m := range req.Messages {
-		msg, err := buildOpenAIMessage(m)
+		msg, err := buildOpenAIMessage(m, support.reasoningEcho)
 		if err != nil {
 			return openai.ChatCompletionRequest{}, err
 		}
@@ -904,9 +1002,7 @@ func (p *openaiProvider) buildRequest(req *ChatRequest) (openai.ChatCompletionRe
 		Messages: msgs,
 	}
 
-	if req.MaxTokens > 0 {
-		oReq.MaxTokens = req.MaxTokens
-	}
+	applyMaxTokens(&oReq, p.name, req.MaxTokens)
 	if req.Temperature != nil {
 		oReq.Temperature = *req.Temperature
 	}
@@ -923,24 +1019,11 @@ func (p *openaiProvider) buildRequest(req *ChatRequest) (openai.ChatCompletionRe
 		oReq.N = req.CandidateCount
 	}
 
-	// 构建 tools
-	if len(req.Tools) > 0 {
-		oReq.Tools = make([]openai.Tool, 0, len(req.Tools))
-		for _, t := range req.Tools {
-			if t.WebSearch != nil {
-				return openai.ChatCompletionRequest{}, fmt.Errorf(
-					"%w: %s does not support native web search tools", ErrInvalidRequest, p.name)
-			}
-			oReq.Tools = append(oReq.Tools, openai.Tool{
-				Type: openai.ToolTypeFunction,
-				Function: &openai.FunctionDefinition{
-					Name:        t.Function.Name,
-					Description: t.Function.Description,
-					Parameters:  t.Function.Parameters,
-				},
-			})
-		}
+	tools, err := buildOpenAITools(p.name, req.Tools)
+	if err != nil {
+		return openai.ChatCompletionRequest{}, err
 	}
+	oReq.Tools = tools
 
 	// 构建 tool_choice
 	if req.ToolChoice != nil {
@@ -953,7 +1036,7 @@ func (p *openaiProvider) buildRequest(req *ChatRequest) (openai.ChatCompletionRe
 		oReq.ParallelToolCalls = req.ParallelToolCalls
 	}
 
-	if err := applyThinking(&oReq, p, req.Thinking); err != nil {
+	if err := applyThinking(&oReq, p.name, support, req.Thinking); err != nil {
 		return openai.ChatCompletionRequest{}, err
 	}
 	if err := applyResponseFormat(&oReq, req.ResponseFormat); err != nil {
@@ -990,36 +1073,69 @@ func usageFromOpenAI(usage openai.Usage) Usage {
 	}
 }
 
-// thinkingApplier 把统一 Thinking 写入该平台的 go-openai 类型化请求字段。
-// thinking 已通过支持范围校验，实现方只需处理自己映射的字段。
-type thinkingApplier func(*openai.ChatCompletionRequest, *Thinking)
+// maxCompletionTokensProviders 是要求用 max_completion_tokens 表达输出上限的平台：
+// OpenAI 官方与 Azure 的推理模型已拒绝 max_tokens。其余 OpenAI 兼容平台
+// （DeepSeek、百炼、智谱、方舟等）普遍只认 max_tokens，不在此列。
+var maxCompletionTokensProviders = map[ProviderName]struct{}{
+	ProviderOpenAI:      {},
+	ProviderAzureOpenAI: {},
+}
 
-// thinkingAppliers 按 provider 名登记类型化字段的厂商专属推理映射，是"哪些平台
-// 需要改写请求结构体"的唯一来源；实现放在各平台自己的 compat_*.go 里。
-// 初始化后只读，可被并发的请求路径同时查表。
-var thinkingAppliers = map[ProviderName]thinkingApplier{
-	ProviderDeepSeek: applyDeepSeekThinking,
+func usesMaxCompletionTokens(name ProviderName) bool {
+	_, ok := maxCompletionTokensProviders[name]
+	return ok
+}
+
+// applyMaxTokens 按平台把输出上限写到 max_completion_tokens 或 max_tokens。
+// OpenAI 官方（含 Azure）的推理模型已拒绝 max_tokens；其余兼容平台普遍只认 max_tokens。
+func applyMaxTokens(req *openai.ChatCompletionRequest, name ProviderName, maxTokens int) {
+	if maxTokens <= 0 {
+		return
+	}
+	if usesMaxCompletionTokens(name) {
+		req.MaxCompletionTokens = maxTokens
+		return
+	}
+	req.MaxTokens = maxTokens //nolint:staticcheck // 非 OpenAI 官方的兼容平台只认 max_tokens
+}
+
+// buildOpenAITools 把统一工具声明映射为 OpenAI 函数工具；原生搜索工具在该协议下没有对应形态。
+func buildOpenAITools(name ProviderName, tools []Tool) ([]openai.Tool, error) {
+	if len(tools) == 0 {
+		return nil, nil
+	}
+	out := make([]openai.Tool, 0, len(tools))
+	for _, t := range tools {
+		if t.WebSearch != nil {
+			return nil, fmt.Errorf("%w: %s does not support native web search tools", ErrInvalidRequest, name)
+		}
+		def := &openai.FunctionDefinition{
+			Name:        t.Function.Name,
+			Description: t.Function.Description,
+			Parameters:  t.Function.Parameters,
+		}
+		if t.Function.Strict != nil {
+			def.Strict = *t.Function.Strict
+		}
+		out = append(out, openai.Tool{Type: openai.ToolTypeFunction, Function: def})
+	}
+	return out, nil
 }
 
 // applyThinking 把统一 Thinking 映射为 OpenAI 兼容平台的推理参数。
 // 无映射的字段被拦下并返回 ErrInvalidRequest，不静默丢弃。
-// 支持范围按 resolveThinkingSupport 解析：内置预设取 thinkingSupportByProvider，
-// 未收录的平台取调用方经 ProviderConfig.SupportsReasoningEffort 的声明。
-func applyThinking(req *openai.ChatCompletionRequest, p *openaiProvider, thinking *Thinking) error {
-	if req == nil || p == nil || thinking == nil {
+// support 由 resolveThinkingSupport 解析：内置预设取 thinkingSupportByProvider，
+// 未收录的平台取调用方经 ProviderConfig 的声明。
+//
+// Enabled 在各平台落在 go-openai 无法表达的顶层扩展字段上（DeepSeek / 智谱 / Kimi /
+// 方舟的 thinking、百炼的 enable_thinking），由 extrafields.go 在发送前注入；
+// 这里只处理类型化字段 reasoning_effort。
+func applyThinking(req *openai.ChatCompletionRequest, name ProviderName, support thinkingSupport, thinking *Thinking) error {
+	if req == nil || thinking == nil {
 		return nil
 	}
-	providerName := p.name
-	support := resolveThinkingSupport(providerName, thinkingSupport{effort: p.supportsReasoningEffort})
-	if err := validateThinkingWith(providerName, support, thinking); err != nil {
+	if err := validateThinkingWith(name, support, thinking); err != nil {
 		return err
-	}
-
-	// Enabled 在各平台落在互不相同的私有字段上，只能按平台映射：
-	// 能用 go-openai 类型化字段表达的走这里的 thinkingAppliers，
-	// 只能以顶层扩展字段下发的（方舟 thinking、百炼 enable_thinking）走 extrafields.go。
-	if apply, ok := thinkingAppliers[providerName]; ok {
-		apply(req, thinking)
 	}
 
 	// Effort 走 OpenAI 标准的 reasoning_effort，所有支持该字段的平台共用一套映射——
@@ -1070,9 +1186,16 @@ func applyResponseFormat(req *openai.ChatCompletionRequest, format *ResponseForm
 	return nil
 }
 
-func buildOpenAIMessage(m Message) (openai.ChatCompletionMessage, error) {
+// buildOpenAIMessage 把统一 Message 映射为 OpenAI 兼容消息。
+// echoReasoning 为 true 时把 assistant 的 Reasoning 写入 reasoning_content——
+// 该字段是 DeepSeek / Kimi / 百炼 / 智谱等平台的扩展，OpenAI 官方端点会拒绝，
+// 因此只对已知接受它的平台下发。
+func buildOpenAIMessage(m Message, echoReasoning bool) (openai.ChatCompletionMessage, error) {
 	om := openai.ChatCompletionMessage{
 		Role: string(m.Role),
+	}
+	if m.Role == RoleAssistant && echoReasoning {
+		om.ReasoningContent = m.Reasoning
 	}
 
 	for _, part := range m.Content {

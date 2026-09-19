@@ -54,16 +54,6 @@ func rawJSONArgument(value string) (any, error) {
 	return out, nil
 }
 
-func appendSystemText(system *string, text string) {
-	if text == "" {
-		return
-	}
-	if *system != "" {
-		*system += "\n"
-	}
-	*system += text
-}
-
 func nativeStatusError(provider ProviderName, statusCode int, status, message string) error {
 	code := CodeFromHTTPStatus(statusCode)
 	return &ProviderError{

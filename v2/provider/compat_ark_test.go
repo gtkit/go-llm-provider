@@ -43,7 +43,7 @@ func TestArkPresetRegistered(t *testing.T) {
 	preset, ok := AllPresets()[ProviderArk]
 	require.True(t, ok)
 	assert.Equal(t, "https://ark.cn-beijing.volces.com/api/v3", preset.BaseURL)
-	assert.Equal(t, "doubao-seed-2-0-pro-260215", preset.DefaultModel)
+	assert.Equal(t, "doubao-seed-2-1-pro-260628", preset.DefaultModel)
 	assert.Equal(t, "doubao-embedding-text-240515", preset.EmbeddingModel)
 
 	caps := preset.Capabilities
@@ -106,7 +106,7 @@ func TestArkExtraFields(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			assert.Equal(t, tc.want, arkExtraFields(tc.req))
+			assert.Equal(t, tc.want, thinkingTypeExtraFields(tc.req))
 		})
 	}
 }

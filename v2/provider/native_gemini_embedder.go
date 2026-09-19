@@ -13,6 +13,7 @@ type geminiEmbedder struct {
 	baseURL    string
 	model      string
 	httpClient HTTPDoer
+	headers    map[string]string
 }
 
 // NewGeminiEmbedder creates a native Google Gemini Embedder.
@@ -27,7 +28,29 @@ func NewGeminiEmbedder(cfg NativeProviderConfig) (Embedder, error) {
 		baseURL:    normalized.BaseURL,
 		model:      normalized.Model,
 		httpClient: normalized.HTTPClient,
+		headers:    normalized.Headers,
 	}, nil
+}
+
+// geminiTaskTypes 是统一 EmbeddingTaskType 到 Gemini task_type 枚举的映射。
+// 注意 gemini-embedding-2 不支持 task_type（任务意图写进文本），由平台报错。
+var geminiTaskTypes = map[EmbeddingTaskType]string{
+	EmbeddingTaskQuery:          "RETRIEVAL_QUERY",
+	EmbeddingTaskDocument:       "RETRIEVAL_DOCUMENT",
+	EmbeddingTaskSimilarity:     "SEMANTIC_SIMILARITY",
+	EmbeddingTaskClassification: "CLASSIFICATION",
+	EmbeddingTaskClustering:     "CLUSTERING",
+}
+
+func geminiTaskType(task EmbeddingTaskType) (string, error) {
+	if task == "" {
+		return "", nil
+	}
+	mapped, ok := geminiTaskTypes[task]
+	if !ok {
+		return "", fmt.Errorf("%w: unsupported gemini embedding task type %q", ErrInvalidRequest, task)
+	}
+	return mapped, nil
 }
 
 func (e *geminiEmbedder) Name() ProviderName {
@@ -48,17 +71,22 @@ func (e *geminiEmbedder) Embed(ctx context.Context, req *EmbeddingRequest) (*Emb
 		return nil, ErrEmptyEmbeddingInput
 	}
 
+	taskType, err := geminiTaskType(req.TaskType)
+	if err != nil {
+		return nil, err
+	}
 	model := firstString(req.Model, e.model)
 	if len(req.Input) == 1 {
-		return e.embedContent(ctx, model, req)
+		return e.embedContent(ctx, model, taskType, req)
 	}
-	return e.batchEmbedContents(ctx, model, req)
+	return e.batchEmbedContents(ctx, model, taskType, req)
 }
 
-func (e *geminiEmbedder) embedContent(ctx context.Context, model string, req *EmbeddingRequest) (*EmbeddingResponse, error) {
+func (e *geminiEmbedder) embedContent(ctx context.Context, model, taskType string, req *EmbeddingRequest) (*EmbeddingResponse, error) {
 	nativeReq := geminiEmbeddingRequest{
 		Model:                geminiModelResource(model),
 		Content:              geminiEmbeddingContent(req.Input[0]),
+		TaskType:             taskType,
 		OutputDimensionality: req.Dimensions,
 	}
 
@@ -88,12 +116,13 @@ func (e *geminiEmbedder) embedContent(ctx context.Context, model string, req *Em
 	}, nil
 }
 
-func (e *geminiEmbedder) batchEmbedContents(ctx context.Context, model string, req *EmbeddingRequest) (*EmbeddingResponse, error) {
+func (e *geminiEmbedder) batchEmbedContents(ctx context.Context, model, taskType string, req *EmbeddingRequest) (*EmbeddingResponse, error) {
 	requests := make([]geminiEmbeddingRequest, 0, len(req.Input))
 	for _, input := range req.Input {
 		requests = append(requests, geminiEmbeddingRequest{
 			Model:                geminiModelResource(model),
 			Content:              geminiEmbeddingContent(input),
+			TaskType:             taskType,
 			OutputDimensionality: req.Dimensions,
 		})
 	}
@@ -135,6 +164,7 @@ func (e *geminiEmbedder) batchEmbedContents(ctx context.Context, model string, r
 func (e *geminiEmbedder) setHeaders(req *http.Request) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-goog-api-key", e.apiKey)
+	applyExtraHeaders(req, e.headers)
 }
 
 func (e *geminiEmbedder) modelURL(model, action string) string {

@@ -120,18 +120,25 @@ func TestAnthropicWebSearchRejectsFunctionToolMix(t *testing.T) {
 	require.ErrorIs(t, err, ErrInvalidRequest)
 }
 
-func TestAnthropicWebSearchRejectsStructuredOutput(t *testing.T) {
+// TestAnthropicWebSearchAllowsStructuredOutput 锁定"原生搜索可与结构化输出并存"：
+// 结构化输出已改走 output_config.format，不再占用 tools / tool_choice，
+// 与服务端搜索工具没有冲突，请求构建阶段不得再拒绝该组合。
+func TestAnthropicWebSearchAllowsStructuredOutput(t *testing.T) {
 	t.Parallel()
 
-	p, err := NewAnthropicProvider(NativeProviderConfig{APIKey: "test-key"})
-	require.NoError(t, err)
-
-	_, err = p.Chat(t.Context(), &ChatRequest{
+	p := &anthropicProvider{model: "claude-x"}
+	req, _, err := p.buildRequest(&ChatRequest{
 		Messages:       []Message{UserText("hi")},
 		Tools:          []Tool{WebSearchTool()},
 		ResponseFormat: JSONObjectFormat(),
-	})
-	require.ErrorIs(t, err, ErrInvalidRequest)
+	}, false)
+	require.NoError(t, err)
+	require.Len(t, req.Tools, 1)
+	assert.Equal(t, "web_search", req.Tools[0].Name)
+	assert.Nil(t, req.ToolChoice)
+	require.NotNil(t, req.OutputConfig)
+	require.NotNil(t, req.OutputConfig.Format)
+	assert.Equal(t, "json_schema", req.OutputConfig.Format.Type)
 }
 
 func TestAnthropicProviderChatPauseTurnReturnsError(t *testing.T) {

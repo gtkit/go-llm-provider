@@ -30,6 +30,10 @@ type geminiPart struct {
 
 	// Thought 标记该 part 是思考摘要而非正文，仅出现在响应中。
 	Thought bool `json:"thought,omitempty"`
+
+	// ThoughtSignature 是 Gemini 3 随 functionCall 签发的不透明签名，
+	// 回传该调用时必须原样携带，缺失时平台返回 400。
+	ThoughtSignature string `json:"thoughtSignature,omitempty"`
 }
 
 type geminiInlineData struct {
@@ -37,6 +41,9 @@ type geminiInlineData struct {
 	Data     string `json:"data"`
 }
 
+// geminiGenerationConfig 是 generationConfig 参数。结构化输出走 responseJsonSchema：
+// 它接受标准 JSON Schema（含 additionalProperties 等关键字），比只认 OpenAPI 子集的
+// responseSchema 覆盖面更广。
 type geminiGenerationConfig struct {
 	MaxOutputTokens    int                   `json:"maxOutputTokens,omitempty"`
 	CandidateCount     int                   `json:"candidateCount,omitempty"`
@@ -45,14 +52,16 @@ type geminiGenerationConfig struct {
 	TopP               *float32              `json:"topP,omitempty"`
 	StopSequences      []string              `json:"stopSequences,omitempty"`
 	ResponseMIMEType   string                `json:"responseMimeType,omitempty"`
-	ResponseSchema     any                   `json:"responseSchema,omitempty"`
+	ResponseJSONSchema any                   `json:"responseJsonSchema,omitempty"`
 	ResponseModalities []string              `json:"responseModalities,omitempty"`
 	ThinkingConfig     *geminiThinkingConfig `json:"thinkingConfig,omitempty"`
 }
 
-// geminiThinkingConfig 是 generationConfig.thinkingConfig 参数。
+// geminiThinkingConfig 是 generationConfig.thinkingConfig 参数：
+// thinkingLevel 是 Gemini 3 系的档位口径，thinkingBudget 是 2.5 系的预算口径。
 type geminiThinkingConfig struct {
-	ThinkingBudget *int `json:"thinkingBudget,omitempty"`
+	ThinkingLevel  string `json:"thinkingLevel,omitempty"`
+	ThinkingBudget *int   `json:"thinkingBudget,omitempty"`
 }
 
 // geminiThinkingBudget* 是 thinkingBudget 的两个特殊取值。
@@ -62,22 +71,32 @@ const (
 )
 
 // geminiThinkingParam 把统一 Thinking 映射为 Gemini 的 thinkingConfig。
-// 只处理 Enabled 与 BudgetTokens——Effort 无对应参数，已由 validateThinking 拦下。
 //
-// 未给出预算时借用平台自身的语义取值表达意图：关闭用 0、开启用 -1
-// （由模型动态决定预算），不代为推导具体数值。
-// 预算取值是否被目标模型接受由平台校验。
+//   - Effort → thinkingLevel（Gemini 3 系推荐口径），与 BudgetTokens 互斥；
+//   - BudgetTokens → thinkingBudget，原样透传；
+//   - Enabled=false 且无预算 → thinkingBudget 0（禁用，仅 2.5 系可关闭，3 系由平台报错）；
+//   - Enabled=true 且无预算无档位 → thinkingBudget -1（由模型动态决定）。
+//
+// 取值是否被目标模型接受由平台校验，本库不代为推导具体数值。
 func geminiThinkingParam(thinking *Thinking) (*geminiThinkingConfig, error) {
 	if thinking == nil {
 		return nil, nil
 	}
+	if thinking.Effort != "" && thinking.BudgetTokens != nil {
+		return nil, fmt.Errorf(
+			"%w: gemini thinking accepts either Effort (thinkingLevel) or BudgetTokens (thinkingBudget), not both",
+			ErrInvalidRequest)
+	}
 	if thinking.Enabled != nil && !*thinking.Enabled {
-		if thinking.BudgetTokens != nil {
+		if thinking.BudgetTokens != nil || thinking.Effort != "" {
 			return nil, fmt.Errorf(
-				"%w: gemini thinking cannot set BudgetTokens while Enabled is false", ErrInvalidRequest)
+				"%w: gemini thinking cannot set BudgetTokens or Effort while Enabled is false", ErrInvalidRequest)
 		}
 		budget := geminiThinkingBudgetDisabled
 		return &geminiThinkingConfig{ThinkingBudget: &budget}, nil
+	}
+	if thinking.Effort != "" {
+		return &geminiThinkingConfig{ThinkingLevel: thinking.Effort}, nil
 	}
 	if thinking.BudgetTokens != nil {
 		budget := *thinking.BudgetTokens
@@ -258,6 +277,7 @@ func usageFromGemini(usage geminiUsage) Usage {
 type geminiEmbeddingRequest struct {
 	Model                string        `json:"model,omitempty"`
 	Content              geminiContent `json:"content"`
+	TaskType             string        `json:"taskType,omitempty"`
 	OutputDimensionality *int          `json:"outputDimensionality,omitempty"`
 }
 
@@ -379,12 +399,16 @@ func geminiAssistantParts(msg Message) ([]geminiPart, error) {
 				Name: call.Function.Name,
 				Args: args,
 			},
+			// Gemini 3 校验回传的签名，必须与响应中的 functionCall 一一对应。
+			ThoughtSignature: call.ThoughtSignature,
 		})
 	}
 	return parts, nil
 }
 
-func geminiToolResponsePart(msg Message) geminiPart {
+// geminiToolResponsePart 构造 functionResponse：name 必须是被调用的函数名
+// （Gemini 3 同时校验 id 与 name），非 JSON 结果包进 content 字段。
+func geminiToolResponsePart(msg Message, name string) geminiPart {
 	text := contentText(msg.Content)
 	response, err := rawJSONArgument(text)
 	if err != nil {
@@ -393,7 +417,7 @@ func geminiToolResponsePart(msg Message) geminiPart {
 	return geminiPart{
 		FunctionResponse: &geminiFunctionResponse{
 			ID:       msg.ToolCallID,
-			Name:     msg.ToolCallID,
+			Name:     name,
 			Response: response,
 		},
 	}
@@ -507,7 +531,7 @@ func applyGeminiResponseFormat(cfg *geminiGenerationConfig, format *ResponseForm
 		cfg.ResponseMIMEType = "application/json"
 	case ResponseFormatJSONSchema:
 		cfg.ResponseMIMEType = "application/json"
-		cfg.ResponseSchema = format.Schema
+		cfg.ResponseJSONSchema = format.Schema
 	default:
 		return nil, fmt.Errorf("%w: unsupported gemini response format %q", ErrInvalidRequest, format.Type)
 	}
@@ -583,8 +607,11 @@ func buildGeminiToolConfig(req *ChatRequest) (*geminiToolConfig, error) {
 }
 
 func fillGeminiContents(out *geminiRequest, messages []Message) error {
+	// ToolCallID → 函数名：工具结果消息未带 ToolName 时，从同一请求内先前的
+	// assistant 工具调用反查，functionResponse.name 才能与调用一致。
+	toolNames := make(map[string]string)
 	for _, msg := range messages {
-		if err := appendGeminiMessage(out, msg); err != nil {
+		if err := appendGeminiMessage(out, msg, toolNames); err != nil {
 			return err
 		}
 	}
@@ -594,7 +621,7 @@ func fillGeminiContents(out *geminiRequest, messages []Message) error {
 	return nil
 }
 
-func appendGeminiMessage(out *geminiRequest, msg Message) error {
+func appendGeminiMessage(out *geminiRequest, msg Message, toolNames map[string]string) error {
 	switch msg.Role {
 	case RoleSystem:
 		parts := geminiTextParts(msg.Content)
@@ -605,6 +632,9 @@ func appendGeminiMessage(out *geminiRequest, msg Message) error {
 		parts, err := geminiParts(msg.Content)
 		if msg.Role == RoleAssistant {
 			parts, err = geminiAssistantParts(msg)
+			for _, call := range msg.ToolCalls {
+				toolNames[call.ID] = call.Function.Name
+			}
 		}
 		if err != nil {
 			return err
@@ -614,10 +644,15 @@ func appendGeminiMessage(out *geminiRequest, msg Message) error {
 			Parts: parts,
 		})
 	case RoleTool:
-		part := geminiToolResponsePart(msg)
+		name := firstString(msg.ToolName, toolNames[msg.ToolCallID])
+		if name == "" {
+			return fmt.Errorf(
+				"%w: gemini function response for call %q needs the function name; set Message.ToolName (see ToolResultMessageFor)",
+				ErrInvalidRequest, msg.ToolCallID)
+		}
 		out.Contents = append(out.Contents, geminiContent{
 			Role:  "function",
-			Parts: []geminiPart{part},
+			Parts: []geminiPart{geminiToolResponsePart(msg, name)},
 		})
 	default:
 		return fmt.Errorf("%w: unsupported gemini role %q", ErrInvalidRequest, msg.Role)
@@ -661,6 +696,7 @@ func geminiResponseContent(resp geminiResponse) (geminiParsedContent, error) {
 					Name:      part.FunctionCall.Name,
 					Arguments: string(arguments),
 				},
+				ThoughtSignature: part.ThoughtSignature,
 			})
 		}
 		if part.InlineData != nil {

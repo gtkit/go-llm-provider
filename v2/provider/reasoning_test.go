@@ -8,40 +8,73 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestBuildRequestThinkingDeepSeekEnabled(t *testing.T) {
+// TestBuildRequestThinkingDeepSeekEffort 锁定 DeepSeek 的档位口径：Effort 走类型化的
+// reasoning_effort；Enabled 落在顶层 thinking 扩展字段，由注入通道而非请求结构体承载。
+func TestBuildRequestThinkingDeepSeekEffort(t *testing.T) {
 	t.Parallel()
 
 	enabled := true
-	p := &openaiProvider{name: ProviderDeepSeek, model: "deepseek-chat"}
+	p := &openaiProvider{name: ProviderDeepSeek, model: "deepseek-v4-flash"}
 
 	req, err := p.buildRequest(&ChatRequest{
 		Messages: []Message{UserText("hello")},
-		Thinking: &Thinking{Enabled: &enabled},
+		Thinking: &Thinking{Enabled: &enabled, Effort: ThinkingEffortMax},
 	})
 	require.NoError(t, err)
-	require.NotNil(t, req.ChatTemplateKwargs)
-	assert.Equal(t, true, req.ChatTemplateKwargs["enable_thinking"])
+	assert.Equal(t, "max", req.ReasoningEffort)
+	// 官方端点不识别 vLLM 约定的 chat_template_kwargs，不得再下发。
+	assert.Nil(t, req.ChatTemplateKwargs)
 }
 
-func TestBuildRequestThinkingDeepSeekDisabled(t *testing.T) {
+// TestThinkingTypeExtraFields 覆盖顶层 thinking 字段的共享映射，
+// 以及它在四个同形平台上都已登记。
+func TestThinkingTypeExtraFields(t *testing.T) {
 	t.Parallel()
 
-	enabled := false
-	p := &openaiProvider{name: ProviderDeepSeek, model: "deepseek-chat"}
+	tests := []struct {
+		name string
+		req  *ChatRequest
+		want map[string]any
+	}{
+		{name: "nil request", req: nil},
+		{name: "no thinking", req: &ChatRequest{}},
+		// Effort 走 go-openai 的类型化 reasoning_effort 字段，不需要顶层注入
+		{name: "effort only", req: &ChatRequest{Thinking: &Thinking{Effort: ThinkingEffortLow}}},
+		{
+			name: "enabled",
+			req:  &ChatRequest{Thinking: &Thinking{Enabled: boolPtr(true)}},
+			want: map[string]any{"thinking": map[string]any{"type": "enabled"}},
+		},
+		{
+			name: "disabled",
+			req:  &ChatRequest{Thinking: &Thinking{Enabled: boolPtr(false)}},
+			want: map[string]any{"thinking": map[string]any{"type": "disabled"}},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, thinkingTypeExtraFields(tc.req))
+		})
+	}
 
-	req, err := p.buildRequest(&ChatRequest{
-		Messages: []Message{UserText("hello")},
-		Thinking: &Thinking{Enabled: &enabled},
-	})
-	require.NoError(t, err)
-	require.NotNil(t, req.ChatTemplateKwargs)
-	assert.Equal(t, false, req.ChatTemplateKwargs["enable_thinking"])
+	enabled := true
+	for _, name := range []ProviderName{ProviderDeepSeek, ProviderZhipu, ProviderMoonshot, ProviderArk} {
+		t.Run(string(name), func(t *testing.T) {
+			t.Parallel()
+			require.True(t, needsExtraFields(name))
+			ctx := withExtraFields(t.Context(), name, &ChatRequest{Thinking: &Thinking{Enabled: &enabled}})
+			fields, ok := ctx.Value(extraFieldsCtxKey{}).(map[string]any)
+			require.True(t, ok)
+			assert.Equal(t, map[string]any{"thinking": map[string]any{"type": "enabled"}}, fields)
+		})
+	}
 }
 
 func TestBuildRequestThinkingOpenAIEffort(t *testing.T) {
 	t.Parallel()
 
-	p := &openaiProvider{name: ProviderOpenAI, model: "o4-mini"}
+	p := &openaiProvider{name: ProviderOpenAI, model: "gpt-5.6-terra"}
 
 	req, err := p.buildRequest(&ChatRequest{
 		Messages: []Message{UserText("hello")},
@@ -55,7 +88,7 @@ func TestBuildRequestThinkingUnmappedProviderRejected(t *testing.T) {
 	t.Parallel()
 
 	enabled := true
-	p := &openaiProvider{name: ProviderQianfan, model: "ernie-4.5-turbo-32k"}
+	p := &openaiProvider{name: ProviderQianfan, model: "ernie-5.1"}
 
 	_, err := p.buildRequest(&ChatRequest{
 		Messages: []Message{UserText("hello")},
@@ -71,8 +104,8 @@ func TestBuildRequestThinkingUnmappedFieldRejected(t *testing.T) {
 	t.Parallel()
 
 	budget := 2048
-	// DeepSeek 只映射 Enabled；BudgetTokens 无映射，必须报错而非静默丢弃。
-	p := &openaiProvider{name: ProviderDeepSeek, model: "deepseek-chat"}
+	// DeepSeek 映射 Enabled 与 Effort；BudgetTokens 无映射，必须报错而非静默丢弃。
+	p := &openaiProvider{name: ProviderDeepSeek, model: "deepseek-v4-flash"}
 
 	_, err := p.buildRequest(&ChatRequest{
 		Messages: []Message{UserText("hello")},
@@ -127,12 +160,22 @@ func TestAnthropicThinkingParam(t *testing.T) {
 				want:     nil,
 			},
 			{
-				name:     "仅 Enabled=true 之外都未设置时不下发",
+				name:     "全未设置不下发",
 				thinking: &Thinking{},
 				want:     nil,
 			},
 			{
-				name:     "开启并给出预算",
+				name:     "仅 Effort 不下发 thinking（落在 output_config）",
+				thinking: &Thinking{Effort: ThinkingEffortHigh},
+				want:     nil,
+			},
+			{
+				name:     "开启未给预算：自适应",
+				thinking: &Thinking{Enabled: &enabled},
+				want:     &anthropicThinking{Type: "adaptive"},
+			},
+			{
+				name:     "开启并给出预算：旧式固定预算",
 				thinking: &Thinking{Enabled: &enabled, BudgetTokens: &budget},
 				want:     &anthropicThinking{Type: "enabled", BudgetTokens: 2048},
 			},
@@ -166,10 +209,6 @@ func TestAnthropicThinkingParam(t *testing.T) {
 			thinking *Thinking
 		}{
 			{
-				name:     "开启但缺预算",
-				thinking: &Thinking{Enabled: &enabled},
-			},
-			{
 				name:     "预算为 0（会被 omitempty 吞掉）",
 				thinking: &Thinking{BudgetTokens: &zero},
 			},
@@ -193,13 +232,13 @@ func TestAnthropicThinkingParam(t *testing.T) {
 	})
 }
 
-// TestAnthropicBuildRequestThinking 确认 thinking 参数真的进入请求体，
-// 且 Effort 在 Anthropic 上被拒（该平台无对应参数）。
+// TestAnthropicBuildRequestThinking 确认 thinking 与 output_config.effort 真的进入请求体。
 func TestAnthropicBuildRequestThinking(t *testing.T) {
 	t.Parallel()
 
 	p := &anthropicProvider{model: "claude-x"}
 	budget := 2048
+	enabled := true
 
 	req, _, err := p.buildRequest(&ChatRequest{
 		Messages: []Message{UserText("hi")},
@@ -209,15 +248,22 @@ func TestAnthropicBuildRequestThinking(t *testing.T) {
 	require.NotNil(t, req.Thinking)
 	assert.Equal(t, "enabled", req.Thinking.Type)
 	assert.Equal(t, 2048, req.Thinking.BudgetTokens)
+	assert.Nil(t, req.OutputConfig)
 
-	_, _, err = p.buildRequest(&ChatRequest{
+	req, _, err = p.buildRequest(&ChatRequest{
 		Messages: []Message{UserText("hi")},
-		Thinking: &Thinking{Effort: ThinkingEffortHigh},
+		Thinking: &Thinking{Enabled: &enabled, Effort: ThinkingEffortHigh},
 	}, false)
-	require.ErrorIs(t, err, ErrInvalidRequest)
+	require.NoError(t, err)
+	require.NotNil(t, req.Thinking)
+	assert.Equal(t, "adaptive", req.Thinking.Type)
+	require.NotNil(t, req.OutputConfig)
+	assert.Equal(t, "high", req.OutputConfig.Effort)
+	assert.Nil(t, req.OutputConfig.Format)
 }
 
-// TestGeminiThinkingParam 覆盖 Gemini thinkingConfig 的映射。
+// TestGeminiThinkingParam 覆盖 Gemini thinkingConfig 的映射：
+// Effort → thinkingLevel，BudgetTokens → thinkingBudget；
 // 未给预算时借用平台语义取值：开启用 -1（模型自决）、关闭用 0（禁用）。
 func TestGeminiThinkingParam(t *testing.T) {
 	t.Parallel()
@@ -228,16 +274,19 @@ func TestGeminiThinkingParam(t *testing.T) {
 	tests := []struct {
 		name     string
 		thinking *Thinking
-		// wantNil 为 false 时校验 wantBudget，为 true 时要求不下发 thinkingConfig。
-		wantBudget int
+		// wantNil 为 true 时要求不下发 thinkingConfig；否则校验 wantBudget / wantLevel。
+		wantBudget *int
+		wantLevel  string
 		wantNil    bool
 	}{
 		{name: "nil 不下发", thinking: nil, wantNil: true},
 		{name: "全未设置不下发", thinking: &Thinking{}, wantNil: true},
-		{name: "开启未给预算：动态", thinking: &Thinking{Enabled: &enabled}, wantBudget: -1},
-		{name: "关闭：禁用", thinking: &Thinking{Enabled: &disabled}, wantBudget: 0},
-		{name: "显式预算", thinking: &Thinking{BudgetTokens: &budget}, wantBudget: 2048},
-		{name: "预算 0 即禁用", thinking: &Thinking{BudgetTokens: &zero}, wantBudget: 0},
+		{name: "开启未给预算：动态", thinking: &Thinking{Enabled: &enabled}, wantBudget: intPtr(-1)},
+		{name: "关闭：禁用", thinking: &Thinking{Enabled: &disabled}, wantBudget: intPtr(0)},
+		{name: "显式预算", thinking: &Thinking{BudgetTokens: &budget}, wantBudget: intPtr(2048)},
+		{name: "预算 0 即禁用", thinking: &Thinking{BudgetTokens: &zero}, wantBudget: intPtr(0)},
+		{name: "档位", thinking: &Thinking{Effort: ThinkingEffortHigh}, wantLevel: "high"},
+		{name: "开启并给档位", thinking: &Thinking{Enabled: &enabled, Effort: ThinkingEffortLow}, wantLevel: "low"},
 	}
 
 	for _, tc := range tests {
@@ -250,15 +299,24 @@ func TestGeminiThinkingParam(t *testing.T) {
 				return
 			}
 			require.NotNil(t, got)
-			require.NotNil(t, got.ThinkingBudget)
-			assert.Equal(t, tc.wantBudget, *got.ThinkingBudget)
+			assert.Equal(t, tc.wantBudget, got.ThinkingBudget)
+			assert.Equal(t, tc.wantLevel, got.ThinkingLevel)
 		})
 	}
 
-	t.Run("关闭却给预算被拒", func(t *testing.T) {
+	t.Run("拒绝", func(t *testing.T) {
 		t.Parallel()
-		_, err := geminiThinkingParam(&Thinking{Enabled: &disabled, BudgetTokens: &budget})
-		require.ErrorIs(t, err, ErrInvalidRequest)
+		for name, thinking := range map[string]*Thinking{
+			"关闭却给预算":  {Enabled: &disabled, BudgetTokens: &budget},
+			"关闭却给档位":  {Enabled: &disabled, Effort: ThinkingEffortLow},
+			"档位与预算同设": {Effort: ThinkingEffortLow, BudgetTokens: &budget},
+		} {
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				_, err := geminiThinkingParam(thinking)
+				require.ErrorIs(t, err, ErrInvalidRequest)
+			})
+		}
 	})
 }
 
@@ -282,15 +340,15 @@ func TestGeminiBuildRequestThinkingConfig(t *testing.T) {
 }
 
 // TestAnthropicResponseThinkingBlock 是"思考内容不混入正文"的反证。
-// redacted_thinking 是加密块，其内容不得出现在任何输出字段里。
+// redacted_thinking 是加密块，其内容不得出现在任何文本字段里，但必须原样保留供回传。
 func TestAnthropicResponseThinkingBlock(t *testing.T) {
 	t.Parallel()
 
 	parsed, err := anthropicResponseContent(anthropicResponse{
 		StopReason: "end_turn",
 		Content: []anthropicContentPart{
-			{Type: "thinking", Thinking: "让我想想"},
-			{Type: "redacted_thinking", Text: "ENCRYPTED-MUST-NOT-LEAK"},
+			{Type: "thinking", Thinking: "让我想想", Signature: "sig-1"},
+			{Type: "redacted_thinking", Data: "ENCRYPTED-MUST-NOT-LEAK"},
 			{Type: "text", Text: "答案是 42"},
 		},
 	})
@@ -300,6 +358,10 @@ func TestAnthropicResponseThinkingBlock(t *testing.T) {
 	assert.Equal(t, "让我想想", parsed.Reasoning)
 	assert.NotContains(t, parsed.Text, "ENCRYPTED-MUST-NOT-LEAK")
 	assert.NotContains(t, parsed.Reasoning, "ENCRYPTED-MUST-NOT-LEAK")
+	assert.Equal(t, []ThinkingBlock{
+		{Thinking: "让我想想", Signature: "sig-1"},
+		{Redacted: "ENCRYPTED-MUST-NOT-LEAK"},
+	}, parsed.ThinkingBlocks)
 }
 
 // TestGeminiResponseThoughtPart 是"thought part 不混入正文、且不连带丢弃工具调用"的反证：
@@ -315,7 +377,7 @@ func TestGeminiResponseThoughtPart(t *testing.T) {
 				{Text: "正文"},
 				{Thought: true, FunctionCall: &geminiFunctionCall{
 					Name: "calc", Args: map[string]any{"x": 1},
-				}},
+				}, ThoughtSignature: "ts-1"},
 			}},
 		}},
 	})
@@ -326,6 +388,7 @@ func TestGeminiResponseThoughtPart(t *testing.T) {
 	assert.Equal(t, "tool_calls", parsed.FinishReason)
 	require.Len(t, parsed.ToolCalls, 1, "thought part 上的 functionCall 不得被跳过")
 	assert.Equal(t, "calc", parsed.ToolCalls[0].Function.Name)
+	assert.Equal(t, "ts-1", parsed.ToolCalls[0].ThoughtSignature, "Gemini 3 的签名必须随工具调用保留")
 }
 
 // TestStreamThinkingDelta 覆盖两条原生路径的流式思考增量归位，
@@ -410,15 +473,14 @@ func TestUnsupportedThinkingFieldErrorListsMappedFields(t *testing.T) {
 			wantMentions: []string{"Thinking.BudgetTokens", "Thinking.Effort"},
 		},
 		{
-			name:         "DeepSeek 不支持 Effort，应指向 Enabled",
+			name:         "DeepSeek 不支持 BudgetTokens，应指向 Enabled 与 Effort",
 			provider:     ProviderDeepSeek,
-			thinking:     &Thinking{Effort: ThinkingEffortHigh},
-			wantMentions: []string{"Thinking.Effort", "Thinking.Enabled"},
-			wantAbsent:   []string{"Thinking.BudgetTokens"},
+			thinking:     &Thinking{BudgetTokens: &budget},
+			wantMentions: []string{"Thinking.BudgetTokens", "Thinking.Enabled", "Thinking.Effort"},
 		},
 		{
-			name:         "Anthropic 不支持 Effort，应指向 Enabled 与 BudgetTokens",
-			provider:     ProviderAnthropic,
+			name:         "百炼不支持 Effort，应指向 Enabled 与 BudgetTokens",
+			provider:     ProviderQwen,
 			thinking:     &Thinking{Effort: ThinkingEffortHigh},
 			wantMentions: []string{"Thinking.Effort", "Thinking.Enabled", "Thinking.BudgetTokens"},
 		},
@@ -447,28 +509,33 @@ func TestUnsupportedThinkingFieldErrorListsMappedFields(t *testing.T) {
 	}
 }
 
-// TestAssistantMessageExcludesReasoning 是"思考内容不参与后续轮次消息构建"的反证。
-//
-// 若把 Reasoning 并进 AssistantMessage，多轮对话每轮都会把思考内容当普通文本
-// 回传给平台：既污染上下文，又按输入 token 重复计费。Anthropic 的思考块还要求
-// 带 signature 原样回传，退化成纯文本反而可能被平台拒绝。
-func TestAssistantMessageExcludesReasoning(t *testing.T) {
+// TestAssistantMessageCarriesReasoningOutsideContent 锁定推理往返的载体：
+// 思考模型在工具循环中要求回传上一轮推理，Reasoning 与签名思考块随 assistant 消息携带，
+// 但绝不混入正文——正文回传会把思考当普通文本污染上下文并重复计费。
+func TestAssistantMessageCarriesReasoningOutsideContent(t *testing.T) {
 	t.Parallel()
 
 	resp := &ChatResponse{
-		Content:   "答案是 42",
-		Reasoning: "先分解问题再验算",
-		ToolCalls: []ToolCall{{ID: "t1", Function: FunctionCall{Name: "calc", Arguments: "{}"}}},
+		Content:        "答案是 42",
+		Reasoning:      "先分解问题再验算",
+		ThinkingBlocks: []ThinkingBlock{{Thinking: "先分解问题再验算", Signature: "sig"}},
+		ToolCalls:      []ToolCall{{ID: "t1", Function: FunctionCall{Name: "calc", Arguments: "{}"}, ThoughtSignature: "ts"}},
 	}
 
 	msg := resp.AssistantMessage()
 	assert.Equal(t, RoleAssistant, msg.Role)
-	assert.Equal(t, resp.ToolCalls, msg.ToolCalls, "工具调用仍须原样回传")
+	assert.Equal(t, resp.ToolCalls, msg.ToolCalls, "工具调用（含 Gemini 签名）仍须原样回传")
+	assert.Equal(t, resp.Reasoning, msg.Reasoning)
+	assert.Equal(t, resp.ThinkingBlocks, msg.ThinkingBlocks)
 
 	text := contentText(msg.Content)
 	assert.Contains(t, text, "答案是 42")
 	assert.NotContains(t, text, "先分解问题再验算",
-		"思考内容不得进入回传给平台的 assistant 消息")
+		"思考内容不得进入正文，只能走 Reasoning / ThinkingBlocks 字段")
+
+	// 防御性拷贝：修改消息上的块不得影响响应。
+	msg.ThinkingBlocks[0].Signature = "tampered"
+	assert.Equal(t, "sig", resp.ThinkingBlocks[0].Signature)
 }
 
 // TestAnthropicThinkingBudgetAdaptsDefaultMaxTokens 覆盖"只设思考预算、不设 MaxTokens"
@@ -594,9 +661,9 @@ func TestSupportsReasoningEffortUnlocksCustomProvider(t *testing.T) {
 	t.Run("内置预设优先于声明", func(t *testing.T) {
 		t.Parallel()
 
-		// DeepSeek 内置映射只支持 Enabled；对它声明 SupportsReasoningEffort
+		// 百炼内置映射不支持 Effort；对它声明 SupportsReasoningEffort
 		// 不应生效——内置平台的映射由库判定，不交给调用方覆盖。
-		p := &openaiProvider{name: ProviderDeepSeek, model: "deepseek-chat", supportsReasoningEffort: true}
+		p := &openaiProvider{name: ProviderQwen, model: "qwen3.7-plus", supportsReasoningEffort: true}
 		_, err := p.buildRequest(&ChatRequest{
 			Messages: []Message{UserText("hi")},
 			Thinking: &Thinking{Effort: ThinkingEffortHigh},

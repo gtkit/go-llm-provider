@@ -496,7 +496,7 @@ func TestNewEmbedderFromPreset(t *testing.T) {
 		e, err := NewEmbedderFromPreset(ProviderQwen, "test-key", "")
 		require.NoError(t, err)
 		oe := e.(*openaiEmbedder)
-		assert.Equal(t, "text-embedding-v3", oe.model)
+		assert.Equal(t, "text-embedding-v4", oe.model)
 	})
 
 	t.Run("zhipu preset model", func(t *testing.T) {
@@ -1053,7 +1053,7 @@ func TestPresetsEmbeddingModelDefaults(t *testing.T) {
 
 	wantEmbeddings := map[ProviderName]string{
 		ProviderOpenAI:      "text-embedding-3-small",
-		ProviderQwen:        "text-embedding-v3",
+		ProviderQwen:        "text-embedding-v4",
 		ProviderZhipu:       "embedding-3",
 		ProviderQianfan:     "embedding-v1",
 		ProviderSiliconFlow: "BAAI/bge-m3",

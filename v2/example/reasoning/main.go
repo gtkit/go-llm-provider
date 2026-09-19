@@ -19,16 +19,19 @@ func main() {
 }
 
 func run() error {
+	// DeepSeek V4 的思考由请求参数控制（顶层 thinking + reasoning_effort），
+	// 不再需要单独的 reasoner 模型名。
 	p, err := provider.NewProviderFromPreset(
 		provider.ProviderDeepSeek,
 		os.Getenv("DEEPSEEK_API_KEY"),
-		"deepseek-reasoner",
+		"deepseek-v4-flash",
 	)
 	if err != nil {
 		return fmt.Errorf("create provider: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// 思考模型非流式请求耗时较长，超时预算给足；生产环境推荐走流式。
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	resp, err := p.Chat(ctx, &provider.ChatRequest{
@@ -37,6 +40,7 @@ func run() error {
 		},
 		Thinking: &provider.Thinking{
 			Enabled: boolPtr(true),
+			Effort:  provider.ThinkingEffortLow, // low / high / max
 		},
 	})
 	if err != nil {

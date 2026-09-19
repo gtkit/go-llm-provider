@@ -32,9 +32,8 @@ llm-provider/
 │   ├── helpers.go             # Chat 便捷函数：SimpleChat、CollectStream
 │   ├── toolrun.go             # RunToolLoop：Tool Use 自动循环执行器
 │   ├── reasoning.go           # Thinking 结构与推理模式常量
-│   ├── compat_ark.go          # 火山方舟专属映射（顶层 thinking 扩展字段）
+│   ├── compat_thinking.go     # DeepSeek / 智谱 / Kimi / 方舟共享的顶层 thinking 扩展字段映射
 │   ├── compat_qwen.go         # 百炼专属映射（顶层 enable_thinking / thinking_budget）
-│   ├── compat_deepseek.go     # DeepSeek 专属映射（chat_template_kwargs）
 │   ├── native_anthropic.go    # Anthropic Messages API 原生实现
 │   ├── native_gemini.go       # Gemini Generative Language API 原生实现
 │   ├── native_ollama.go       # Ollama /api/chat 原生实现
@@ -93,23 +92,23 @@ go get github.com/gtkit/go-llm-provider/v2
 
 | 平台 | ProviderName | 预设 BaseURL | 默认 Chat 模型 | 默认 Embedding 模型 | API Key 获取 |
 |------|-------------|-------------|---------|---------|-------------|
-| DeepSeek | `deepseek` | `https://api.deepseek.com/v1` | `deepseek-chat` | — | [platform.deepseek.com](https://platform.deepseek.com/) |
-| 通义千问（百炼） | `qwen` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen3.6-plus` | `text-embedding-v3` | [百炼控制台](https://bailian.console.aliyun.com/) |
-| 智谱 AI / GLM | `zhipu`（别名：`ProviderGLM`） | `https://open.bigmodel.cn/api/paas/v4/` | `glm-5.1` | `embedding-3` | [open.bigmodel.cn](https://open.bigmodel.cn/) |
-| 百度千帆 | `qianfan` | `https://qianfan.baidubce.com/v2` | `ernie-4.5-turbo-32k` | `embedding-v1` | [千帆控制台](https://console.bce.baidu.com/qianfan/) |
-| 硅基流动 | `siliconflow` | `https://api.siliconflow.cn/v1` | `deepseek-ai/DeepSeek-V3` | `BAAI/bge-m3` | [siliconflow.cn](https://siliconflow.cn/) |
-| Moonshot / Kimi | `moonshot`（别名：`ProviderKimi`） | `https://api.moonshot.cn/v1` | `kimi-k2-turbo-preview` | — | [platform.moonshot.cn](https://platform.moonshot.cn/) |
-| 火山方舟 / 豆包 | `ark` | `https://ark.cn-beijing.volces.com/api/v3` | `doubao-seed-2-0-pro-260215` | `doubao-embedding-text-240515` | [方舟控制台](https://console.volcengine.com/ark) |
-| OpenAI | `openai` | `https://api.openai.com/v1` | `gpt-5.4-mini` | `text-embedding-3-small` | [platform.openai.com](https://platform.openai.com/) |
-| Anthropic / Claude | `anthropic` | `https://api.anthropic.com` | `claude-sonnet-4-5` | — | [console.anthropic.com](https://console.anthropic.com/) |
-| Google Gemini | `gemini` | `https://generativelanguage.googleapis.com/v1beta` | `gemini-2.5-flash` | `gemini-embedding-001` | [aistudio.google.com](https://aistudio.google.com/) |
+| DeepSeek | `deepseek` | `https://api.deepseek.com/v1` | `deepseek-v4-flash` | — | [platform.deepseek.com](https://platform.deepseek.com/) |
+| 通义千问（百炼） | `qwen` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen3.7-plus` | `text-embedding-v4` | [百炼控制台](https://bailian.console.aliyun.com/) |
+| 智谱 AI / GLM | `zhipu`（别名：`ProviderGLM`） | `https://open.bigmodel.cn/api/paas/v4/` | `glm-5.3` | `embedding-3` | [open.bigmodel.cn](https://open.bigmodel.cn/) |
+| 百度千帆 | `qianfan` | `https://qianfan.baidubce.com/v2` | `ernie-5.1` | `embedding-v1` | [千帆控制台](https://console.bce.baidu.com/qianfan/) |
+| 硅基流动 | `siliconflow` | `https://api.siliconflow.cn/v1` | `deepseek-ai/DeepSeek-V4-Flash` | `BAAI/bge-m3` | [siliconflow.cn](https://siliconflow.cn/) |
+| Moonshot / Kimi | `moonshot`（别名：`ProviderKimi`） | `https://api.moonshot.cn/v1` | `kimi-k2.6` | — | [platform.kimi.com](https://platform.kimi.com/) |
+| 火山方舟 / 豆包 | `ark` | `https://ark.cn-beijing.volces.com/api/v3` | `doubao-seed-2-1-pro-260628` | `doubao-embedding-text-240515` | [方舟控制台](https://console.volcengine.com/ark) |
+| OpenAI | `openai` | `https://api.openai.com/v1` | `gpt-5.6-terra` | `text-embedding-3-small` | [platform.openai.com](https://platform.openai.com/) |
+| Anthropic / Claude | `anthropic` | `https://api.anthropic.com` | `claude-sonnet-5` | — | [console.anthropic.com](https://console.anthropic.com/) |
+| Google Gemini | `gemini` | `https://generativelanguage.googleapis.com/v1beta` | `gemini-3.5-flash` | `gemini-embedding-001` | [aistudio.google.com](https://aistudio.google.com/) |
 | Ollama | `ollama` | `http://localhost:11434` | 需调用方指定 | — | 本地服务 |
-| xAI / Grok | `xai` | `https://api.x.ai/v1` | `grok-4-1-fast-non-reasoning` | — | [console.x.ai](https://console.x.ai/) |
-| Groq | `groq` | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile` | — | [console.groq.com](https://console.groq.com/) |
+| xAI / Grok | `xai` | `https://api.x.ai/v1` | `grok-4.6` | — | [console.x.ai](https://console.x.ai/) |
+| Groq | `groq` | `https://api.groq.com/openai/v1` | `openai/gpt-oss-120b` | — | [console.groq.com](https://console.groq.com/) |
 | Mistral AI | `mistral` | `https://api.mistral.ai/v1` | `mistral-large-latest` | `mistral-embed` | [console.mistral.ai](https://console.mistral.ai/) |
-| Cohere | `cohere` | `https://api.cohere.ai/compatibility/v1` | `command-a-03-2025` | `embed-v4.0` | [dashboard.cohere.com](https://dashboard.cohere.com/) |
+| Cohere | `cohere` | `https://api.cohere.ai/compatibility/v1` | `command-a-plus-05-2026` | `embed-v4.0` | [dashboard.cohere.com](https://dashboard.cohere.com/) |
 
-> 预设地址和默认模型可能随平台更新而变化，建议定期对照各平台官方文档确认。
+> 预设默认模型截至 **2026-09** 对照各厂商官方文档更新（DeepSeek 旧的 `deepseek-chat` / `deepseek-reasoner` 已于 2026-07-24 停用，Groq 的 `llama-3.3-70b-versatile` 已于 2026-08-16 关停，Gemini 2.5 系计划 2026-10 关停）。预设地址和默认模型仍会随平台更新而变化，建议定期对照各平台官方文档确认。
 > Embedding 列显示"—"的平台表示官方暂无 embedding 接口，`NewEmbedderFromPreset` 会返回错误。
 > Azure OpenAI 与 Amazon Bedrock 需要资源名、region 或 deployment/model ARN 等运行时信息，请使用 `NewAzureOpenAIProvider` / `NewBedrockOpenAIProvider` 显式创建。
 
@@ -118,11 +117,11 @@ go get github.com/gtkit/go-llm-provider/v2
 | 平台 | Chat | Streaming | Tools | Structured Output | Vision | File | File Upload | Reasoning | Embedding | Rerank | Web Search | 协议 |
 |------|------|-----------|-------|-------------------|--------|------|-------------|-----------|-----------|------|------------|------|
 | DeepSeek | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 是 | 否 | 否 | 否 | OpenAI 兼容 |
-| 通义千问（百炼） | 是 | 是 | 是 | 是 | 否 | 否 | 是 | 是 | 是 | 否 | 否 | OpenAI 兼容 |
-| 智谱 AI / GLM | 是 | 是 | 是 | 是 | 否 | 否 | 是 | 否 | 是 | 否 | 否 | OpenAI 兼容 |
-| 百度千帆 | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 否 | 是 | 否 | 否 | OpenAI 兼容 |
+| 通义千问（百炼） | 是 | 是 | 是 | 是 | 是 | 否 | 是 | 是 | 是 | 否 | 否 | OpenAI 兼容 |
+| 智谱 AI / GLM | 是 | 是 | 是 | 是 | 否 | 否 | 是 | 是 | 是 | 否 | 否 | OpenAI 兼容 |
+| 百度千帆 | 是 | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 是 | 否 | 否 | OpenAI 兼容 |
 | 硅基流动 | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 否 | 是 | 是 | 否 | OpenAI 兼容 |
-| Moonshot / Kimi | 是 | 是 | 是 | 是 | 否 | 否 | 是 | 否 | 否 | 否 | 否 | OpenAI 兼容 |
+| Moonshot / Kimi | 是 | 是 | 是 | 是 | 是 | 否 | 是 | 是 | 否 | 否 | 否 | OpenAI 兼容 |
 | 火山方舟 / 豆包 | 是 | 是 | 是 | 是 | 是 | 否 | 否 | 是 | 是 | 否 | 否 | OpenAI 兼容 |
 | OpenAI | 是 | 是 | 是 | 是 | 否 | 否 | 是 | 是 | 是 | 否 | 否 | OpenAI 兼容 |
 | Anthropic / Claude | 是 | 是 | 是 | 是 | 是 | 是 | 否 | 是 | 否 | 否 | 是 | 原生 HTTP |
@@ -147,9 +146,11 @@ Claude 和 Gemini 不是 OpenAI 兼容协议，但本库不引入官方 SDK，�
 - `ProviderGemini` 走 Gemini Generative Language API：`generateContent` / `streamGenerateContent`；`NewGeminiEmbedder` 走 `embedContent` / `batchEmbedContents`
 - `NewGeminiEmbedder` 走 Gemini Embeddings API：`embedContent` / `batchEmbedContents`
 - 两者都复用统一的 `Provider`、`ChatRequest`、`ChatResponse`、`StreamReader`、`ProviderError`、`ResponseMetadata`
-- 当前 native 实现覆盖文本、图片、文件输入、非流式、SSE 流式、错误分类；`Chat` 已映射 Tool Use / Function Calling 与结构化输出
+- 当前 native 实现覆盖文本、图片、文件输入、非流式、SSE 流式、错误分类；`Chat` 已映射 Tool Use / Function Calling 与结构化输出（Claude 走原生 `output_config.format`，Gemini 走 `responseJsonSchema`）
 - Claude / Gemini native streaming 已开放 Tool Use 增量输出，调用方可从 `StreamChunk.ToolCalls` 累积工具调用参数
-- Claude 支持内容片段级 `CacheControlEphemeral()`，用于 Anthropic prompt caching；不支持的平台会忽略该 hint
+- 思考模型的工具循环所需的往返内容已内建：Claude 的带签名思考块（`ThinkingBlocks`）、Gemini 3 的 `ThoughtSignature` 都随 `AssistantMessage()` 回传，见「Thinking」一节的「推理内容往返」
+- Claude 支持内容片段级 `CacheControlEphemeral()` / `CacheControlEphemeralTTL(CacheControlTTL1h)`，system 提示词以内容块数组下发以承载缓存断点；不支持的平台会忽略该 hint
+- `NativeProviderConfig.Headers` 可附加自定义请求头（Anthropic 的 `anthropic-beta`、企业网关鉴权头），同名覆盖库默认头
 
 ## 快速开始
 
@@ -273,7 +274,7 @@ if err != nil {
 使用预设地址，但自定义模型名。适合同一个平台想用不同模型的场景。
 
 ```go
-// 用千问的 qwen-max 模型而不是默认的 qwen3.6-plus
+// 用千问的 qwen3.7-max 模型而不是默认的 qwen3.7-plus
 p, err := provider.NewProviderFromPreset(
     provider.ProviderQwen,
     os.Getenv("QWEN_API_KEY"),
@@ -328,7 +329,7 @@ Claude / Gemini 走网关用原生构造函数的同名字段：
 claude, err := provider.NewAnthropicProvider(provider.NativeProviderConfig{
     APIKey:  os.Getenv("ANTHROPIC_API_KEY"),
     BaseURL: "https://llm-gw.corp.internal/anthropic",  // 版本段 /v1 由库补
-    Model:   "claude-sonnet-4-5",
+    Model:   "claude-sonnet-5",
 })
 ```
 
@@ -339,7 +340,7 @@ e, err := provider.NewEmbedder(provider.EmbedderConfig{
     Name:    provider.ProviderQwen,
     BaseURL: "https://llm-gw.corp.internal/dashscope/compatible-mode/v1",
     APIKey:  os.Getenv("QWEN_API_KEY"),
-    Model:   "text-embedding-v3",
+    Model:   "text-embedding-v4",
 })
 
 r, err := provider.NewReranker(provider.RerankerConfig{
@@ -372,33 +373,35 @@ Claude 和 Gemini 可以直接走预设：
 claude, err := provider.NewProviderFromPreset(
     provider.ProviderAnthropic,
     os.Getenv("ANTHROPIC_API_KEY"),
-    "", // 留空使用 claude-sonnet-4-5
+    "", // 留空使用 claude-sonnet-5
 )
 
 gemini, err := provider.NewProviderFromPreset(
     provider.ProviderGemini,
     os.Getenv("GEMINI_API_KEY"),
-    "", // 留空使用 gemini-2.5-flash
+    "", // 留空使用 gemini-3.5-flash
 )
 ```
 
-如果要覆盖 BaseURL 或注入自定义 HTTP client，使用原生构造函数：
+如果要覆盖 BaseURL、注入自定义 HTTP client 或附加请求头，使用原生构造函数：
 
 ```go
 claude, err := provider.NewAnthropicProvider(provider.NativeProviderConfig{
     APIKey:     os.Getenv("ANTHROPIC_API_KEY"),
-    Model:      "claude-sonnet-4-5",
+    Model:      "claude-opus-5",
     HTTPClient: httpClient,
+    // 自定义请求头在库默认头之后写入、同名覆盖：beta 特性开关、企业网关鉴权头都走这里
+    Headers: map[string]string{"anthropic-beta": "compact-2026-01-12"},
 })
 
 gemini, err := provider.NewGeminiProvider(provider.NativeProviderConfig{
     APIKey:  os.Getenv("GEMINI_API_KEY"),
     BaseURL: "https://generativelanguage.googleapis.com/v1beta",
-    Model:   "gemini-2.5-flash",
+    Model:   "gemini-3.8-flash",
 })
 ```
 
-当前原生实现支持文本、图片、文件输入、非流式、SSE 流式、request id 元数据与错误分类。`Chat` 已支持 Tool Use / Function Calling 和结构化输出；流式 Tool Use 会通过 `StreamChunk.ToolCalls` 暴露增量工具调用。
+当前原生实现支持文本、图片、文件输入、非流式、SSE 流式、request id 元数据与错误分类。`Chat` 已支持 Tool Use / Function Calling 和结构化输出；流式 Tool Use 会通过 `StreamChunk.ToolCalls` 暴露增量工具调用。Gemini 3 系要求把 `functionCall` 上的 `thoughtSignature` 原样回传、`functionResponse` 携带函数名，库已在 `ToolCall.ThoughtSignature` 与 `Message.ToolName` 上承载并自动回填。
 
 ### Azure OpenAI / Amazon Bedrock
 
@@ -661,7 +664,7 @@ result, resp, err := provider.RunPromptTaskJSON[TranslateParams, TranslateResult
 ```go
 temp := float32(0.7)
 resp, err := p.Chat(ctx, &provider.ChatRequest{
-    Model: "deepseek-reasoner",  // 可选，覆盖默认模型
+    Model: "deepseek-v4-pro",  // 可选，覆盖默认模型
     Messages: []provider.Message{
         provider.SystemText("你是一个翻译助手"),
         provider.UserText("把下面的话翻译成英文：今天天气真好"),
@@ -1131,19 +1134,44 @@ type Thinking struct {
 
 各平台已映射的字段：
 
-| 平台 | `Enabled` | `Effort` | `BudgetTokens` |
-| --- | --- | --- | --- |
-| OpenAI / Azure OpenAI | | ✅ | |
-| 火山方舟 Ark | ✅ | ✅ | |
-| DeepSeek | ✅ | | |
-| 阿里云百炼（通义千问） | ✅ | | ✅ |
-| Anthropic（原生） | ✅ | | ✅ |
-| Gemini（原生） | ✅ | | ✅ |
+| 平台 | `Enabled` | `Effort` | `BudgetTokens` | 下发到 |
+| --- | --- | --- | --- | --- |
+| OpenAI / Azure OpenAI | | ✅ | | `reasoning_effort` |
+| DeepSeek | ✅ | ✅ | | 顶层 `thinking.type` + `reasoning_effort`（low / high / max） |
+| 智谱 GLM | ✅ | ✅ | | 顶层 `thinking.type` + `reasoning_effort`（GLM-5.3 不可关闭） |
+| Moonshot / Kimi | ✅ | ✅ | | 顶层 `thinking.type`（K2.6）+ `reasoning_effort`（K3） |
+| 火山方舟 Ark | ✅ | ✅ | | 顶层 `thinking.type` + `reasoning_effort` |
+| 阿里云百炼（通义千问） | ✅ | | ✅ | 顶层 `enable_thinking` + `thinking_budget` |
+| Anthropic（原生） | ✅ | ✅ | ✅（仅 4.5 及更早） | `thinking.type` adaptive / disabled + `output_config.effort` |
+| Gemini（原生） | ✅ | ✅ | ✅（与 Effort 互斥） | `thinkingConfig.thinkingLevel` / `thinkingBudget` |
 
 传入表中未标注的字段时，请求在构建阶段返回 `ErrInvalidRequest`，错误信息会列出该平台
 已映射的字段。推理 token 计入输出、按输出价计费，静默忽略会让调用方误以为思考已开启，
 并为未发生的思考付费。需要在运行前判断时，用 `ModelCapabilitiesFromPreset` 取回
 `ModelCapabilities` 再调 `Supports(provider.CapabilityReasoning)`。
+
+`Effort` 的取值原样透传，各平台接受的档位集合不同：OpenAI 为 `none` / `minimal` / `low` /
+`medium` / `high` / `xhigh` / `max`（按模型而异）；DeepSeek、智谱、Kimi K3 为 `low` / `high` /
+`max`；Anthropic 为 `low` / `medium` / `high` / `xhigh` / `max`；Gemini 为 `minimal` / `low` /
+`medium` / `high`。`ThinkingEffort*` 常量覆盖了这些取值，取值是否被目标模型接受由平台校验。
+
+#### 推理内容往返（思考模型 + 工具循环必读）
+
+思考模型在工具循环中普遍要求把上一轮的推理内容原样回传：DeepSeek 带 `tools` 时缺失
+`reasoning_content` 直接 400；Kimi K3 要求回传完整 assistant 消息；Anthropic 开启思考并
+使用工具时必须回传带签名的 `thinking` 块；Gemini 3 要求回传 `functionCall` 上的
+`thoughtSignature`。库把这些载体统一放在 `Message` 上，`resp.AssistantMessage()`、
+`RunToolLoop` 与 `RunToolLoopStream` 自动携带，调用方手动管理历史时只需照常追加：
+
+- `Message.Reasoning`：推理文本，OpenAI 兼容路径映射为 `reasoning_content`，只对已知接受该字段的
+  平台下发（DeepSeek / 智谱 / Kimi / 百炼 / 方舟；OpenAI 官方端点会拒绝该字段）。自定义接入的平台用
+  `ProviderConfig.SupportsReasoningContent` 声明。不需要回传时置空即可省下这部分输入 token。
+- `Message.ThinkingBlocks`：Anthropic 的签名思考块与加密块（`redacted_thinking`），原样回传、
+  不得改写；没有签名的块不会下发。流式下由 `StreamChunk.ThinkingSignature` / `RedactedThinking`
+  标记块边界，`RunToolLoopStream` 已内置拼装。
+- `ToolCall.ThoughtSignature`：Gemini 3 的工具调用签名，随 `ToolCalls` 回传。
+- `Message.ToolName`：工具结果对应的函数名，Gemini 的 `functionResponse` 必需；用
+  `ToolResultMessageFor(call, result)` 构造即可自动带上，只给 `ToolCallID` 时库会在同一请求内反查。
 
 #### 自定义接入的平台
 
@@ -1168,13 +1196,14 @@ p, err := provider.NewProvider(provider.ProviderConfig{
 两条边界：
 
 - **只解锁 `Effort`。** `Enabled` 与 `BudgetTokens` 在各平台落在互不相同的私有字段上
-  （DeepSeek 用 `chat_template_kwargs`、火山方舟用顶层 `thinking`、百炼用顶层
+  （DeepSeek / 智谱 / Kimi / 火山方舟用顶层 `thinking`、百炼用顶层
   `enable_thinking`），库无从代为映射，
-  对未收录平台始终返回 `ErrInvalidRequest`。
+  对未收录平台始终返回 `ErrInvalidRequest`。同理，`ProviderConfig.SupportsReasoningContent`
+  解锁的是 assistant 消息上 `reasoning_content` 的回传（思考模型工具循环所需）。
 - **内置预设优先。** 对已收录的平台声明该字段不生效，它们的支持范围由库判定——
   内置平台的映射属于库的实现，不交给调用方覆盖。
 
-#### 档位口径（OpenAI / Azure / 火山方舟）
+#### 档位口径（OpenAI / Azure / DeepSeek / 智谱 / Kimi / 火山方舟）
 
 ```go
 resp, err := p.Chat(ctx, &provider.ChatRequest{
@@ -1194,15 +1223,11 @@ fmt.Println(resp.Reasoning)
 fmt.Println(resp.Usage.ReasoningTokens)
 ```
 
-`Effort` 取值原样透传给平台的 `reasoning_effort`，`ThinkingEffortMinimal` / `Low` /
-`Medium` / `High` 是便利常量而非取值全集。
-
-火山方舟同时映射两个字段：`Enabled` 映射请求体顶层 `thinking`（`enabled` / `disabled`，
-nil 时不下发该字段，由方舟按模型默认行为决定），`Effort` 映射 `reasoning_effort`。
-两者互相独立：同时设置 `Enabled: false` 与非空 `Effort` 时，`thinking.disabled` 与
-`reasoning_effort` 都会原样下发，本库不做取舍，最终以方舟侧的裁决为准。
-
-DeepSeek 只映射 `Enabled`，写入 `chat_template_kwargs.enable_thinking`。
+`Effort` 取值原样透传给平台的 `reasoning_effort`。DeepSeek、智谱、Kimi 与火山方舟另外把
+`Enabled` 映射为请求体顶层的 `thinking`（`{"type":"enabled"|"disabled"}`，nil 时不下发该字段，
+由平台按模型默认行为决定：DeepSeek V4、GLM-5、Kimi K2.6 默认开启）。两者互相独立：同时设置
+`Enabled: false` 与非空 `Effort` 时都会原样下发，本库不做取舍，最终以平台侧裁决为准。
+注意 GLM-5.3、Kimi K3 不允许关闭思考，`Enabled: false` 由平台报错。
 
 #### 阿里云百炼（通义千问）
 
@@ -1224,36 +1249,45 @@ resp, err := p.Chat(ctx, &provider.ChatRequest{
 `BudgetTokens` 原样透传，取值是否被目标模型接受由平台校验。响应中的 `reasoning_content`
 进入 `ChatResponse.Reasoning`（流式为 `StreamChunk.ReasoningDelta`），不混入正文。
 
-#### 预算口径（Anthropic / Gemini 原生路径）
+#### Anthropic（原生路径）
 
-Anthropic 开启思考时要求显式预算，缺失或非正数返回 `ErrInvalidRequest`——预算大小直接
-决定费用，由调用方决定而不由本库代为推导。预算还需小于本次请求的 `MaxTokens`
-（未显式设置时为 4096），该上限由平台校验。
-
-```go
-budget := 4096
-resp, err := p.Chat(ctx, &provider.ChatRequest{
-    Messages:  []provider.Message{provider.UserText("逐步分析这段代码的复杂度")},
-    MaxTokens: 8192,
-    Thinking:  &provider.Thinking{BudgetTokens: &budget},
-})
-```
-
-Gemini 未给出预算时，借用平台自身的语义取值表达意图：`Enabled: true` 下发
-`thinkingBudget: -1`（由模型动态决定预算），`Enabled: false` 下发 `thinkingBudget: 0`
-（禁用思考）；显式给出 `BudgetTokens` 时原样下发，取值是否被目标模型接受由平台校验。
+Claude 4.6 起的推荐口径是**自适应思考**：`Enabled: true` 下发 `thinking.type = adaptive`，
+由模型按任务复杂度决定是否思考与思考多少，推理强度经 `Effort` 映射到 `output_config.effort`
+（`low` / `medium` / `high` / `xhigh` / `max`，按模型而异）；`Enabled: false` 下发 `disabled`。
+Claude 5 系（`claude-sonnet-5`、`claude-opus-5`、`claude-fable-5-1`）默认即自适应思考，
+只在需要调档位或关闭时才传 `Thinking`。
 
 ```go
 enabled := true
 resp, err := p.Chat(ctx, &provider.ChatRequest{
+    Messages: []provider.Message{provider.UserText("逐步分析这段代码的复杂度")},
+    Thinking: &provider.Thinking{Enabled: &enabled, Effort: provider.ThinkingEffortMedium},
+})
+```
+
+`BudgetTokens` 是 Claude 4.5 及更早模型的旧式固定预算口径（`thinking.type = enabled` +
+`budget_tokens`）：给出即开启，须为正数且需小于本次请求的 `MaxTokens`（未显式设置时库会
+把 `max_tokens` 抬到"预算 + 4096"）。Claude 4.6 已废弃、4.7 起平台直接拒绝该参数，
+新模型请改用 `Enabled` + `Effort`。
+
+#### Gemini（原生路径）
+
+Gemini 3 系的推荐口径是档位：`Effort` 映射为 `thinkingConfig.thinkingLevel`
+（`minimal` / `low` / `medium` / `high`，按模型而异；3 系不可关闭思考）。
+`BudgetTokens` 映射为 2.5 系的 `thinkingBudget`，与 `Effort` 互斥、同时设置返回 `ErrInvalidRequest`。
+未给出档位与预算时，借用平台自身的语义取值表达意图：`Enabled: true` 下发 `thinkingBudget: -1`
+（由模型动态决定），`Enabled: false` 下发 `thinkingBudget: 0`（禁用，仅 2.5 系接受）。
+
+```go
+resp, err := p.Chat(ctx, &provider.ChatRequest{
     Messages: []provider.Message{provider.UserText("解释这段推导")},
-    Thinking: &provider.Thinking{Enabled: &enabled},
+    Thinking: &provider.Thinking{Effort: provider.ThinkingEffortLow},
 })
 ```
 
 两个平台的响应形态也已归位：Anthropic 的 `thinking` 内容块、Gemini 中带 `thought`
 标记的 part，都进入 `Reasoning` 而不混入 `Content`。Anthropic 的加密思考块
-（`redacted_thinking`）无法读取，不会出现在任何字段里。
+（`redacted_thinking`）无法读取，不会出现在任何文本字段里，但会随 `ThinkingBlocks` 原样保留供回传。
 
 #### 流式接收思考过程
 
@@ -1275,8 +1309,9 @@ for {
 }
 ```
 
-Anthropic 原生路径的思考内容以 `Reasoning` / `ReasoningDelta` 返回，不参与后续轮次的
-消息构建；多轮对话把 `resp.AssistantMessage()` 追加进历史时携带的是正文与工具调用。
+流式下思考块的边界由 `chunk.ThinkingSignature`（Anthropic 签名，随块结束到达一次）与
+`chunk.RedactedThinking`（加密块）标记；`RunToolLoopStream` 已内置拼装，手动消费流时可参考
+`thinkingAssembler` 的做法：签名到达即把此前累积的 `ReasoningDelta` 闭合为一个 `ThinkingBlock`。
 
 ### Structured Output（结构化输出）
 
@@ -1304,6 +1339,11 @@ resp, err := p.Chat(ctx, &provider.ChatRequest{
 - `provider.JSONObjectFormat()`
 - `provider.JSONSchemaFormat(name, schema)`
 - `provider.JSONSchemaFormatStrict(name, schema)`
+
+各协议的落点：OpenAI 兼容路径下发 `response_format`；Anthropic 走原生 `output_config.format`
+（`json_schema`），不再借用"强制调用假工具"，因此可与真正的工具调用、原生搜索并存；Gemini 走
+`responseJsonSchema`（接受标准 JSON Schema，含 `additionalProperties` 等关键字）。函数工具的
+入参也可用 `FunctionDef.Strict` 请求严格约束（OpenAI / Anthropic），schema 需满足平台的严格模式要求。
 
 如果你希望直接把 JSON 回复解码到 Go 类型，可以使用类型化助手：
 
@@ -1462,6 +1502,10 @@ resp, err := provider.RunToolLoopWithOptions(
 - `ToolRetry` 零值表示不重试（仅执行一次），保持既有行为；`MaxAttempts > 1` 时按 `Backoff` 等待并重试，`ShouldRetry` 默认重试所有非 context 取消错误
 - `AccumulateUsage` 默认关闭，返回最后一轮的 `Usage`（既有行为）；设为 `true` 后，返回响应的 `Usage` 为**所有轮次**的 token 消耗累加值，便于多轮工具循环的成本统计（某轮 provider 未返回 usage 则按 0 计入）
 
+思考模型（DeepSeek V4、Kimi K3、Claude 5、Gemini 3 等）要求把上一轮的推理内容随工具调用回传，
+`RunToolLoop` / `RunToolLoopStream` 已自动携带 `Reasoning`、`ThinkingBlocks`、`ThoughtSignature`
+并给工具结果补上函数名，无需额外配置；细节见「Thinking」一节的「推理内容往返」。
+
 #### 工具结果加工与响应校验
 
 工具执行结果如果来自外部不可信数据源（网页抓取、第三方 API、用户上传内容等），可能携带试图让模型偏离原任务的指令文本（间接提示注入）。`RunToolLoopOptions` 提供两个可选钩子，让调用方在结果进入对话历史前、以及最终响应返回前接入自己的处理逻辑，`RunToolLoopStreamWithOptions` 同样支持：
@@ -1551,8 +1595,8 @@ if resp.HasToolCalls() {
         // 执行工具，拿到结果
         result := fmt.Sprintf(`{"temperature": 28, "city": "%s"}`, args.City)
 
-        // 将结果追加到历史
-        messages = append(messages, provider.ToolResultMessage(tc.ID, result))
+        // 将结果追加到历史（带函数名，Gemini functionResponse 必需）
+        messages = append(messages, provider.ToolResultMessageFor(tc, result))
     }
 
     // 第三步：回传工具结果，获取最终回复
@@ -1712,15 +1756,16 @@ vecs, err := provider.EmbedBatch(ctx, emb, []string{
 })
 ```
 
-### 完整调用（自定义维度 / User / 模型覆盖）
+### 完整调用（自定义维度 / User / 任务类型 / 模型覆盖）
 
 ```go
-dims := 512 // OpenAI v3 和 Qwen v3 支持按维度截断
+dims := 512 // OpenAI v3 和 Qwen v3/v4 支持按维度截断
 resp, err := emb.Embed(ctx, &provider.EmbeddingRequest{
     Model:      "text-embedding-3-large", // 可选，覆盖默认模型
     Input:      []string{"hello", "world"},
     Dimensions: &dims,
     User:       "user-123",
+    TaskType:   provider.EmbeddingTaskDocument, // 非对称编码：建索引侧用 Document、查询侧用 Query
 })
 
 for _, e := range resp.Data {
@@ -1728,6 +1773,27 @@ for _, e := range resp.Data {
 }
 fmt.Printf("Usage: %d tokens\n", resp.Usage.TotalTokens)
 ```
+
+`TaskType` 当前映射到 Gemini 的 `task_type`（`RETRIEVAL_QUERY` / `RETRIEVAL_DOCUMENT` /
+`SEMANTIC_SIMILARITY` / `CLASSIFICATION` / `CLUSTERING`）；OpenAI 兼容端点的模型对称编码、
+协议上也没有该字段，该提示被忽略——与 `Thinking` 的 fail-closed 不同，忽略它不产生费用或安全影响。
+
+### 批量建索引：自动分片与并发
+
+各平台 embeddings 端点单次请求的文本条数上限差异很大（OpenAI 2048、Gemini 100、Cohere 96、
+百炼 10）。`EmbedBatch` 按 Embedder 名取已知上限自动分片、顺序请求；需要并发或自定义分片时用
+`EmbedBatchWithOptions`：
+
+```go
+vecs, err := provider.EmbedBatchWithOptions(ctx, emb, chunks, provider.EmbedBatchOptions{
+    TaskType:    provider.EmbeddingTaskDocument,
+    BatchSize:   64, // <= 0 时按平台已知上限，未知平台用 10
+    Concurrency: 4,  // 同时在途的分片数，配合 WithEmbedderRateLimit 控制 RPM / TPM
+})
+```
+
+任一分片失败即返回错误并取消其余在途请求，不返回带空洞的半成品——RAG 建索引宁可整批重跑，
+也不要悄悄漏掉一段文档。
 
 ### 典型 RAG 最小闭环
 
@@ -1885,7 +1951,7 @@ for name := range rerankers {
 
 ## 自定义 HTTP 客户端
 
-默认情况下，`NewProvider` / `NewEmbedder` 会使用 `DefaultHTTPClient()`。它不设置 `http.Client.Timeout`，请求总预算仍由调用方传入的 `context.Context` 控制；但会设置 dial、TLS handshake、response header、idle connection 等传输层超时，避免底层 IO 无限等待。
+默认情况下，`NewProvider` / `NewEmbedder` 会使用 `DefaultHTTPClient()`。它不设置 `http.Client.Timeout`，请求总预算仍由调用方传入的 `context.Context` 控制；但会设置 dial、TLS handshake、response header、idle connection 等传输层超时，避免底层 IO 无限等待。其中等待响应头的上限为 15 分钟：非流式调用下平台要等整段生成完才发响应头，思考模型高强度推理一次可达数分钟，该值过小会把正常的长推理请求误判为网络故障；长推理仍推荐走流式。
 
 需要统一超时、代理、链路追踪、测试替身或自定义 transport 时，可以向 `ProviderConfig` / `EmbedderConfig` 注入实现了 `Do(*http.Request) (*http.Response, error)` 的客户端：
 
@@ -1896,7 +1962,7 @@ p, err := provider.NewProvider(provider.ProviderConfig{
     Name:       provider.ProviderOpenAI,
     BaseURL:    "https://api.openai.com/v1",
     APIKey:     os.Getenv("OPENAI_API_KEY"),
-    Model:      "gpt-5.4-mini",
+    Model:      "gpt-5.6-terra",
     HTTPClient: httpClient,
 })
 
@@ -2276,14 +2342,14 @@ Redis Cluster 部署需启用其 `Config.RedisCluster`，让同一用户的多 k
 
 ```go
 table := provider.PricingTable{
-    "deepseek-chat": {
-        InputPer1M:     2_000_000, // 2 元 / 1M tokens
-        OutputPer1M:    8_000_000,
+    "deepseek-v4-flash": {
+        InputPer1M:     2_000_000, // 2 元 / 1M tokens（示例价，以官方定价为准）
+        OutputPer1M:    4_000_000,
         CacheReadPer1M: 200_000,   // 未配置时回落到 InputPer1M
         Currency:       "CNY",
     },
 }
-micros, currency, err := table.Cost("deepseek-chat", resp.Usage)
+micros, currency, err := table.Cost("deepseek-v4-flash", resp.Usage)
 fmt.Println(provider.FormatMicros(micros), currency) // 如 "0.0123 CNY"
 ```
 
@@ -2292,7 +2358,7 @@ fmt.Println(provider.FormatMicros(micros), currency) // 如 "0.0123 CNY"
 
 ```go
 table := provider.PricingTable{
-    "claude-sonnet-4-5": {
+    "claude-sonnet-5": {
         InputPer1M:        3_000_000,
         OutputPer1M:       15_000_000,
         CacheReadPer1M:    300_000,   // 缓存命中远低于常规输入
@@ -2413,7 +2479,7 @@ resp, err := fallback.Chat(ctx, req)
 **同平台多模型降级链**：构造多个实例、各配不同默认模型即可（也可跨平台混编）：
 
 ```go
-fast, _ := provider.NewProviderFromPreset(provider.ProviderDeepSeek, key, "deepseek-chat")
+fast, _ := provider.NewProviderFromPreset(provider.ProviderDeepSeek, key, "deepseek-v4-flash")
 backup, _ := provider.NewProviderFromPreset(provider.ProviderQwen, qwenKey, "qwen-max")
 p, _ := provider.NewFallbackProvider(fast, backup)
 ```
@@ -2740,7 +2806,7 @@ history = provider.TrimMessagesToTokenBudget(history, 30_000)
 
 ```go
 result, err := provider.CompactMessages(ctx, p, history, provider.CompactOptions{
-    Model:            "deepseek-chat", // 摘要用便宜模型即可
+    Model:            "deepseek-v4-flash", // 摘要用便宜模型即可
     KeepRecentGroups: 4,               // 最近 4 组保留原文
     TriggerTokens:    20_000,          // 低于阈值不压缩，避免短对话空耗
 })
@@ -2865,63 +2931,60 @@ curl -X POST http://localhost:8080/chat \
 
 ## 各平台常用模型速查
 
-> 以下为截至 **2026-04** 各厂商在线可调用的主流模型。模型名随平台更新变化较快，建议调用前对照官方文档。
+> 以下为截至 **2026-09** 各厂商在线可调用的主流模型。模型名随平台更新变化较快，建议调用前对照官方文档。
 
 **DeepSeek**
 
 | 模型名 | 说明 |
 |--------|------|
-| `deepseek-chat` | DeepSeek-V3.2 非思考模式，128K 上下文 |
-| `deepseek-reasoner` | DeepSeek-V3.2 思考模式，原生链式思考（CoT） |
+| `deepseek-v4-flash` | V4 Flash，1M 上下文，思考由 `thinking` / `reasoning_effort` 控制（默认开启、默认 high） |
+| `deepseek-v4-pro` | V4 Pro 旗舰，1M 上下文，推理档位 low / high / max |
+
+> `deepseek-chat` / `deepseek-reasoner` 已于 2026-07-24 停用。带 `tools` 的思考模式请求必须回传 `reasoning_content`，库已自动处理。
 
 **通义千问（百炼 DashScope）**
 
 | 模型名 | 说明 |
 |--------|------|
-| `qwen3-max` | 旗舰，复杂任务能力最强 |
-| `qwen3.6-plus` | 2026 新一代 Plus，性能/成本平衡 |
-| `qwen-plus-latest` | Plus 自动跟随最新快照 |
-| `qwen-flash` | 速度优先，分档计费 |
-| `qwen-long` | 长文档处理，最高 10M tokens |
+| `qwen3.8-max` | 最新旗舰，1M 上下文，原生全模态 |
+| `qwen3.8-flash` | 轻量高速 |
+| `qwen3.7-max` | 3.7 旗舰，混合思考、默认开启 |
+| `qwen3.7-plus` | 3.7 高性价比，1M 上下文，视觉 + GUI Agent |
 | `qwen3-coder-plus` | 代码 Agent 专精 |
-| `qwen3-vl-plus` | 视觉多模态 |
-| `qwq-plus` | 深度推理模型 |
+| `qwen-long` | 长文档处理，最高 10M tokens |
+
+> 3.7 系新增 `preserve_thinking` 参数保留跨轮推理；百炼建议迁移到业务空间专属域名 `https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1`，用 `NewProvider` 覆盖 `BaseURL` 即可。
 
 **智谱 AI**
 
 | 模型名 | 说明 |
 |--------|------|
-| `glm-5.1` | 最新旗舰，Coding 能力对标 Claude Opus 4.6 |
-| `glm-5` | 高智能基座，擅长长程规划 |
-| `glm-4.7` | 通用对话推理升级 |
-| `glm-4.7-flash` | 免费普惠版 |
-| `glm-4.6` | 200K 上下文 |
-| `glm-4.5-air` | 高性价比 |
-| `glm-4.6v` | 视觉推理，原生工具调用 |
+| `glm-5.3` | 最新旗舰，1M 上下文，始终思考（`reasoning_effort` low / high / max） |
+| `glm-5.3-flash` | 原生多模态轻量版 |
+| `glm-5.2` | 上一代旗舰 |
+| `glm-5.1` / `glm-5` | 早期 5 系 |
 
 **百度千帆**
 
 | 模型名 | 说明 |
 |--------|------|
-| `ernie-4.5-turbo-128k` | 文心 4.5 Turbo 长上下文 |
-| `ernie-4.5-turbo-32k` | 文心 4.5 Turbo 通用 |
-| `ernie-x1-turbo-32k` | X1 Turbo 推理模型（思维链 + 工具调用） |
-| `ernie-4.5-turbo-vl-32k` | 文心 4.5 VL 多模态 |
-| `ernie-speed-128k` | 经济高速 |
-| `ernie-lite-8k` | 超经济轻量 |
+| `ernie-5.1` | 文心 5.1 旗舰，原生全模态 |
+| `ernie-5.0-thinking-preview` | 文心 5.0 思考版 |
+| `ernie-x1.1-preview` | X1.1 推理模型 |
+| `ernie-4.5-turbo-128k` | 4.5 Turbo 长上下文 |
+
+> 千帆的思考模型不支持 `thinking_budget`，`max_tokens` 同时限制 `reasoning_content + content`。
 
 **硅基流动**
 
 | 模型名 | 说明 |
 |--------|------|
-| `deepseek-ai/DeepSeek-V3.2` | DeepSeek V3.2，含思考模式 |
-| `deepseek-ai/DeepSeek-V3.1-Terminus` | V3.1 终结版 |
-| `Qwen/Qwen3.5-397B-A17B` | 千问 3.5 MoE 旗舰 |
-| `Qwen/Qwen3.5-122B-A10B` | 千问 3.5 MoE 中等 |
-| `Qwen/Qwen3.5-35B-A3B` | 千问 3.5 MoE 轻量 |
-| `moonshotai/Kimi-K2.5` | Kimi K2.5（256K 上下文） |
-| `Pro/zai-org/GLM-5.1` | 智谱 GLM-5.1（Pro 付费通道） |
-| `Pro/zai-org/GLM-4.7` | 智谱 GLM-4.7（Pro 付费通道） |
+| `deepseek-ai/DeepSeek-V4-Flash` | DeepSeek V4 Flash 高速版 |
+| `deepseek-ai/DeepSeek-V4-Pro` | DeepSeek V4 Pro |
+| `Pro/zai-org/GLM-5.2` | 智谱 GLM-5.2（Pro 付费通道） |
+| `moonshotai/Kimi-K2.7-Code` | Kimi K2.7 Code |
+| `Qwen/Qwen3-Embedding-8B` | 千问 Embedding（MTEB 多语言榜首） |
+| `Qwen/Qwen3-Reranker-8B` | 千问 Reranker |
 
 > `Pro/` 前缀为付费稳定通道，不带前缀为社区免费通道，能力相同但限流更严。
 
@@ -2929,43 +2992,72 @@ curl -X POST http://localhost:8080/chat \
 
 | 模型名 | 说明 |
 |--------|------|
-| `kimi-k2-turbo-preview` | Kimi K2 Turbo 高速版，256K 上下文 |
-| `kimi-k2-0905-preview` | Kimi K2.5 最新快照，1T 总参 / 32B 激活 MoE |
-| `kimi-k2-thinking` | K2 思考模式，深度推理 |
-| `kimi-latest` | 自动选择最新模型 |
-| `moonshot-v1-128k` | 经典 V1 系列 128K |
+| `kimi-k3` | 旗舰，1M 上下文，始终思考，`reasoning_effort` low / high / max（默认 max）；采样参数固定、勿传 |
+| `kimi-k2.7-code-highspeed` | 编程专用高速版 |
+| `kimi-k2.6` | 通用模型，256K 上下文，思考可开关（`thinking.type`） |
+
+> Kimi K3 要求多轮与工具调用时原样回传完整 assistant 消息（含 `reasoning_content`），库已自动处理；开放平台已迁至 platform.kimi.com。
 
 **火山方舟 / 豆包**
 
 | 模型名 | 说明 |
 |--------|------|
-| `doubao-seed-2-0-pro-260215` | Seed 2.0 Pro，深度推理与长链任务 |
-| `doubao-seed-2-0-lite-260215` | Seed 2.0 Lite，性能/成本平衡，全模态理解 |
-| `doubao-seed-2-0-mini-260215` | Seed 2.0 Mini，低延迟高并发 |
-| `doubao-seed-1-8-251228` | Seed 1.8 |
+| `doubao-seed-2-1-pro-260628` | Seed 2.1 Pro，Coding / Agent / 多模态全面升级 |
+| `doubao-seed-2-1-turbo-260628` | Seed 2.1 Turbo，规模化生产场景，价格为 Pro 一半 |
+| `doubao-seed-evolving` | 固定 ID、周级迭代的 Coding & Agent 模型（latest 语义） |
+| `doubao-seed-2-0-pro-260215` | Seed 2.0 Pro |
 | `doubao-embedding-text-240515` | 文本向量化 |
 
-> 方舟的 `model` 同时接受模型 ID（如上）与推理接入点 ID（`ep-` 开头），两种写法都可直接传入 `Model` 字段。
+> 方舟的 `model` 同时接受模型 ID（如上）与推理接入点 ID（`ep-` 开头）。`reasoning_effort` 只有推理模型接受，普通模型传入返回 400。
 
 **OpenAI**
 
 | 模型名 | 说明 |
 |--------|------|
-| `gpt-5.4` | 旗舰，推理/编码综合最强，1M 上下文（2026-03） |
-| `gpt-5.4-pro` | Pro 版，能力更强 |
-| `gpt-5.4-mini` | 经济款，400K 上下文（2026-03） |
-| `gpt-5.4-nano` | 极低成本 |
-| `gpt-5.3-codex` | 代码专用（legacy） |
-| `o3` | 推理系列旗舰 |
-| `o3-pro` | 推理增强 |
-| `o3-mini` | 轻量推理 |
-| `o4-mini` | 新一代推理 |
+| `gpt-6-astra` | 官方模型页当前列出的旗舰 |
+| `gpt-5.6-sol` | 5.6 旗舰档（`gpt-5.6` 别名指向它） |
+| `gpt-5.6-terra` | 智能 / 成本均衡档（对应早期 mini） |
+| `gpt-5.6-luna` | 高并发低成本档（对应早期 nano） |
+| `gpt-5.5` / `gpt-5.4` | 上两代 |
+
+> `reasoning_effort` 支持 none / low / medium / high / xhigh / max（按模型而异）。库对 OpenAI / Azure 下发 `max_completion_tokens` 而非已被推理模型拒绝的 `max_tokens`。
+
+**Anthropic**
+
+| 模型名 | 说明 |
+|--------|------|
+| `claude-fable-5-1` | 最高能力档（Mythos 级，含额外安全措施） |
+| `claude-opus-5` | 复杂 Agent 编码与企业工作负载 |
+| `claude-sonnet-5` | 默认推荐，1M 上下文，自适应思考默认开启 |
+| `claude-haiku-4-5-20251001` | 低延迟档 |
+
+> 5 代起无日期后缀的 ID 即固定快照。`budget_tokens` 已不被新模型接受，用 `Thinking.Enabled` + `Effort`。
+
+**Google Gemini**
+
+| 模型名 | 说明 |
+|--------|------|
+| `gemini-3.8-flash` | 最新 Flash（GA），长程软件工程与 Agent |
+| `gemini-3.5-flash` | 3.5 Flash（GA，默认推荐） |
+| `gemini-3.1-pro-preview` | 当前可用的 Pro |
+| `gemini-3.1-flash-lite` | 低成本高并发 |
+
+> 3 系用 `thinkingLevel` 控制推理、要求回传 `thoughtSignature`、不建议再传 temperature / top_p（3.8 直接忽略）。2.5 系计划 2026-10 关停。
+
+**xAI / Groq / Mistral / Cohere**
+
+| 平台 | 模型名 |
+|--------|------|
+| xAI | `grok-4.6`（旗舰）、`grok-4.5`、`grok-4-1-fast` |
+| Groq | `openai/gpt-oss-120b`、`openai/gpt-oss-20b`、`qwen/qwen3.6-27b` |
+| Mistral | `mistral-large-latest`（Large 3）、`mistral-small-latest`（Small 4，`reasoning_effort` 开推理）、`magistral-medium-latest` |
+| Cohere | `command-a-plus-05-2026`、`command-a-03-2025`（兼容接口 `reasoning_effort` 只接受 none / high） |
 
 > 模型列表会随平台更新而变化，建议使用前查阅各平台最新文档。
 
 ## 常用 Embedding 模型速查
 
-> 以下维度数为官方文档给出的**最大值**，部分模型（如 OpenAI `text-embedding-3-*`、Qwen `text-embedding-v3`、智谱 `embedding-3`）支持通过 `Dimensions` 参数按需截断。具体可选维度值、计费方式、向量归一化行为以各平台最新文档为准。
+> 以下维度数为官方文档给出的**最大值**，部分模型（如 OpenAI `text-embedding-3-*`、Qwen `text-embedding-v3/v4`、智谱 `embedding-3`）支持通过 `Dimensions` 参数按需截断。具体可选维度值、计费方式、向量归一化行为以各平台最新文档为准。
 
 **OpenAI**
 
@@ -2979,9 +3071,9 @@ curl -X POST http://localhost:8080/chat \
 
 | 模型名 | 维度 | 说明 |
 |--------|------|------|
-| `text-embedding-v3` | 1024 | 默认推荐，支持 `dimensions` 截断（64/128/256/512/768/1024） |
-| `text-embedding-v4` | 最高 2048 | 2026 最新版，支持多语言增强 |
-| `text-embedding-v2` | 1536 | 上一代 |
+| `text-embedding-v4` | 最高 2048 | 默认推荐，多语言增强，支持 `dimensions` 截断 |
+| `qwen3.7-text-embedding` | — | 3.7 系新一代向量模型，以官方文档为准 |
+| `text-embedding-v3` | 1024 | 上一代，与 v4 维度兼容、可平滑迁移 |
 
 **智谱 AI**
 
@@ -3002,13 +3094,15 @@ curl -X POST http://localhost:8080/chat \
 
 | 模型名 | 维度 | 说明 |
 |--------|------|------|
-| `gemini-embedding-001` | 3072 | 默认推荐，原生 `embedContent` / `batchEmbedContents` 接口，支持 `outputDimensionality` 截断 |
+| `gemini-embedding-001` | 3072 | 默认推荐（GA、纯文本），支持 `task_type` 与 `outputDimensionality` 截断 |
+| `gemini-embedding-2-preview` | 128–3072 | 多模态预览版，8K 上下文，截断向量自动归一化；不支持 `task_type`，向量空间与 001 不兼容需重建索引 |
 
 **硅基流动**
 
 | 模型名 | 维度 | 说明 |
 |--------|------|------|
 | `BAAI/bge-m3` | 1024 | 默认推荐，多语言 + 稀疏/稠密混合 |
+| `Qwen/Qwen3-Embedding-8B` | 可变 | MTEB 多语言榜首，支持自定义指令 |
 | `BAAI/bge-large-zh-v1.5` | 1024 | 中文专用 |
 | `Pro/BAAI/bge-m3` | 1024 | 付费稳定通道 |
 | `netease-youdao/bce-embedding-base_v1` | 768 | 网易有道中英双语 |
@@ -3118,10 +3212,19 @@ type Usage struct {
 
 ```go
 type Message struct {
-    Role       Role       // RoleSystem / RoleUser / RoleAssistant / RoleTool
-    Content    []ContentPart
-    ToolCalls  []ToolCall // Role == RoleAssistant 时，模型请求的工具调用
-    ToolCallID string     // Role == RoleTool 时，关联的 ToolCall.ID
+    Role           Role            // RoleSystem / RoleUser / RoleAssistant / RoleTool
+    Content        []ContentPart
+    Reasoning      string          // Role == RoleAssistant 时，上一轮推理文本（映射为 reasoning_content）
+    ThinkingBlocks []ThinkingBlock // Role == RoleAssistant 时，Anthropic 签名思考块，原样回传
+    ToolCalls      []ToolCall      // Role == RoleAssistant 时，模型请求的工具调用
+    ToolCallID     string          // Role == RoleTool 时，关联的 ToolCall.ID
+    ToolName       string          // Role == RoleTool 时，被调用的函数名（Gemini 必需）
+}
+
+type ThinkingBlock struct {
+    Thinking  string // 思考文本；平台省略显示时可能为空
+    Signature string // 平台签名，原样回传
+    Redacted  string // 加密思考块数据（redacted_thinking）
 }
 ```
 
@@ -3142,6 +3245,11 @@ type ContentPart struct {
 	CacheControl *CacheControl
 }
 
+type CacheControl struct {
+	Type CacheControlType // "ephemeral"
+	TTL  CacheControlTTL  // "" 沿用平台默认 / "5m" / "1h"
+}
+
 const (
 	ContentTypeText     ContentType = "text"
 	ContentTypeImageURL ContentType = "image_url"
@@ -3156,6 +3264,7 @@ provider.FileDataPart(bytes, "application/pdf", "brief.pdf")
 provider.FileURLPart("https://example.com/brief.pdf", "application/pdf")
 provider.FileIDPart("file_123")
 provider.WithCacheControl(provider.TextPart("cache me"), provider.CacheControlEphemeral())
+provider.WithCacheControl(provider.TextPart("cache 1h"), provider.CacheControlEphemeralTTL(provider.CacheControlTTL1h))
 provider.UserText("hello")
 provider.UserMessage(provider.TextPart("describe"), provider.ImageURLPart("https://..."))
 ```
@@ -3172,12 +3281,14 @@ type FunctionDef struct {
     Name        string // 函数名（snake_case）
     Description string // 函数描述
     Parameters  any    // 参数 JSON Schema（推荐用 ParamSchema）
+    Strict      *bool  // 严格约束入参（OpenAI / Anthropic），nil 沿用平台默认
 }
 
 // 模型返回的工具调用
 type ToolCall struct {
-    ID       string       // 唯一标识，回传结果时需要
-    Function FunctionCall
+    ID               string       // 唯一标识，回传结果时需要
+    Function         FunctionCall
+    ThoughtSignature string       // Gemini 3 签名，回传时原样携带
 }
 
 type FunctionCall struct {
@@ -3189,27 +3300,32 @@ type FunctionCall struct {
 fc.ParseArguments(&target) error // 解析 JSON 参数到结构体
 
 // 便捷构造函数
-provider.ToolResultMessage(toolCallID, content) Message       // 纯文本结果
-provider.ToolResultMessageJSON(toolCallID, result) (Message, error) // 自动序列化
+provider.ToolResultMessageFor(call, content) Message              // 纯文本结果，带函数名（推荐）
+provider.ToolResultMessageJSONFor(call, result) (Message, error)  // 自动序列化，带函数名
+provider.ToolResultMessage(toolCallID, content) Message           // 仅 ID（Gemini 需在同一请求内可反查函数名）
+provider.ToolResultMessageJSON(toolCallID, result) (Message, error)
 ```
 
 ### StreamChunk（含 Tool Use）
 
 ```go
 type StreamChunk struct {
-    Delta          string          // 增量文本
-    ReasoningDelta string          // 增量推理文本
-    FinishReason   string          // 非空表示流结束
-    Model          string          // 响应侧回传的实际模型名（部分 chunk 携带）
-    Usage          Usage           // 流尾部 chunk 携带完整 token 统计，其余 chunk 为零值
-    Parts          []ContentPart   // 非文本输出（如图像），通常整块到达
-    ToolCalls      []ToolCallDelta // 流式 tool call 增量
+    Delta             string          // 增量文本
+    ReasoningDelta    string          // 增量推理文本
+    FinishReason      string          // 非空表示流结束
+    ThinkingSignature string          // Anthropic 思考块签名，随块结束到达一次（块边界）
+    RedactedThinking  string          // Anthropic 加密思考块，整块到达
+    Model             string          // 响应侧回传的实际模型名（部分 chunk 携带）
+    Usage             Usage           // 流尾部 chunk 携带完整 token 统计，其余 chunk 为零值
+    Parts             []ContentPart   // 非文本输出（如图像），通常整块到达
+    ToolCalls         []ToolCallDelta // 流式 tool call 增量
 }
 
 type ToolCallDelta struct {
-    Index    int               // tool call 索引
-    ID       string            // 首个 chunk 中非空
-    Function FunctionCallDelta
+    Index            int               // tool call 索引
+    ID               string            // 首个 chunk 中非空
+    Function         FunctionCallDelta
+    ThoughtSignature string            // Gemini 3 签名
 }
 
 type FunctionCallDelta struct {

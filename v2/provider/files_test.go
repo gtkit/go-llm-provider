@@ -319,13 +319,13 @@ func TestBuildOpenAIMessageFilePartStillRejected(t *testing.T) {
 	_, err := buildOpenAIMessage(UserMessage(
 		TextPart("总结这份文件"),
 		FileIDPart("file-abc"),
-	))
+	), false)
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrInvalidRequest)
 
 	_, err = buildOpenAIMessage(UserMessage(
 		FileDataPart([]byte("%PDF-1.7"), "application/pdf", "brief.pdf"),
-	))
+	), false)
 	require.ErrorIs(t, err, ErrInvalidRequest)
 }
 

@@ -107,7 +107,7 @@ func run() error {
 			continue
 		}
 
-		messages = append(messages, provider.ToolResultMessage(tc.ID, result))
+		messages = append(messages, provider.ToolResultMessageFor(tc, result))
 	}
 
 	finalResp, err := p.Chat(ctx, &provider.ChatRequest{
