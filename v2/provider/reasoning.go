@@ -21,6 +21,7 @@ import (
 //	阿里云百炼 Qwen             ✓       -          ✓
 //	Anthropic（原生）           ✓       ✓          ✓（仅 4.5 及更早模型）
 //	Gemini（原生）              ✓       ✓          ✓（与 Effort 互斥）
+//	Ollama（原生）              ✓       ✓          -
 //
 // 传入表中未标注的字段时，请求构建阶段返回 ErrInvalidRequest 并在错误信息中
 // 列出该平台已映射的字段——推理 token 按输出价计费，静默忽略会让调用方
@@ -36,7 +37,8 @@ type Thinking struct {
 	//   - OpenAI：none / minimal / low / medium / high / xhigh / max（按模型而异）；
 	//   - DeepSeek / 智谱 / Kimi K3：low / high / max；
 	//   - Anthropic：low / medium / high / xhigh / max（按模型而异）；
-	//   - Gemini：minimal / low / medium / high（按模型而异）。
+	//   - Gemini：minimal / low / medium / high（按模型而异）；
+	//   - Ollama：low / medium / high（gpt-oss 等支持档位的模型，透传为 think 字符串）。
 	Effort string
 
 	// BudgetTokens 按 token 预算控制推理深度，nil 表示不指定预算。
@@ -93,6 +95,7 @@ var thinkingSupportByProvider = map[ProviderName]thinkingSupport{
 	ProviderQwen:        {enabled: true, budget: true, reasoningEcho: true},
 	ProviderAnthropic:   {enabled: true, effort: true, budget: true},
 	ProviderGemini:      {enabled: true, effort: true, budget: true},
+	ProviderOllama:      {enabled: true, effort: true},
 }
 
 // Thinking 各字段在错误信息中的名字，集中一处以免措辞漂移。

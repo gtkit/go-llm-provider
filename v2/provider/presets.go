@@ -223,11 +223,17 @@ var presetCatalog = map[ProviderName]Preset{
 	},
 	ProviderOllama: {
 		BaseURL: defaultOllamaBaseURL,
+		// 本地模型由调用方指定，能力位描述的是 /api/chat 协议映射：具体模型是否支持
+		// 工具 / 思考 / 图片由 Ollama 按模型返回错误。
 		Capabilities: ModelCapabilities{
 			Provider: ProviderOllama,
 			Capabilities: []Capability{
 				CapabilityChat,
 				CapabilityStreaming,
+				CapabilityTools,
+				CapabilityStructuredOutput,
+				CapabilityReasoning,
+				CapabilityVision,
 			},
 		},
 	},

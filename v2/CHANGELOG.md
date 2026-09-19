@@ -6,6 +6,13 @@
 
 ### Added
 
+- Ollama 原生路径补齐 `/api/chat` 的完整能力映射，此前 Tools / ResponseFormat / Thinking 一律返回 `ErrInvalidRequest`，图片片段被静默丢弃：
+  - Tool Use：函数工具下发、响应 `tool_calls`（对象入参归一为 JSON 字符串）、合成调用 ID（`ollama_<函数名>_<序号>`，Ollama 不签发 ID）、`done_reason` 对齐为 `tool_calls`、历史回放带 `tool_name`；流式下整块到达的工具调用按到达顺序编号。`ToolChoice` 仅接受自动选择、`ParallelToolCalls` 无映射，非默认取值 fail-closed
+  - 结构化输出：`json_object` → `format: "json"`，`json_schema` → schema 对象
+  - 思考：`Thinking.Enabled` → `think` 布尔开关，`Thinking.Effort` → `think` 档位字符串；响应 `thinking` 归位到 `Reasoning` / `ReasoningDelta`，历史回放写回 assistant 的 `thinking`（推理往返）
+  - 图片：内联字节与 data URL 映射为 `images`，远程 URL 拒绝；`Seed` 映射 `options.seed`
+  - `ProviderOllama` 预设声明 `CapabilityTools` / `CapabilityStructuredOutput` / `CapabilityReasoning` / `CapabilityVision`，推理支持表加入 Ollama（Enabled + Effort）
+
 ### Changed
 
 ### Deprecated

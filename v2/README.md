@@ -126,7 +126,7 @@ go get github.com/gtkit/go-llm-provider/v2
 | OpenAI | 是 | 是 | 是 | 是 | 否 | 否 | 是 | 是 | 是 | 否 | 否 | OpenAI 兼容 |
 | Anthropic / Claude | 是 | 是 | 是 | 是 | 是 | 是 | 否 | 是 | 否 | 否 | 是 | 原生 HTTP |
 | Google Gemini | 是 | 是 | 是 | 是 | 是 | 是 | 否 | 是 | 是 | 否 | 是 | 原生 HTTP |
-| Ollama | 是 | 是 | 否 | 否 | 否 | 否 | 否 | 否 | 否 | 否 | 否 | 原生 HTTP |
+| Ollama | 是 | 是 | 是 | 是 | 是 | 否 | 否 | 是 | 否 | 否 | 否 | 原生 HTTP |
 | xAI / Grok | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 否 | 否 | 否 | 否 | OpenAI 兼容 |
 | Groq | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 否 | 否 | 否 | 否 | OpenAI 兼容 |
 | Mistral AI | 是 | 是 | 是 | 是 | 否 | 否 | 否 | 否 | 是 | 否 | 否 | OpenAI 兼容 |
@@ -433,6 +433,16 @@ ollama, err := provider.NewOllamaProvider(provider.OllamaProviderConfig{
 ```
 
 `NewProviderFromPreset(provider.ProviderOllama, "", "llama3.2")` 也可以创建本地 provider；`QuickRegistry` 仍按 API key 注册云平台，空 key 会跳过 Ollama。
+
+原生路径已映射 `/api/chat` 的完整能力，与云平台共用同一套请求类型：
+
+- **Tool Use**：`Tools` 下发为 Ollama 的函数工具，`RunToolLoop` / `RunToolLoopStream` 可直接用。Ollama 不签发调用 ID，库按 `ollama_<函数名>_<序号>` 合成；工具结果带 `tool_name`（`ToolResultMessageFor` 或按 ID 反查）。`ToolChoice` 只接受默认的自动选择，`ParallelToolCalls` 无对应参数，非默认取值返回 `ErrInvalidRequest`。
+- **结构化输出**：`JSONObjectFormat()` 映射为 `format: "json"`，`JSONSchemaFormat` 把 schema 原样下发。
+- **思考**：`Thinking.Enabled` 映射 `think: true/false`，`Thinking.Effort` 映射 `think: "low"|"medium"|"high"`（gpt-oss 等支持档位的模型）；响应的 `thinking` 归位到 `Reasoning` / `ReasoningDelta`，回传历史时写回 assistant 的 `thinking`。
+- **图片**：`ImageDataPart` 与 data URL 映射为 `images`；Ollama 不拉取远程 URL，`ImageURLPart("https://...")` 返回 `ErrInvalidRequest`。
+- **Seed**：映射 `options.seed`。
+
+具体模型是否支持工具 / 思考 / 图片由 Ollama 按模型返回错误，能力矩阵中 Ollama 一行描述的是协议映射。
 
 ### 本地 LLM 接入（Ollama / vLLM / LM Studio / LocalAI / llama.cpp）
 
@@ -1144,6 +1154,7 @@ type Thinking struct {
 | 阿里云百炼（通义千问） | ✅ | | ✅ | 顶层 `enable_thinking` + `thinking_budget` |
 | Anthropic（原生） | ✅ | ✅ | ✅（仅 4.5 及更早） | `thinking.type` adaptive / disabled + `output_config.effort` |
 | Gemini（原生） | ✅ | ✅ | ✅（与 Effort 互斥） | `thinkingConfig.thinkingLevel` / `thinkingBudget` |
+| Ollama（原生） | ✅ | ✅ | | `think`（bool 或 low / medium / high 档位字符串） |
 
 传入表中未标注的字段时，请求在构建阶段返回 `ErrInvalidRequest`，错误信息会列出该平台
 已映射的字段。推理 token 计入输出、按输出价计费，静默忽略会让调用方误以为思考已开启，
