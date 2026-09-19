@@ -8,8 +8,6 @@
 
 ### Changed
 
-- 预设默认模型对照 2026-09 官方现状更新：DeepSeek `deepseek-chat` → `deepseek-v4-flash`（旧名已于 2026-07-24 停用，继续使用会直接报错）、百炼 `qwen3.6-plus` → `qwen3.7-plus` 且 embedding `text-embedding-v3` → `text-embedding-v4`、智谱 `glm-5.1` → `glm-5.3`、千帆 `ernie-4.5-turbo-32k` → `ernie-5.1`、硅基流动 `deepseek-ai/DeepSeek-V3` → `deepseek-ai/DeepSeek-V4-Flash`、Moonshot `kimi-k2-turbo-preview` → `kimi-k2.6`、OpenAI `gpt-5.4-mini` → `gpt-5.6-terra`、Anthropic `claude-sonnet-4-5` → `claude-sonnet-5`、Gemini `gemini-2.5-flash` → `gemini-3.5-flash`。显式指定 `Model` 的调用方不受影响。思考模型的推理往返与 Claude 5 / Gemini 3 的新参数形态仅在 v2 支持（见 v2 2.16.0）
-
 ### Deprecated
 
 ### Removed
@@ -17,6 +15,16 @@
 ### Fixed
 
 ### Security
+
+## [1.9.0] - 2026-09-20
+
+### Changed
+
+- 预设默认模型对照 2026-09 官方现状更新：DeepSeek `deepseek-chat` → `deepseek-v4-flash`（旧名已于 2026-07-24 停用，继续使用会直接报错）、百炼 `qwen3.6-plus` → `qwen3.7-plus` 且 embedding `text-embedding-v3` → `text-embedding-v4`、智谱 `glm-5.1` → `glm-5.3`、千帆 `ernie-4.5-turbo-32k` → `ernie-5.1`、硅基流动 `deepseek-ai/DeepSeek-V3` → `deepseek-ai/DeepSeek-V4-Flash`、Moonshot `kimi-k2-turbo-preview` → `kimi-k2.6`、OpenAI `gpt-5.4-mini` → `gpt-5.6-terra`、Anthropic `claude-sonnet-4-5` → `claude-sonnet-5`、Gemini `gemini-2.5-flash` → `gemini-3.5-flash`。显式指定 `Model` 的调用方不受影响。思考模型的推理往返与 Claude 5 / Gemini 3 的新参数形态仅在 v2 支持（见 v2 2.16.0）
+
+### Fixed
+
+- 修正 `Version` 常量滞后：v1.7.0 与 v1.8.0 发布时未同步更新，常量停留在 `v1.6.0`，随本版本更正为 `v1.9.0`
 
 ## [1.8.0] - 2026-09-01
 

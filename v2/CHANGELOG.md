@@ -6,16 +6,6 @@
 
 ### Added
 
-- Ollama 原生路径补齐 `/api/chat` 的完整能力映射，此前 Tools / ResponseFormat / Thinking 一律返回 `ErrInvalidRequest`，图片片段被静默丢弃：
-  - Tool Use：函数工具下发、响应 `tool_calls`（对象入参归一为 JSON 字符串）、合成调用 ID（`ollama_<函数名>_<序号>`，Ollama 不签发 ID）、`done_reason` 对齐为 `tool_calls`、历史回放带 `tool_name`；流式下整块到达的工具调用按到达顺序编号。`ToolChoice` 仅接受自动选择、`ParallelToolCalls` 无映射，非默认取值 fail-closed
-  - 结构化输出：`json_object` → `format: "json"`，`json_schema` → schema 对象
-  - 思考：`Thinking.Enabled` → `think` 布尔开关，`Thinking.Effort` → `think` 档位字符串；响应 `thinking` 归位到 `Reasoning` / `ReasoningDelta`，历史回放写回 assistant 的 `thinking`（推理往返）
-  - 图片：内联字节与 data URL 映射为 `images`，远程 URL 拒绝；`Seed` 映射 `options.seed`
-  - `ProviderOllama` 预设声明 `CapabilityTools` / `CapabilityStructuredOutput` / `CapabilityReasoning` / `CapabilityVision`，推理支持表加入 Ollama（Enabled + Effort）
-- 新增 `NewOpenAIResponsesProvider` / `OpenAIResponsesConfig`：走 OpenAI Responses API（`/responses`）的 `Provider` 实现，OpenAI 官方已将其作为推理 / 工具调用 / 多轮的推荐入口，DeepSeek、方舟、智谱、Kimi 也提供同形端点（`Name` 填对应 ProviderName 即可归账）。映射覆盖：system → `instructions`，历史拆为 reasoning / message / function_call / function_call_output 输入项；默认 `store: false` 并请求 `reasoning.encrypted_content`，推理项以 `ThinkingBlocks{Signature: 项 id, Redacted: encrypted_content}` 往返；`Thinking.Effort` → `reasoning.effort`（附 `summary: auto`，摘要进 `Reasoning`）；`WebSearchTool` → 内建 `web_search`（支持 `AllowedDomains`），查询与 `url_citation` 进 `Search`、次数计入 `WebSearchRequests`；结构化输出 → `text.format`；`FunctionDef.Strict`、扁平 `tool_choice`；流式事件归一为 `StreamChunk`（推理项完成帧同时给出 `ThinkingSignature` 与 `RedactedThinking`）。`Stop` / `Seed` / `CandidateCount` 该协议无对应字段，返回 `ErrInvalidRequest`
-- `thinkingAssembler`（`RunToolLoopStream` 内部）同帧到达的 `ThinkingSignature` 与 `RedactedThinking` 现并入同一个 `ThinkingBlock`，以承载 Responses API 的推理项；Anthropic 的两类块仍分别到达，行为不变
-- 新增仓库根目录 `ROADMAP.md` 与 `provider/verification_smoke_test.go`：记录 2.16 起按官方文档实现、尚未用真实 key 实测的 6 条协议细节（V-01 ~ V-06，`TestVerify*` 用例缺 key 自动跳过）以及待排期功能（Anthropic compaction、音视频 ContentPart、Batch API）
-
 ### Changed
 
 ### Deprecated
@@ -26,12 +16,22 @@
 
 ### Security
 
-## [2.16.0] - 2026-09-19
+## [2.16.0] - 2026-09-20
 
-> 面向 2026-09 各厂商现状的一次对齐：修复会直接失败的默认模型与参数形态，补齐思考模型在工具循环中必需的推理往返机制。
+> 面向 2026-09 各厂商现状的一次对齐：修复会直接失败的默认模型与参数形态，补齐思考模型在工具循环中必需的推理往返机制，并新增 OpenAI Responses API 路径、Ollama 完整能力映射与联网搜索示例模块。
 
 ### Added
 
+- Ollama 原生路径补齐 `/api/chat` 的完整能力映射，此前 Tools / ResponseFormat / Thinking 一律返回 `ErrInvalidRequest`，图片片段被静默丢弃：
+  - Tool Use：函数工具下发、响应 `tool_calls`（对象入参归一为 JSON 字符串）、合成调用 ID（`ollama_<函数名>_<序号>`，Ollama 不签发 ID）、`done_reason` 对齐为 `tool_calls`、历史回放带 `tool_name`；流式下整块到达的工具调用按到达顺序编号。`ToolChoice` 仅接受自动选择、`ParallelToolCalls` 无映射，非默认取值 fail-closed
+  - 结构化输出：`json_object` → `format: "json"`，`json_schema` → schema 对象
+  - 思考：`Thinking.Enabled` → `think` 布尔开关，`Thinking.Effort` → `think` 档位字符串；响应 `thinking` 归位到 `Reasoning` / `ReasoningDelta`，历史回放写回 assistant 的 `thinking`（推理往返）
+  - 图片：内联字节与 data URL 映射为 `images`，远程 URL 拒绝；`Seed` 映射 `options.seed`
+  - `ProviderOllama` 预设声明 `CapabilityTools` / `CapabilityStructuredOutput` / `CapabilityReasoning` / `CapabilityVision`，推理支持表加入 Ollama（Enabled + Effort）
+- 新增 `NewOpenAIResponsesProvider` / `OpenAIResponsesConfig`：走 OpenAI Responses API（`/responses`）的 `Provider` 实现，OpenAI 官方已将其作为推理 / 工具调用 / 多轮的推荐入口，DeepSeek、方舟、智谱、Kimi 也提供同形端点（`Name` 填对应 ProviderName 即可归账）。映射覆盖：system → `instructions`，历史拆为 reasoning / message / function_call / function_call_output 输入项；默认 `store: false` 并请求 `reasoning.encrypted_content`，推理项以 `ThinkingBlocks{Signature: 项 id, Redacted: encrypted_content}` 往返；`Thinking.Effort` → `reasoning.effort`（附 `summary: auto`，摘要进 `Reasoning`）；`WebSearchTool` → 内建 `web_search`（支持 `AllowedDomains`），查询与 `url_citation` 进 `Search`、次数计入 `WebSearchRequests`；结构化输出 → `text.format`；`FunctionDef.Strict`、扁平 `tool_choice`；流式事件归一为 `StreamChunk`（推理项完成帧同时给出 `ThinkingSignature` 与 `RedactedThinking`）。`Stop` / `Seed` / `CandidateCount` 该协议无对应字段，返回 `ErrInvalidRequest`
+- `thinkingAssembler`（`RunToolLoopStream` 内部）同帧到达的 `ThinkingSignature` 与 `RedactedThinking` 现并入同一个 `ThinkingBlock`，以承载 Responses API 的推理项；Anthropic 的两类块仍分别到达，行为不变
+- 新增示例子模块 `example/websearch`（独立 go.mod）：给 Agent 接联网搜索的参考实现。国产 OpenAI 兼容平台没有平台内建搜索，只能走"函数工具 + RunToolLoop"，本模块提供完整接法——应用层 `SearchClient` 契约、博查（Bocha）Web Search 实现（含条数裁剪、长短摘要回退、错误分类与可重试判定）、`Toolset` 包装成 `provider.Tool` / `ToolHandler`、三道提示注入防线（内容净化 + `WrapToolResultInTag` 标签隔离 + 系统提示词声明）、`[ref:N]` 引用校验防编造出处，以及可运行 demo。换搜索服务商只需替换 `SearchClient` 实现；核心包依赖不受影响
+- 新增仓库根目录 `ROADMAP.md` 与 `provider/verification_smoke_test.go`：记录 2.16 起按官方文档实现、尚未用真实 key 实测的 6 条协议细节（V-01 ~ V-06，`TestVerify*` 用例缺 key 自动跳过）以及待排期功能（Anthropic compaction、音视频 ContentPart、Batch API）
 - **推理内容往返**：`Message` 新增 `Reasoning`、`ThinkingBlocks`、`ToolName`，`ToolCall` / `ToolCallDelta` 新增 `ThoughtSignature`，`ChatResponse` 新增 `ThinkingBlocks`，`StreamChunk` 新增 `ThinkingSignature` / `RedactedThinking`。思考模型在工具循环中普遍要求回传上一轮推理（DeepSeek 带 tools 时缺失直接 400、Kimi K3 要求回传完整 assistant 消息、Anthropic 要求回传带签名的 thinking 块、Gemini 3 要求回传 functionCall 的 thoughtSignature），此前 `AssistantMessage()` 全部丢弃，`RunToolLoop` 在这些模型上第二轮必然失败。现在 `AssistantMessage()`、`RunToolLoop`、`RunToolLoopStream` 自动携带；OpenAI 兼容路径把 `Reasoning` 映射为 `reasoning_content`，只对已知接受该字段的平台下发（DeepSeek / 智谱 / Kimi / 百炼 / 方舟），自定义平台用新增的 `ProviderConfig.SupportsReasoningContent` 声明
 - 新增 `ToolResultMessageFor` / `ToolResultMessageJSONFor`：按 `ToolCall` 构造工具结果并带上函数名。Gemini 的 `functionResponse.name` 必须是函数名，此前被填成 `ToolCallID`（Gemini 3 同时校验 id 与 name，必被拒绝）；只给 `ToolCallID` 的既有调用在同一请求内按 ID 反查函数名，反查不到返回 `ErrInvalidRequest`
 - `Thinking.Effort` 现已映射到 DeepSeek / 智谱 / Moonshot（`reasoning_effort`）、Anthropic（`output_config.effort`）与 Gemini（`thinkingConfig.thinkingLevel`，Gemini 3 系推荐口径，与 `BudgetTokens` 互斥）；`Thinking.Enabled` 现已映射到 DeepSeek / 智谱 / Moonshot（顶层 `thinking.type`，与方舟同形，共享 `compat_thinking.go` 的映射）。新增常量 `ThinkingEffortNone` / `ThinkingEffortXHigh` / `ThinkingEffortMax`
