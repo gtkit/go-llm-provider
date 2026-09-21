@@ -6,6 +6,9 @@
 
 ### Added
 
+- 智谱与百炼支持平台服务端内建联网搜索：`WebSearchTool()` 在这两个平台上可用，不再返回 `ErrInvalidRequest`；两家预设的 `CapabilityWebSearch` 随之置位
+- `SearchMetadata` 新增 `SourcesUnavailable` 字段，用于区分"模型未搜索"与"已搜索但平台协议不回传来源"（百炼的 OpenAI 兼容协议属于后者）
+
 ### Changed
 
 ### Deprecated

@@ -818,6 +818,11 @@ func NewProvider(cfg ProviderConfig) (Provider, error) {
 	if httpClient == nil {
 		httpClient = DefaultHTTPClient()
 	}
+	if providerCapturesSearchSources(cfg.Name) {
+		// 该平台会在响应体里带回内建搜索的来源，而 go-openai 只解码它认识的
+		// 字段，需要在 HTTP 层旁路取出（见 respfields.go）。
+		httpClient = &searchCaptureDoer{next: httpClient}
+	}
 	if needsExtraFields(cfg.Name) {
 		// 该平台有 go-openai 无法表达的顶层扩展字段（如方舟的 thinking），
 		// 通过包装 HTTPDoer 在发送前注入（见 extrafields.go）。
@@ -864,6 +869,11 @@ func (p *openaiProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRespo
 	}
 
 	ctx = withExtraFields(ctx, p.name, req)
+	var capture *searchCapture
+	if needsSearchCapture(p.name, req) {
+		capture = newSearchCapture(false)
+		ctx = withSearchCapture(ctx, capture)
+	}
 	resp, err := p.client.CreateChatCompletion(ctx, oReq)
 	if err != nil {
 		return nil, WrapProviderError(p.name, err)
@@ -880,6 +890,7 @@ func (p *openaiProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRespo
 		FinishReason: string(choice.FinishReason),
 		Metadata:     metadataFromHeader(p.name, resp.Model, resp.Header()),
 		Usage:        usageFromOpenAI(resp.Usage),
+		Search:       compatSearchMetadata(p.name, req, capture),
 	}
 
 	// 映射 tool calls
@@ -919,6 +930,11 @@ func (p *openaiProvider) ChatStream(ctx context.Context, req *ChatRequest) (*Str
 	}
 
 	ctx = withExtraFields(ctx, p.name, req)
+	var capture *searchCapture
+	if needsSearchCapture(p.name, req) {
+		capture = newSearchCapture(true)
+		ctx = withSearchCapture(ctx, capture)
+	}
 	stream, err := p.client.CreateChatCompletionStream(ctx, oReq)
 	if err != nil {
 		return nil, WrapProviderError(p.name, err)
@@ -932,7 +948,12 @@ func (p *openaiProvider) ChatStream(ctx context.Context, req *ChatRequest) (*Str
 		if err != nil {
 			return nil, WrapProviderError(p.name, err)
 		}
-		return openaiStreamChunk(resp), nil
+		chunk := openaiStreamChunk(resp)
+		// 搜索元数据只随终止 chunk 透出，与 StreamChunk.Search 的既有契约一致。
+		if chunk.FinishReason != "" {
+			chunk.Search = compatSearchMetadata(p.name, req, capture)
+		}
+		return chunk, nil
 	}, stream.Close, metadataFromHeader(p.name, req.Model, stream.Header())), nil
 }
 
@@ -1017,6 +1038,17 @@ func (p *openaiProvider) buildRequest(req *ChatRequest) (openai.ChatCompletionRe
 	}
 	if req.CandidateCount > 0 {
 		oReq.N = req.CandidateCount
+	}
+
+	// 支持内建搜索的兼容平台才走搜索校验：未支持的平台由 buildOpenAITools 以
+	// "该 provider 不支持原生搜索"拒绝，那个错误更贴近调用方的实际问题。
+	if supportsCompatWebSearch(p.name) {
+		if err := validateWebSearchRequest(req); err != nil {
+			return openai.ChatCompletionRequest{}, err
+		}
+		if err := validateCompatWebSearch(p.name, req.Tools); err != nil {
+			return openai.ChatCompletionRequest{}, err
+		}
 	}
 
 	tools, err := buildOpenAITools(p.name, req.Tools)
@@ -1107,7 +1139,16 @@ func buildOpenAITools(name ProviderName, tools []Tool) ([]openai.Tool, error) {
 	out := make([]openai.Tool, 0, len(tools))
 	for _, t := range tools {
 		if t.WebSearch != nil {
-			return nil, fmt.Errorf("%w: %s does not support native web search tools", ErrInvalidRequest, name)
+			if !supportsCompatWebSearch(name) {
+				return nil, fmt.Errorf("%w: %s does not support native web search tools", ErrInvalidRequest, name)
+			}
+			// 声明位置不在 tools 里的平台（百炼走顶层参数）在这里跳过，
+			// 由 extrafields.go 的注入通道下发。
+			if searchTool, ok := compatWebSearchTool(name, t.WebSearch); ok {
+				out = append(out, searchTool)
+			}
+
+			continue
 		}
 		def := &openai.FunctionDefinition{
 			Name:        t.Function.Name,

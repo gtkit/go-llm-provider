@@ -27,16 +27,25 @@ type WebSearchOptions struct {
 	BlockedDomains []string
 }
 
-// WebSearchTool 构造一个厂商原生联网搜索工具。仅 Anthropic 与 Gemini
-// 原生路径支持；其他 provider 收到该工具时返回 ErrInvalidRequest，不静默丢弃。
-// 是否支持可用 ModelCapabilities.Supports(CapabilityWebSearch) 预检。
-// 其余平台（含国内 OpenAI 兼容平台）接入搜索的推荐方式是普通函数工具 +
-// RunToolLoop，由调用方 ToolHandler 调用搜索 API，见 README"国内平台的
-// 联网搜索接入"一节。
+// WebSearchTool 构造一个厂商原生联网搜索工具，由平台服务端执行。
+// 支持的 provider 为 Anthropic、Gemini、OpenAI Responses 三条原生路径，以及
+// 智谱与百炼两个 OpenAI 兼容平台；其他 provider 收到该工具时返回
+// ErrInvalidRequest，不静默丢弃。是否支持可用
+// ModelCapabilities.Supports(CapabilityWebSearch) 预检。未覆盖的平台接入搜索的
+// 推荐方式是普通函数工具 + RunToolLoop，由调用方 ToolHandler 调用搜索 API，
+// 见 README"国内平台的联网搜索接入"一节。
+//
+// 逐平台差异：
+//   - MaxUses 仅 Anthropic 支持；
+//   - AllowedDomains 在智谱上至多一个域名（平台字段是单值，多值一律报错而非截断），
+//     百炼接受多个，Anthropic 接受多个，Gemini 不支持；
+//   - BlockedDomains 仅 Anthropic 支持；
+//   - 百炼的 OpenAI 兼容协议不回传搜索来源，响应的 Search.SourcesUnavailable 为 true。
 //
 // 当前限制：原生搜索不能与函数工具在同一请求中混用（Anthropic 的服务端
 // 工具块尚未支持跨轮往返，Gemini 2.5 系平台不支持该组合），Anthropic 侧
-// 也不能与结构化输出组合——这些组合一律返回 ErrInvalidRequest。
+// 也不能与结构化输出组合——这些组合一律返回 ErrInvalidRequest。智谱与百炼
+// 允许与函数工具混用。
 // 搜索结果的查询、来源与引用见 ChatResponse.Search / StreamChunk.Search。
 func WebSearchTool() Tool {
 	return Tool{WebSearch: &WebSearchOptions{}}
@@ -71,6 +80,16 @@ type SearchMetadata struct {
 	// 仍会生成解释性文本，Content 是否可用由调用方判断；本库如实透出，
 	// 不静默丢弃——调用方可据此区分"未搜索"与"搜索失败"。
 	Errors []SearchError
+
+	// SourcesUnavailable 表示本次调用所用的平台协议不回传搜索来源。
+	// 它是平台协议的静态属性，不是"这次没搜到"的运行时观测：
+	//
+	//   - false 且 Sources 为空 → 模型判断本次无需搜索；
+	//   - true → 平台协议不回传来源，Sources 恒为空，本次是否真的搜索过无从得知。
+	//
+	// 当前仅百炼的 OpenAI 兼容路径为 true（官方文档明示该协议不支持搜索来源返回），
+	// 其余支持搜索的路径恒为 false。
+	SourcesUnavailable bool
 }
 
 // SearchSource 是一条搜索结果来源。

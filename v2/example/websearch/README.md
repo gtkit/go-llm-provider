@@ -6,9 +6,11 @@
 
 ## 为什么需要它
 
-三条原生路径（Anthropic、Gemini、OpenAI Responses）已经有平台内建搜索，一行 `provider.WebSearchTool()` 就开，服务端执行，不需要本模块。
+Anthropic、Gemini、OpenAI Responses 三条原生路径，以及智谱与百炼两个 OpenAI 兼容平台，已经有平台内建搜索，一行 `provider.WebSearchTool()` 就开，服务端执行，不需要本模块。
 
-但国产 OpenAI 兼容平台（DeepSeek、通义千问、智谱、Kimi、豆包）没有内建搜索，联网只能走**普通函数工具 + `RunToolLoop`**：模型决定搜什么，你的代码去搜，结果回传模型。本模块就是这条路径的完整实现。
+但 DeepSeek、Kimi、火山方舟、千帆等平台核心库没有做内建搜索映射（原因与进展见仓库 ROADMAP），联网走**普通函数工具 + `RunToolLoop`**：模型决定搜什么，你的代码去搜，结果回传模型。本模块就是这条路径的完整实现。
+
+即使平台有内建搜索，想自己控制搜索服务商、结果清洗与注入防护时，也可以改用本模块这条路径。
 
 ## 分层
 

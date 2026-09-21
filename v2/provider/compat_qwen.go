@@ -9,20 +9,25 @@ const (
 	qwenThinkingBudgetField = "thinking_budget"
 )
 
-// qwenExtraFields 产出百炼的顶层思考控制字段。
-// 两个字段互相独立：只设置其一时只注入其一，都未设置时不注入任何字段，
-// 由百炼按模型自身的行为决定是否深度思考、思考多少 token。
+// qwenExtraFields 产出百炼的顶层扩展字段：思考控制与内建联网搜索参数。
+// 各字段互相独立：只设置其一时只注入其一，都未设置时不注入任何字段，
+// 由百炼按模型自身的行为决定是否深度思考、思考多少 token、是否联网。
 func qwenExtraFields(req *ChatRequest) map[string]any {
-	if req == nil || req.Thinking == nil {
+	if req == nil {
 		return nil
 	}
 
-	fields := make(map[string]any, 2)
-	if req.Thinking.Enabled != nil {
-		fields[qwenEnableThinkingField] = *req.Thinking.Enabled
-	}
-	if req.Thinking.BudgetTokens != nil {
-		fields[qwenThinkingBudgetField] = *req.Thinking.BudgetTokens
+	fields := qwenWebSearchFields(req)
+	if req.Thinking != nil {
+		if fields == nil {
+			fields = make(map[string]any, 2)
+		}
+		if req.Thinking.Enabled != nil {
+			fields[qwenEnableThinkingField] = *req.Thinking.Enabled
+		}
+		if req.Thinking.BudgetTokens != nil {
+			fields[qwenThinkingBudgetField] = *req.Thinking.BudgetTokens
+		}
 	}
 	if len(fields) == 0 {
 		return nil
