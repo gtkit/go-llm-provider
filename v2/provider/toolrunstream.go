@@ -48,7 +48,12 @@ func RunToolLoopStreamWithOptions(ctx context.Context, p Provider, req *ChatRequ
 		roundReq := *req
 		roundReq.Messages = messages
 		roundReq.Stop = slices.Clone(req.Stop)
-		roundReq.Tools = slices.Clone(req.Tools)
+
+		tools, err := selectRoundTools(ctx, opts.ToolSelector, messages, slices.Clone(req.Tools), round)
+		if err != nil {
+			return nil, err
+		}
+		roundReq.Tools = tools
 
 		stream, err := p.ChatStream(ctx, &roundReq)
 		if err != nil {

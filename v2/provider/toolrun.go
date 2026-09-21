@@ -34,6 +34,21 @@ type ToolResultTransformer func(ctx context.Context, call ToolCall, result strin
 // 因为那条路径本身已经是 error，没有可返回的最终响应。
 type ResponseValidator func(ctx context.Context, resp *ChatResponse) error
 
+// ToolSelector 在每一轮请求下发前裁剪本轮可用的工具集。
+// 典型用途：工具数量大时按当前对话收窄候选，降低 token 成本与选错率；
+// 或按调用方权限决定本轮放开哪些工具。
+//
+// messages 是该轮累积到的完整对话历史（含上一轮的工具结果消息），使第 2 轮起的
+// 裁剪能依据工具执行结果收窄。tools 是本轮请求的工具切片副本，原地重排或截断
+// 不影响调用方持有的 req.Tools；但切片元素内部的引用字段（如
+// Tool.Function.Parameters）仍与调用方共享，不得修改。
+//
+// 返回空切片表示本轮不提供任何工具，模型将直接作答。
+//
+// 返回 error 会中止整个工具循环：裁剪可能承载调用方的权限边界，钩子失败时
+// 回退为全量下发会把本该屏蔽的工具暴露给模型，因此不做回退。
+type ToolSelector func(ctx context.Context, messages []Message, tools []Tool) ([]Tool, error)
+
 // RunToolLoopOptions configures the additive RunToolLoop execution path.
 type RunToolLoopOptions struct {
 	// MaxRounds limits the maximum number of tool loop rounds.
@@ -47,6 +62,10 @@ type RunToolLoopOptions struct {
 	// ToolErrorEncoder customizes how tool handler errors are sent back to the model.
 	// If nil, DefaultToolErrorEncoder is used.
 	ToolErrorEncoder ToolErrorEncoder
+
+	// ToolSelector 在每轮请求下发前裁剪工具集。
+	// 为 nil 时全量下发 req.Tools，与该字段引入前的行为完全一致。
+	ToolSelector ToolSelector
 
 	// ToolResultTransformer 在工具结果写回对话历史前进行加工。
 	// 为 nil 时结果原样透传，与现有行为完全一致。
@@ -172,7 +191,12 @@ func RunToolLoopWithOptions(ctx context.Context, p Provider, req *ChatRequest, h
 		roundReq := *req
 		roundReq.Messages = messages
 		roundReq.Stop = slices.Clone(req.Stop)
-		roundReq.Tools = slices.Clone(req.Tools)
+
+		tools, err := selectRoundTools(ctx, opts.ToolSelector, messages, slices.Clone(req.Tools), round)
+		if err != nil {
+			return nil, err
+		}
+		roundReq.Tools = tools
 
 		resp, err := p.Chat(ctx, &roundReq)
 		if err != nil {
@@ -204,6 +228,21 @@ func RunToolLoopWithOptions(ctx context.Context, p Provider, req *ChatRequest, h
 	}
 
 	return nil, fmt.Errorf("tool loop exceeded max rounds (%d)", rounds)
+}
+
+// selectRoundTools 按 selector 裁剪本轮下发的工具集。selector 为 nil 时原样返回 tools。
+// tools 必须已是本轮的独立副本：selector 可能原地重排或截断它。
+func selectRoundTools(ctx context.Context, selector ToolSelector, messages []Message, tools []Tool, round int) ([]Tool, error) {
+	if selector == nil {
+		return tools, nil
+	}
+
+	selected, err := selector(ctx, messages, tools)
+	if err != nil {
+		return nil, fmt.Errorf("round %d: select tools: %w", round+1, err)
+	}
+
+	return selected, nil
 }
 
 // maxIterations 返回一个用于 for range 的迭代次数。

@@ -1560,11 +1560,38 @@ resp, err := provider.RunToolLoopWithOptions(
 - `ParallelToolCalls` 默认关闭
 - `ToolErrorEncoder` 默认使用安全脱敏编码器
 - `ToolRetry` 零值表示不重试（仅执行一次），保持既有行为；`MaxAttempts > 1` 时按 `Backoff` 等待并重试，`ShouldRetry` 默认重试所有非 context 取消错误
+- `ToolSelector` 默认为 `nil`，全量下发 `req.Tools`（既有行为）；设置后每轮下发前裁剪工具集，见下节
 - `AccumulateUsage` 默认关闭，返回最后一轮的 `Usage`（既有行为）；设为 `true` 后，返回响应的 `Usage` 为**所有轮次**的 token 消耗累加值，便于多轮工具循环的成本统计（某轮 provider 未返回 usage 则按 0 计入）
 
 思考模型（DeepSeek V4、Kimi K3、Claude 5、Gemini 3 等）要求把上一轮的推理内容随工具调用回传，
 `RunToolLoop` / `RunToolLoopStream` 已自动携带 `Reasoning`、`ThinkingBlocks`、`ThoughtSignature`
 并给工具结果补上函数名，无需额外配置；细节见「Thinking」一节的「推理内容往返」。
+
+#### 工具集裁剪（Tool Routing）
+
+工具数量大时，每轮把全部工具定义塞进请求有两个代价：token 成本随工具数线性上升，候选越多模型选错的概率越高。`ToolSelector` 让调用方在**每一轮**下发前决定本轮给哪些工具：
+
+```go
+resp, err := provider.RunToolLoopWithOptions(ctx, p, req, handler,
+    provider.RunToolLoopOptions{
+        MaxRounds: 5,
+        ToolSelector: func(_ context.Context, msgs []provider.Message, tools []provider.Tool) ([]provider.Tool, error) {
+            // 依据可以是关键词、规则、向量相似度，或当前用户的权限
+            return pickRelevant(msgs, tools), nil
+        },
+    },
+)
+```
+
+- **每轮都调用**：`msgs` 是该轮累积到的完整对话历史（含上一轮的工具结果），所以第 2 轮起可以依据工具执行结果继续收窄——例如查到订单号之后才放开退款工具。仅在首轮裁剪用不着这个钩子，直接改 `req.Tools` 即可
+- **返回空切片是合法的**，表示本轮不提供任何工具，模型直接作答
+- **返回 error 会中止整个循环**，不会回退成全量下发：裁剪可能承载调用方的权限边界，静默回退会把本该屏蔽的工具暴露给模型
+- **不影响调用方的请求**：`tools` 是本轮的切片副本，原地重排或截断都不会改到 `req.Tools`；但元素内部的引用字段（如 `Tool.Function.Parameters`）与调用方共享，不要修改
+- `RunToolLoopStreamWithOptions` 语义完全一致
+- **裁剪过度的表现**：模型反复请求已被筛掉的工具，或直接放弃任务，循环空转到 `MaxRounds` 上限。库无法判断哪个工具是"需要的"，保守起见给模型留一个兜底工具
+- 钩子在请求关键路径上同步执行，每轮一次。它应当是本地判断；需要远程检索时自行加缓存与超时
+
+库不提供内置的筛选实现：筛选依据（关键词表、向量索引、角色权限）来自业务上下文，库看不到，内置实现只会把业务判断固化成库的约定。
 
 #### 工具结果加工与响应校验
 

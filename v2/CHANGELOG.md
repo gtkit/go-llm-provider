@@ -8,6 +8,7 @@
 
 - 智谱与百炼支持平台服务端内建联网搜索：`WebSearchTool()` 在这两个平台上可用，不再返回 `ErrInvalidRequest`；两家预设的 `CapabilityWebSearch` 随之置位
 - `SearchMetadata` 新增 `SourcesUnavailable` 字段，用于区分"模型未搜索"与"已搜索但平台协议不回传来源"（百炼的 OpenAI 兼容协议属于后者）
+- `RunToolLoopOptions` 新增 `ToolSelector` 钩子：工具循环每轮下发前由调用方裁剪工具集，用于工具数量大时降低 token 成本与选错率；流式与非流式语义一致，为 `nil` 时全量下发、行为不变
 
 ### Changed
 
