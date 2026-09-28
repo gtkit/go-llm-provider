@@ -6,6 +6,20 @@
 
 ### Added
 
+### Changed
+
+### Deprecated
+
+### Removed
+
+### Fixed
+
+### Security
+
+## [1.10.0] - 2026-09-28
+
+### Added
+
 - 工具循环在调用 handler 前检查参数：参数非空且不是合法 JSON（常见于输出被 `max_tokens` 截断）时不调用 handler，以新增哨兵 `ErrToolArgumentsInvalid` 经 `ToolErrorEncoder` 生成工具结果回传模型，循环继续；空参数照常交给 handler
 
 ### Changed
@@ -14,16 +28,10 @@
 - ⚠ 工具循环执行工具期间的回调（handler、`ToolResultTransformer`、`ToolErrorEncoder`）发生 panic 时被恢复，循环以包装新增哨兵 `ErrToolHandlerPanic` 的错误中止，错误文本含工具名、panic 值与堆栈；串行与并行执行一致。此前并行执行时 panic 发生在库内 goroutine 中，调用方无法 recover，进程直接退出；串行执行时 panic 向调用方传播。**迁移**：依赖外层 `recover` 捕获工具 panic 的调用方，改为检查 `errors.Is(err, ErrToolHandlerPanic)`
 - `DefaultToolErrorEncoder` 对库自身的哨兵输出可供模型自我纠正的文案：`ErrToolNotOffered` 为 `tool not available in this round; use only the tools provided`，`ErrToolArgumentsInvalid` 为 `tool arguments are not valid JSON (possibly truncated); regenerate the call with complete arguments`；handler 返回的业务错误仍统一为 `tool execution failed`
 
-### Deprecated
-
-### Removed
-
 ### Fixed
 
 - `example/toolsecurity` 的注入特征检测改在规范化副本上进行（全角折半角、删除零宽字符、各类空白归一），全角字母、零宽字符、NBSP 打散的注入短语不再漏检；截断与日志预览改为按字符计，不再切出非法 UTF-8
 - `PROMPT_INJECTION_DEFENSE.md` 模板同步：新增 `NormalizeForDetection` 与 `TruncateRunes`，`Sanitize` 的 `maxLen` 按字符计，用例表补充全角与零宽绕过样例
-
-### Security
 
 ## [1.9.0] - 2026-09-20
 
