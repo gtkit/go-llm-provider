@@ -39,7 +39,7 @@ func run() error {
 			provider.UserText("用两句话解释 Go 的 goroutine 和 channel 的关系"),
 		},
 		Thinking: &provider.Thinking{
-			Enabled: boolPtr(true),
+			Enabled: new(true),
 			Effort:  provider.ThinkingEffortLow, // low / high / max
 		},
 	})
@@ -56,7 +56,7 @@ func run() error {
 			provider.UserText("请边思考边给出一个 Go 并发示例"),
 		},
 		Thinking: &provider.Thinking{
-			Enabled: boolPtr(true),
+			Enabled: new(true),
 		},
 	})
 	if err != nil {
@@ -83,8 +83,4 @@ func run() error {
 
 	fmt.Println()
 	return nil
-}
-
-func boolPtr(v bool) *bool {
-	return &v
 }

@@ -1,6 +1,9 @@
 package provider
 
-import "context"
+import (
+	"context"
+	"slices"
+)
 
 // Handler 对应 Provider.Chat 调用的函数签名。
 type Handler func(ctx context.Context, req *ChatRequest) (*ChatResponse, error)
@@ -49,19 +52,19 @@ func TryWithMiddlewares(p Provider, opts MiddlewareOptions) (Provider, error) {
 	}
 
 	chat := Handler(p.Chat)
-	for i := len(opts.Chat) - 1; i >= 0; i-- {
-		if opts.Chat[i] == nil {
+	for _, v := range slices.Backward(opts.Chat) {
+		if v == nil {
 			continue
 		}
-		chat = opts.Chat[i](chat)
+		chat = v(chat)
 	}
 
 	stream := StreamHandler(p.ChatStream)
-	for i := len(opts.Stream) - 1; i >= 0; i-- {
-		if opts.Stream[i] == nil {
+	for _, v := range slices.Backward(opts.Stream) {
+		if v == nil {
 			continue
 		}
-		stream = opts.Stream[i](stream)
+		stream = v(stream)
 	}
 
 	return &wrappedProvider{
@@ -93,11 +96,11 @@ func TryWithEmbedderMiddlewares(e Embedder, mws ...EmbedMiddleware) (Embedder, e
 	}
 
 	handler := EmbedHandler(e.Embed)
-	for i := len(mws) - 1; i >= 0; i-- {
-		if mws[i] == nil {
+	for _, mw := range slices.Backward(mws) {
+		if mw == nil {
 			continue
 		}
-		handler = mws[i](handler)
+		handler = mw(handler)
 	}
 
 	return &wrappedEmbedder{

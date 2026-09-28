@@ -105,7 +105,7 @@ func TestOpenAICompatMapsStrictTools(t *testing.T) {
 	req, err := p.buildRequest(&ChatRequest{
 		Messages: []Message{UserText("hi")},
 		Tools: []Tool{
-			{Function: FunctionDef{Name: "strict_tool", Parameters: ParamSchema{Type: "object"}, Strict: boolPtr(true)}},
+			{Function: FunctionDef{Name: "strict_tool", Parameters: ParamSchema{Type: "object"}, Strict: new(true)}},
 			{Function: FunctionDef{Name: "loose_tool", Parameters: ParamSchema{Type: "object"}}},
 		},
 	})
@@ -222,7 +222,7 @@ func TestAnthropicMapsStrictToolsAndKeepsSearchWithStructuredOutput(t *testing.T
 	req, _, err := p.buildRequest(&ChatRequest{
 		Messages: []Message{UserText("hi")},
 		Tools: []Tool{{Function: FunctionDef{
-			Name: "f", Parameters: ParamSchema{Type: "object"}, Strict: boolPtr(true),
+			Name: "f", Parameters: ParamSchema{Type: "object"}, Strict: new(true),
 		}}},
 		ResponseFormat: JSONObjectFormat(),
 	}, false)

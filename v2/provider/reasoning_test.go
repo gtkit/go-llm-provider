@@ -42,12 +42,12 @@ func TestThinkingTypeExtraFields(t *testing.T) {
 		{name: "effort only", req: &ChatRequest{Thinking: &Thinking{Effort: ThinkingEffortLow}}},
 		{
 			name: "enabled",
-			req:  &ChatRequest{Thinking: &Thinking{Enabled: boolPtr(true)}},
+			req:  &ChatRequest{Thinking: &Thinking{Enabled: new(true)}},
 			want: map[string]any{"thinking": map[string]any{"type": "enabled"}},
 		},
 		{
 			name: "disabled",
-			req:  &ChatRequest{Thinking: &Thinking{Enabled: boolPtr(false)}},
+			req:  &ChatRequest{Thinking: &Thinking{Enabled: new(false)}},
 			want: map[string]any{"thinking": map[string]any{"type": "disabled"}},
 		},
 	}
@@ -281,10 +281,10 @@ func TestGeminiThinkingParam(t *testing.T) {
 	}{
 		{name: "nil 不下发", thinking: nil, wantNil: true},
 		{name: "全未设置不下发", thinking: &Thinking{}, wantNil: true},
-		{name: "开启未给预算：动态", thinking: &Thinking{Enabled: &enabled}, wantBudget: intPtr(-1)},
-		{name: "关闭：禁用", thinking: &Thinking{Enabled: &disabled}, wantBudget: intPtr(0)},
-		{name: "显式预算", thinking: &Thinking{BudgetTokens: &budget}, wantBudget: intPtr(2048)},
-		{name: "预算 0 即禁用", thinking: &Thinking{BudgetTokens: &zero}, wantBudget: intPtr(0)},
+		{name: "开启未给预算：动态", thinking: &Thinking{Enabled: &enabled}, wantBudget: new(-1)},
+		{name: "关闭：禁用", thinking: &Thinking{Enabled: &disabled}, wantBudget: new(0)},
+		{name: "显式预算", thinking: &Thinking{BudgetTokens: &budget}, wantBudget: new(2048)},
+		{name: "预算 0 即禁用", thinking: &Thinking{BudgetTokens: &zero}, wantBudget: new(0)},
 		{name: "档位", thinking: &Thinking{Effort: ThinkingEffortHigh}, wantLevel: "high"},
 		{name: "开启并给档位", thinking: &Thinking{Enabled: &enabled, Effort: ThinkingEffortLow}, wantLevel: "low"},
 	}

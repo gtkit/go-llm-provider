@@ -18,10 +18,6 @@ const qwenChatResponseFixture = `{"id":"chatcmpl-qwen","object":"chat.completion
 	`"model":"qwen3.6-plus","choices":[{"index":0,"message":{"role":"assistant",` +
 	`"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`
 
-func intPtr(value int) *int {
-	return &value
-}
-
 func newQwenTestProvider(t *testing.T, handler http.HandlerFunc) Provider {
 	t.Helper()
 
@@ -131,22 +127,22 @@ func TestQwenChatInjectsThinking(t *testing.T) {
 	}{
 		{
 			name:     "enabled",
-			thinking: &Thinking{Enabled: boolPtr(true)},
+			thinking: &Thinking{Enabled: new(true)},
 			want:     map[string]any{"enable_thinking": true},
 		},
 		{
 			name:     "disabled",
-			thinking: &Thinking{Enabled: boolPtr(false)},
+			thinking: &Thinking{Enabled: new(false)},
 			want:     map[string]any{"enable_thinking": false},
 		},
 		{
 			name:     "budget only",
-			thinking: &Thinking{BudgetTokens: intPtr(1024)},
+			thinking: &Thinking{BudgetTokens: new(1024)},
 			want:     map[string]any{"thinking_budget": float64(1024)},
 		},
 		{
 			name:     "enabled and budget",
-			thinking: &Thinking{Enabled: boolPtr(true), BudgetTokens: intPtr(512)},
+			thinking: &Thinking{Enabled: new(true), BudgetTokens: new(512)},
 			want:     map[string]any{"enable_thinking": true, "thinking_budget": float64(512)},
 		},
 	}
@@ -252,7 +248,7 @@ func TestQwenChatPreservesRequestBodyBytes(t *testing.T) {
 	}
 
 	plain := capture(nil)
-	injected := capture(&Thinking{Enabled: boolPtr(true), BudgetTokens: intPtr(1024)})
+	injected := capture(&Thinking{Enabled: new(true), BudgetTokens: new(1024)})
 
 	require.True(t, strings.HasSuffix(plain, "}"))
 	want := strings.TrimSuffix(plain, "}") + `,"enable_thinking":true,"thinking_budget":1024}`
@@ -330,7 +326,7 @@ func TestQwenChatStreamInjectsThinking(t *testing.T) {
 
 	stream, err := p.ChatStream(t.Context(), &ChatRequest{
 		Messages: []Message{UserText("hello")},
-		Thinking: &Thinking{Enabled: boolPtr(true), BudgetTokens: intPtr(1024)},
+		Thinking: &Thinking{Enabled: new(true), BudgetTokens: new(1024)},
 	})
 	require.NoError(t, err)
 	defer func() { _ = stream.Close() }()
@@ -363,7 +359,7 @@ func TestQwenChatParsesReasoningContent(t *testing.T) {
 
 	resp, err := p.Chat(t.Context(), &ChatRequest{
 		Messages: []Message{UserText("hello")},
-		Thinking: &Thinking{Enabled: boolPtr(true)},
+		Thinking: &Thinking{Enabled: new(true)},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "ok", resp.Content)

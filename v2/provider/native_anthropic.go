@@ -656,10 +656,6 @@ func anthropicWebSearchTool(opts *WebSearchOptions) (anthropicTool, error) {
 	}, nil
 }
 
-func boolPtr(value bool) *bool {
-	return &value
-}
-
 func buildAnthropicToolChoice(req *ChatRequest) (*anthropicToolChoice, error) {
 	if req.ToolChoice == nil && req.ParallelToolCalls == nil {
 		return nil, nil

@@ -92,12 +92,12 @@ func TestArkExtraFields(t *testing.T) {
 		{name: "effort only", req: &ChatRequest{Thinking: &Thinking{Effort: ThinkingEffortLow}}},
 		{
 			name: "enabled",
-			req:  &ChatRequest{Thinking: &Thinking{Enabled: boolPtr(true)}},
+			req:  &ChatRequest{Thinking: &Thinking{Enabled: new(true)}},
 			want: map[string]any{"thinking": map[string]any{"type": "enabled"}},
 		},
 		{
 			name: "disabled",
-			req:  &ChatRequest{Thinking: &Thinking{Enabled: boolPtr(false)}},
+			req:  &ChatRequest{Thinking: &Thinking{Enabled: new(false)}},
 			want: map[string]any{"thinking": map[string]any{"type": "disabled"}},
 		},
 	}
@@ -301,7 +301,7 @@ func TestArkChatParsesReasoningContent(t *testing.T) {
 
 	resp, err := p.Chat(t.Context(), &ChatRequest{
 		Messages: []Message{UserText("hello")},
-		Thinking: &Thinking{Enabled: boolPtr(true)},
+		Thinking: &Thinking{Enabled: new(true)},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "ok", resp.Content)
@@ -326,7 +326,7 @@ func TestArkChatStreamParsesReasoningContent(t *testing.T) {
 
 	stream, err := p.ChatStream(t.Context(), &ChatRequest{
 		Messages: []Message{UserText("hello")},
-		Thinking: &Thinking{Enabled: boolPtr(true)},
+		Thinking: &Thinking{Enabled: new(true)},
 	})
 	require.NoError(t, err)
 	defer func() { _ = stream.Close() }()

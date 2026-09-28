@@ -466,15 +466,13 @@ func TestRateLimiterConcurrentAcquire(t *testing.T) {
 	var wg sync.WaitGroup
 	var granted atomic.Int64
 	for range 64 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 
 			if err := l.Acquire(t.Context(), 100); err == nil {
 				granted.Add(1)
 				l.Settle(100, 50)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 

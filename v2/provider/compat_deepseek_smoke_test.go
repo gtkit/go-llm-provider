@@ -29,7 +29,7 @@ func TestDeepSeekSmoke(t *testing.T) {
 			SystemText("只输出简短答案。"),
 			UserText("回复 ok"),
 		},
-		MaxTokens: 16,
+		MaxTokens: 1024,
 	})
 	require.NoError(t, err)
 	require.NotNil(t, resp)
@@ -60,7 +60,7 @@ func TestDeepSeekCacheUsageSmoke(t *testing.T) {
 			SystemText(longSystem),
 			UserText("回复 ok"),
 		},
-		MaxTokens: 16,
+		MaxTokens: 1024,
 	}
 
 	first, err := p.Chat(ctx, req)
@@ -106,7 +106,7 @@ func TestDeepSeekStreamUsageSmoke(t *testing.T) {
 
 	stream, err := observed.ChatStream(ctx, &ChatRequest{
 		Messages:  []Message{SystemText("只输出简短答案。"), UserText("回复 ok")},
-		MaxTokens: 16,
+		MaxTokens: 1024,
 	})
 	require.NoError(t, err)
 
@@ -164,7 +164,7 @@ func TestDeepSeekStructuredSmoke(t *testing.T) {
 			SystemText("只输出 JSON 对象，不要输出 Markdown。"),
 			UserText(`返回 {"status":"ok"}`),
 		},
-		MaxTokens: 32,
+		MaxTokens: 1024,
 	}, func(v smokeResult) error {
 		if v.Status != "ok" {
 			return ErrStructuredValidation

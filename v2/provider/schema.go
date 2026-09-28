@@ -107,8 +107,7 @@ func collectStructFields(t reflect.Type, stack []reflect.Type, depth int) ([]fie
 	stack = append(stack, t)
 
 	var entries []fieldEntry
-	for i := range t.NumField() {
-		field := t.Field(i)
+	for field := range t.Fields() {
 		name, omitempty, tagged, skip := parseJSONFieldTag(field)
 		if skip {
 			continue

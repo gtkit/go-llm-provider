@@ -183,8 +183,7 @@ func WrapProviderError(name ProviderName, err error) error {
 		return nil
 	}
 
-	var existing *ProviderError
-	if errors.As(err, &existing) {
+	if existing, ok := errors.AsType[*ProviderError](err); ok {
 		if existing.Provider == "" {
 			existing.Provider = name
 		}
@@ -235,8 +234,7 @@ func WrapProviderError(name ProviderName, err error) error {
 		}
 	}
 
-	var netErr net.Error
-	if errors.As(err, &netErr) {
+	if _, ok := errors.AsType[net.Error](err); ok {
 		return &ProviderError{
 			Provider:  name,
 			Code:      ErrorCodeNetwork,

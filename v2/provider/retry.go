@@ -175,8 +175,7 @@ func normalizeRetryOptions(opts RetryOptions) RetryOptions {
 
 // IsRetryableError reports whether err is classified as retryable.
 func IsRetryableError(err error) bool {
-	var providerErr *ProviderError
-	if errors.As(err, &providerErr) {
+	if providerErr, ok := errors.AsType[*ProviderError](err); ok {
 		return providerErr.Retryable
 	}
 	return false

@@ -344,8 +344,7 @@ func applyErrorToObserveEvent(event *ObserveEvent, err error) {
 	if event == nil || err == nil {
 		return
 	}
-	var providerErr *ProviderError
-	if errors.As(err, &providerErr) {
+	if providerErr, ok := errors.AsType[*ProviderError](err); ok {
 		event.Provider = firstProviderName(providerErr.Provider, event.Provider)
 		event.ErrorCode = providerErr.Code
 		event.StatusCode = providerErr.StatusCode

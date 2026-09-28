@@ -513,13 +513,11 @@ func TestBalancedProviderConcurrentChat(t *testing.T) {
 	const calls = 90
 	var wg sync.WaitGroup
 	for range calls {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 
 			_, chatErr := lb.Chat(t.Context(), chatRequest())
 			assert.NoError(t, chatErr)
-		}()
+		})
 	}
 	wg.Wait()
 

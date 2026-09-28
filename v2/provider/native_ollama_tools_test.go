@@ -151,7 +151,7 @@ func TestOllamaProviderRejectsUnmappableControls(t *testing.T) {
 	tools := []Tool{{Function: FunctionDef{Name: "f"}}}
 	for name, req := range map[string]*ChatRequest{
 		"tool choice required": {Messages: []Message{UserText("hi")}, Tools: tools, ToolChoice: ToolChoiceRequired},
-		"parallel tool calls":  {Messages: []Message{UserText("hi")}, Tools: tools, ParallelToolCalls: boolPtr(false)},
+		"parallel tool calls":  {Messages: []Message{UserText("hi")}, Tools: tools, ParallelToolCalls: new(false)},
 		"remote image url":     {Messages: []Message{UserMessage(ImageURLPart("https://example.com/a.png"))}},
 		"file part":            {Messages: []Message{UserMessage(FileIDPart("file-1"))}},
 		"web search tool":      {Messages: []Message{UserText("hi")}, Tools: []Tool{WebSearchTool()}},
@@ -225,7 +225,7 @@ func TestOllamaProviderChatMapsThinkingEndToEnd(t *testing.T) {
 
 	resp, err := p.Chat(t.Context(), &ChatRequest{
 		Messages: []Message{UserText("6*7")},
-		Thinking: &Thinking{Enabled: boolPtr(true)},
+		Thinking: &Thinking{Enabled: new(true)},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, true, captured["think"])

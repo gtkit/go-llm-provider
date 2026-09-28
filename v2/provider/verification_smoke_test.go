@@ -107,7 +107,7 @@ func TestVerifyDeepSeekThinkingToolLoopSmoke(t *testing.T) {
 	}
 	p, err := NewProviderFromPreset(ProviderDeepSeek, apiKey, "")
 	require.NoError(t, err)
-	smokeToolLoop(t, p, &Thinking{Enabled: boolPtr(true), Effort: ThinkingEffortLow})
+	smokeToolLoop(t, p, &Thinking{Enabled: new(true), Effort: ThinkingEffortLow})
 }
 
 // V-04：智谱 GLM-5.3 与 Kimi K2.6 对 reasoning_content 回传的接受情况（默认开启思考）。
@@ -128,7 +128,7 @@ func TestVerifyMoonshotReasoningEchoSmoke(t *testing.T) {
 	}
 	p, err := NewProviderFromPreset(ProviderMoonshot, apiKey, "")
 	require.NoError(t, err)
-	smokeToolLoop(t, p, &Thinking{Enabled: boolPtr(true)})
+	smokeToolLoop(t, p, &Thinking{Enabled: new(true)})
 }
 
 // V-05：Claude 5 上 adaptive + output_config.effort 的组合，以及带签名思考块的工具循环回放。
@@ -139,7 +139,7 @@ func TestVerifyAnthropicAdaptiveThinkingToolLoopSmoke(t *testing.T) {
 	}
 	p, err := NewProviderFromPreset(ProviderAnthropic, apiKey, "")
 	require.NoError(t, err)
-	smokeToolLoop(t, p, &Thinking{Enabled: boolPtr(true), Effort: ThinkingEffortLow})
+	smokeToolLoop(t, p, &Thinking{Enabled: new(true), Effort: ThinkingEffortLow})
 }
 
 // V-06：Responses API 在 store:false 下以 id + encrypted_content 回放推理项的工具循环。

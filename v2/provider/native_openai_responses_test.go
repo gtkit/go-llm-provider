@@ -89,7 +89,7 @@ func TestResponsesProviderChatMapsRequest(t *testing.T) {
 		},
 		MaxTokens: 256,
 		Tools: []Tool{
-			{Function: FunctionDef{Name: "get_weather", Description: "查天气", Parameters: ParamSchema{Type: "object"}, Strict: boolPtr(true)}},
+			{Function: FunctionDef{Name: "get_weather", Description: "查天气", Parameters: ParamSchema{Type: "object"}, Strict: new(true)}},
 			WebSearchToolWithOptions(WebSearchOptions{AllowedDomains: []string{"weather.example"}}),
 		},
 		ToolChoice: ToolChoiceFunction{Name: "get_weather"},

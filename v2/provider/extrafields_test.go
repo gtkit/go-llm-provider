@@ -49,18 +49,16 @@ func TestNeedsExtraFieldsMatchesBuilderRegistry(t *testing.T) {
 func TestExtraFieldsBuildersConcurrentLookup(t *testing.T) {
 	t.Parallel()
 
-	req := &ChatRequest{Thinking: &Thinking{Enabled: boolPtr(true)}}
+	req := &ChatRequest{Thinking: &Thinking{Enabled: new(true)}}
 
 	var wg sync.WaitGroup
 	for range 32 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 
 			// 构造路径与请求路径查的是同一张表
 			_ = needsExtraFields(ProviderArk)
 			_ = withExtraFields(context.Background(), ProviderArk, req)
-		}()
+		})
 	}
 	wg.Wait()
 }
