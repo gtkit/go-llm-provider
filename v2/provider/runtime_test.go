@@ -155,6 +155,7 @@ func TestRunToolLoopSanitizesHandlerErrorsByDefault(t *testing.T) {
 	handlerErr := errors.New("bad \"quote\"\nline")
 
 	resp, err := RunToolLoop(t.Context(), p, &ChatRequest{
+		Tools:    offeredTools("explode"),
 		Messages: []Message{UserText("hello")},
 	}, 2, func(context.Context, string, string) (string, error) {
 		return "", handlerErr

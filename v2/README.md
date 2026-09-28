@@ -1562,6 +1562,9 @@ resp, err := provider.RunToolLoopWithOptions(
 - `ToolRetry` 零值表示不重试（仅执行一次），保持既有行为；`MaxAttempts > 1` 时按 `Backoff` 等待并重试，`ShouldRetry` 默认重试所有非 context 取消错误。重试会重放 handler：有副作用的工具（下单、转账、发消息）要么在 handler 内用幂等键去重，要么通过 `ShouldRetry` 只放行可安全重放的错误
 - `ToolSelector` 默认为 `nil`，全量下发 `req.Tools`（既有行为）；设置后每轮下发前裁剪工具集，见下节
 - **执行白名单**：每轮只执行本轮下发的函数工具（`req.Tools` 或 `ToolSelector` 的返回值）。模型请求的函数名不在其中时，handler 不会被调用，该调用以 `ErrToolNotOffered` 经 `ToolErrorEncoder` 生成工具结果回传模型，循环继续
+- **参数校验**：参数非空且不是合法 JSON（常见于输出被 `max_tokens` 截断）时，handler 不会被调用、不进入重试，该调用以 `ErrToolArgumentsInvalid` 经 `ToolErrorEncoder` 生成工具结果回传模型，循环继续
+- **默认错误文案**：`DefaultToolErrorEncoder` 对 `ErrToolNotOffered`、`ErrToolArgumentsInvalid` 输出提示模型改正调用的固定文案，handler 返回的业务错误统一输出 `tool execution failed`
+- **panic 恢复**：执行工具期间的回调（handler、`ToolResultTransformer`、`ToolErrorEncoder`、`ToolRetryOptions` 的回调）panic 时，循环以包装 `ErrToolHandlerPanic` 的错误中止，错误文本含工具名、panic 值与堆栈；串行与并行执行一致
 - `AccumulateUsage` 默认关闭，返回最后一轮的 `Usage`（既有行为）；设为 `true` 后，返回响应的 `Usage` 为**所有轮次**的 token 消耗累加值，便于多轮工具循环的成本统计（某轮 provider 未返回 usage 则按 0 计入）
 
 思考模型（DeepSeek V4、Kimi K3、Claude 5、Gemini 3 等）要求把上一轮的推理内容随工具调用回传，
@@ -2065,6 +2068,18 @@ emb, err := provider.NewEmbedder(provider.EmbedderConfig{
 ```
 
 请求级超时仍推荐由调用方通过 `context.WithTimeout` 控制；自定义 `HTTPClient` 主要用于传输层策略复用。`NewEmbedder` 在 `Name` 为 `ProviderGemini` 时会自动使用原生 Gemini embedding 接口。调用方传入自定义客户端后，本库不会覆盖它的超时设置。
+
+流式响应在响应头之后中途停止发送数据时，用 `NewIdleTimeoutDoer` 包装客户端设置空闲超时：自拿到响应起、以及每次读到数据后，超过阈值未读到任何字节即关闭响应体，`Recv` 返回满足 `errors.Is(err, provider.ErrStreamIdleTimeout)` 与 `errors.Is(err, provider.ErrTimeout)` 的错误。计时按字节进行，SSE 保活注释同样会重置计时；阈值按平台首个 token 前的最长静默时间设置，思考模型推理期间可能长时间无输出，阈值需留足余量。OpenAI 兼容平台与原生平台均可使用：
+
+```go
+p, err := provider.NewProvider(provider.ProviderConfig{
+    Name:       provider.ProviderOpenAI,
+    BaseURL:    "https://api.openai.com/v1",
+    APIKey:     os.Getenv("OPENAI_API_KEY"),
+    Model:      "gpt-5.6-terra",
+    HTTPClient: provider.NewIdleTimeoutDoer(nil, 2*time.Minute), // nil 表示包装 DefaultHTTPClient()
+})
+```
 
 ---
 
@@ -3475,6 +3490,7 @@ provider.GenerateJSONIntoWithValidator(ctx, p, req, &out, fn) // 解码到已有
 task.Run(ctx, p, params, input)                               // PromptTask 单轮任务 → 文本
 provider.RunPromptTaskJSON[P, T](ctx, task, p, params, input) // PromptTask 单轮任务 → JSON 结构化输出
 provider.DefaultHTTPClient()                                  // 默认传输层超时 HTTP 客户端
+provider.NewIdleTimeoutDoer(next, timeout)                    // 响应体读取空闲超时
 provider.WithRetry(p, provider.RetryOptions{...})             // 为 Chat / ChatStream 创建阶段添加重试
 provider.NewFallbackProvider(primary, backup)                 // 多 provider fallback
 provider.WithObservability(p, provider.ObserveOptions{...})   // Chat / ChatStream 观测 hook

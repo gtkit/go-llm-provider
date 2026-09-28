@@ -37,6 +37,12 @@ var (
 	// ErrToolNotOffered 表示模型请求的工具不在本轮下发的工具集中；工具循环不执行该调用，
 	// 而以此错误调用 ToolErrorEncoder 生成工具结果回传模型。
 	ErrToolNotOffered = errors.New("tool not offered in this round")
+	// ErrToolArgumentsInvalid 表示工具调用参数不是合法 JSON（常见于输出被 max_tokens 截断）；
+	// 工具循环不调用 handler，而以此错误调用 ToolErrorEncoder 生成工具结果回传模型。
+	ErrToolArgumentsInvalid = errors.New("tool arguments are not valid JSON")
+	// ErrToolHandlerPanic 表示工具执行期间的回调（handler、ToolResultTransformer、ToolErrorEncoder
+	// 等）发生 panic；工具循环恢复 panic 并以包装此错误的 error 中止，错误文本含工具名、panic 值与堆栈。
+	ErrToolHandlerPanic = errors.New("tool execution panicked")
 	// ErrInvalidProviderConfig indicates that ProviderConfig is missing required fields.
 	ErrInvalidProviderConfig = errors.New("invalid provider config")
 	// ErrInvalidToolChoice indicates that ChatRequest.ToolChoice contains an unsupported value.

@@ -622,6 +622,9 @@ resp, err := provider.RunToolLoopWithOptions(
 - `ParallelToolCalls` 默认关闭
 - `ToolErrorEncoder` 默认使用安全脱敏编码器
 - **执行白名单**：只执行 `req.Tools` 中声明的工具。模型请求的函数名不在其中时，handler 不会被调用，该调用以 `ErrToolNotOffered` 经 `ToolErrorEncoder` 生成工具结果回传模型，循环继续
+- **参数校验**：参数非空且不是合法 JSON（常见于输出被 `max_tokens` 截断）时，handler 不会被调用，该调用以 `ErrToolArgumentsInvalid` 经 `ToolErrorEncoder` 生成工具结果回传模型，循环继续
+- **默认错误文案**：`DefaultToolErrorEncoder` 对 `ErrToolNotOffered`、`ErrToolArgumentsInvalid` 输出提示模型改正调用的固定文案，handler 返回的业务错误统一输出 `tool execution failed`
+- **panic 恢复**：执行工具期间的回调（handler、`ToolResultTransformer`、`ToolErrorEncoder`）panic 时，循环以包装 `ErrToolHandlerPanic` 的错误中止，错误文本含工具名、panic 值与堆栈；串行与并行执行一致
 
 #### 工具结果加工与响应校验
 

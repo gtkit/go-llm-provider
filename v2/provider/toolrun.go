@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"sync"
+
+	"github.com/gtkit/json/v2"
 )
 
 // ToolHandler 是工具执行函数的签名。
@@ -56,6 +59,9 @@ type ResponseValidator func(ctx context.Context, resp *ChatResponse) error
 type ToolSelector func(ctx context.Context, messages []Message, tools []Tool) ([]Tool, error)
 
 // RunToolLoopOptions configures the additive RunToolLoop execution path.
+//
+// 已下发工具的参数非空且不是合法 JSON 时不调用 handler、不重试，以 ErrToolArgumentsInvalid 调用
+// ToolErrorEncoder 生成工具结果回传模型。执行期间回调的 panic 被恢复，循环以 ErrToolHandlerPanic 错误中止。
 type RunToolLoopOptions struct {
 	// MaxRounds limits the maximum number of tool loop rounds.
 	// If MaxRounds <= 0, a safe default limit is used.
@@ -120,8 +126,17 @@ func normalizeToolRetry(opts ToolRetryOptions) ToolRetryOptions {
 }
 
 // DefaultToolErrorEncoder returns a sanitized JSON tool result message.
-func DefaultToolErrorEncoder(_ context.Context, call ToolCall, _ error) (Message, error) {
-	return ToolResultMessageJSONFor(call, map[string]string{"error": defaultToolExecutionError})
+// 库自身的 ErrToolNotOffered、ErrToolArgumentsInvalid 输出可供模型自我纠正的固定文案，
+// 其余错误一律输出 "tool execution failed"，不向模型暴露业务错误细节。
+func DefaultToolErrorEncoder(_ context.Context, call ToolCall, err error) (Message, error) {
+	text := defaultToolExecutionError
+	switch {
+	case errors.Is(err, ErrToolNotOffered):
+		text = "tool not available in this round; use only the tools provided"
+	case errors.Is(err, ErrToolArgumentsInvalid):
+		text = "tool arguments are not valid JSON (possibly truncated); regenerate the call with complete arguments"
+	}
+	return ToolResultMessageJSONFor(call, map[string]string{"error": text})
 }
 
 // WrapToolResultInTag 返回一个 ToolResultTransformer，将工具结果包裹进 <tag>...</tag> 中，
@@ -342,9 +357,24 @@ func executeToolCalls(
 	return results, nil
 }
 
-func executeToolCall(ctx context.Context, call ToolCall, offered map[string]struct{}, handler ToolHandler, encoder ToolErrorEncoder, transformer ToolResultTransformer, retry ToolRetryOptions) (Message, error) {
+// executeToolCall 把工具回调的 panic 转为 ErrToolHandlerPanic 错误。并行执行时回调在库内
+// goroutine 中运行，调用方无法 recover；串行路径同样恢复以保持一致。
+func executeToolCall(ctx context.Context, call ToolCall, offered map[string]struct{}, handler ToolHandler, encoder ToolErrorEncoder, transformer ToolResultTransformer, retry ToolRetryOptions) (msg Message, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("%w: tool %q: %v\n%s", ErrToolHandlerPanic, call.Function.Name, r, debug.Stack())
+		}
+	}()
+	return runToolCall(ctx, call, offered, handler, encoder, transformer, retry)
+}
+
+func runToolCall(ctx context.Context, call ToolCall, offered map[string]struct{}, handler ToolHandler, encoder ToolErrorEncoder, transformer ToolResultTransformer, retry ToolRetryOptions) (Message, error) {
+
 	if _, ok := offered[call.Function.Name]; !ok {
 		return encodeToolError(ctx, encoder, call, ErrToolNotOffered)
+	}
+	if args := call.Function.Arguments; args != "" && !json.Valid([]byte(args)) {
+		return encodeToolError(ctx, encoder, call, ErrToolArgumentsInvalid)
 	}
 
 	var lastErr error

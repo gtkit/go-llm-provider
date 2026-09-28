@@ -9,10 +9,14 @@
 - 智谱与百炼支持平台服务端内建联网搜索：`WebSearchTool()` 在这两个平台上可用，不再返回 `ErrInvalidRequest`；两家预设的 `CapabilityWebSearch` 随之置位
 - `SearchMetadata` 新增 `SourcesUnavailable` 字段，用于区分"模型未搜索"与"已搜索但平台协议不回传来源"（百炼的 OpenAI 兼容协议属于后者）
 - `RunToolLoopOptions` 新增 `ToolSelector` 钩子：工具循环每轮下发前由调用方裁剪工具集，用于工具数量大时降低 token 成本与选错率；流式与非流式语义一致，为 `nil` 时全量下发、行为不变
+- 工具循环在调用 handler 前检查参数：参数非空且不是合法 JSON（常见于输出被 `max_tokens` 截断）时不调用 handler、不进入重试，以新增哨兵 `ErrToolArgumentsInvalid` 经 `ToolErrorEncoder` 生成工具结果回传模型，循环继续；空参数照常交给 handler
+- 新增 `NewIdleTimeoutDoer(next, timeout)`：包装 `HTTPDoer`，响应体自拿到响应起、以及每次读到数据后超过 `timeout` 未读到任何字节即关闭，读取返回 `Code` 为 `ErrorCodeTimeout`、`Cause` 为新增哨兵 `ErrStreamIdleTimeout` 的 `*ProviderError`，同时满足 `errors.Is(err, ErrTimeout)`。用于流式响应中途停止发送数据时及时失败；OpenAI 兼容与原生平台均可用，赋给 `ProviderConfig.HTTPClient` / `NativeProviderConfig.HTTPClient` 即生效
 
 ### Changed
 
 - ⚠ 工具循环（`RunToolLoop` / `RunToolLoopWithOptions` / `RunToolLoopStream` / `RunToolLoopStreamWithOptions`）只执行本轮下发的函数工具：模型请求的函数名不在本轮工具集（`req.Tools` 或 `ToolSelector` 的返回值）中时，handler 不被调用、不进入重试，该调用以新增哨兵 `ErrToolNotOffered` 经 `ToolErrorEncoder` 生成工具结果回传模型，循环继续。此前模型可以调用任意未下发、或已被 `ToolSelector` 裁掉的工具，裁剪无法充当权限边界。**迁移**：依赖 handler 处理未声明工具的调用方，把这些工具加入 `req.Tools`（或 `ToolSelector` 的返回值）；`WebSearch` 服务端工具不受影响
+- ⚠ 工具循环执行工具期间的回调（handler、`ToolResultTransformer`、`ToolErrorEncoder`、`ToolRetryOptions` 的回调）发生 panic 时被恢复，循环以包装新增哨兵 `ErrToolHandlerPanic` 的错误中止，错误文本含工具名、panic 值与堆栈；串行与并行执行一致。此前并行执行时 panic 发生在库内 goroutine 中，调用方无法 recover，进程直接退出；串行执行时 panic 向调用方传播。**迁移**：依赖外层 `recover` 捕获工具 panic 的调用方，改为检查 `errors.Is(err, ErrToolHandlerPanic)`
+- `DefaultToolErrorEncoder` 对库自身的哨兵输出可供模型自我纠正的文案：`ErrToolNotOffered` 为 `tool not available in this round; use only the tools provided`，`ErrToolArgumentsInvalid` 为 `tool arguments are not valid JSON (possibly truncated); regenerate the call with complete arguments`；handler 返回的业务错误仍统一为 `tool execution failed`
 
 ### Deprecated
 
