@@ -30,6 +30,7 @@ var metadataHeaderAllowlist = map[string]struct{}{
 	"x-amzn-requestid":               {},
 	"request-id":                     {},
 	"openai-request-id":              {},
+	"x-typesafe-request-id":          {},
 	"x-ratelimit-limit-requests":     {},
 	"x-ratelimit-remaining-requests": {},
 	"x-ratelimit-reset-requests":     {},
@@ -56,6 +57,7 @@ func requestIDFromHeader(header http.Header) string {
 		"x-amzn-requestid",
 		"request-id",
 		"openai-request-id",
+		"x-typesafe-request-id",
 	} {
 		if value := header.Get(key); value != "" {
 			return value

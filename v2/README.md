@@ -50,6 +50,7 @@ llm-provider/
 │   ├── balance.go             # BalancedProvider 加权负载均衡 + 故障转移
 │   ├── pricing_registry.go    # PricingRegistry 价格表原子热替换
 │   ├── reranker.go            # Reranker 接口：OpenAI 兼容 /rerank 端点
+│   ├── decider.go             # Decider 接口：TypeSafe AI Jev 结构化判断
 │   ├── observability.go       # WithObservability / ObserveEvent 观测 hook
 │   ├── provider_test.go       # Chat / Tool Use 单测
 │   ├── embedder_test.go       # Embedding 单测
@@ -362,6 +363,7 @@ r, err := provider.NewReranker(provider.RerankerConfig{
 | `NewGeminiProvider` | `{BaseURL}/models/{model}:generateContent` | 含 `/v1beta` | 使用预设的 `https://generativelanguage.googleapis.com/v1beta` |
 | `NewOllamaProvider` | `{BaseURL}/api/chat` | 主机名（不带路径） | 使用 `http://localhost:11434` |
 | `NewReranker` | `{BaseURL}/rerank` | 含 `/v1` 这类版本段 | `BaseURL` 为必填项 |
+| `NewDecider` | `{BaseURL}/systemone` | 含 `/v1` 这类版本段 | 使用 `https://api.typesafe.ai/v1` |
 
 末尾多余的 `/` 会被忽略，`https://gw.example.com/v1` 与 `https://gw.example.com/v1/` 等价。
 
@@ -2016,6 +2018,91 @@ reranker, err := provider.NewReranker(provider.RerankerConfig{
 - **`TopN ≤ 0` 按未设置处理**（返回全部），不发送该字段。
 - 典型 RAG 装配：向量检索召回 50 条 → rerank 精排取前 5 条 → 拼进 prompt。
   向量检索部分见 [Embedding](#embedding文本向量化) 一节。
+
+## Decide（结构化判断，TypeSafe AI Jev）
+
+[TypeSafe AI](https://docs.typesafe.ai/introduction) 的 Jev 模型面向程序内部的高频判断：给定状态（对话、工单、检索结果、应用状态）与一组预定义问题，一次请求返回全部问题的类型化答案及概率，不生成文本。适合 Agent 工具路由、高风险操作前的护栏、工单分流、检索结果相关性判断、按置信度转人工。
+
+```go
+decider, err := provider.NewDecider(provider.DeciderConfig{
+    APIKey: os.Getenv("TYPESAFE_API_KEY"),
+    Model:  "jev-1.13.0", // 用于阈值门控时固定具体版本，见下
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+resp, err := decider.Decide(ctx, &provider.DecideRequest{
+    State: map[string]any{"ticket": "昨天扣了两次款，退一笔给我"},
+    Questions: map[string]provider.DecisionQuestion{
+        "is_refund": {Type: provider.DecisionNoul, Instructions: "`ticket` 是否在申请退款"},
+        "queue": {
+            Type:         provider.DecisionChoice,
+            Instructions: "`ticket` 应分配到哪个队列",
+            Criteria:     map[string]any{"billing": "扣费、发票、退款", "tech": "故障与报错", "other": nil},
+        },
+        "urgency": {
+            Type:         provider.DecisionScore,
+            Instructions: "`ticket` 的紧急程度",
+            Criteria:     []string{"可延后", "当天处理", "立即处理"},
+        },
+    },
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+refund := resp.Answers["is_refund"].Noul // 「是」的概率，0–1
+queue := resp.Answers["queue"]
+if queue.Confidence < 0.6 {
+    // 置信度低，转人工
+}
+fmt.Println(refund, queue.Choice, resp.Answers["urgency"].Score, resp.Model)
+```
+
+- **协议**：`POST {BaseURL}/systemone`，默认 `BaseURL` 为 `https://api.typesafe.ai/v1`，默认模型 `jev-latest`；`Authorization: Bearer` 鉴权。
+- **三类问题**：
+  - `DecisionNoul`（是/否）：`Criteria` 可选，形如 `map[string]any{"true": "…", "false": "…"}`；答案读 `Noul`（「是」的概率）。
+  - `DecisionChoice`（多选一）：`Criteria` 必填，为选项名到描述的映射，描述可为 `nil`；答案读 `Choice`、`Probabilities`（以选项名为 key）、`Confidence`。
+  - `DecisionScore`（有序评分）：`Criteria` 必填，为由低到高的等级数组；答案读 `Score`（按概率加权，可能落在两级之间）、`Legend` 与 `Probabilities`（均以等级序号字符串 `"0"`、`"1"`… 为 key）、`Confidence`。
+- **State、Instructions、Criteria 均可传字符串或可 JSON 序列化的结构**，原样发送；已有的结构化数据直接传入即可。可在 `Instructions` 中用反引号引用 `State` 的字段名。
+- **问题 key 由调用方自定**，只用于匹配答案，不参与模型推理；答案按相同 key 返回。
+- **发送前校验**：`State` 为 nil、`Questions` 为空、key 为空、`Type` 非法、choice/score 缺 `Criteria` 时不发请求，返回包装 `ErrInvalidDecideRequest` 的错误。选项数、等级数等上限由服务端以 422 判定。
+- **响应校验**：任一问题缺答案或答案类型与问题不符时返回错误，不交还残缺结果。
+- **固定版本**：别名 `jev-latest` 会随平台升级指向新版本，相同输入可能得到不同的概率。用概率或置信度做阈值门控时，把 `DeciderConfig.Model` 设为具体版本（如 `jev-1.13.0`）；`DecideResponse.Model` 始终是实际作答的具体版本，可用于记录与回溯。
+- **错误**：非 2xx 返回 `*ProviderError`——401 为 `ErrorCodeAuth`，422 为 `ErrorCodeInvalidRequest`，429 为 `ErrorCodeRateLimit`，529（服务过载）为可重试的 `ErrorCodeServerError`，`Retry-After` 写入 `RetryAfter`；响应头 `x-typesafe-request-id` 写入 `Metadata.RequestID`。
+- **用量**：`Usage.PromptTokens` 为输入 token，`CompletionTokens` 为输出 token。
+
+### 与工具循环组合：用 Jev 做工具路由
+
+`ToolSelector`（见[工具集裁剪](#工具集裁剪tool-routing)）每轮下发前调用一次，把工具名作为 choice 选项交给 Jev 判断，只下发最相关的工具：
+
+```go
+selector := func(ctx context.Context, msgs []provider.Message, tools []provider.Tool) ([]provider.Tool, error) {
+    options := make(map[string]any, len(tools))
+    for _, t := range tools {
+        options[t.Function.Name] = t.Function.Description
+    }
+    resp, err := decider.Decide(ctx, &provider.DecideRequest{
+        State: msgs,
+        Questions: map[string]provider.DecisionQuestion{
+            "tool": {Type: provider.DecisionChoice, Instructions: "下一步最需要调用哪个工具", Criteria: options},
+        },
+    })
+    if err != nil {
+        return nil, err // 返回 error 中止循环，不会回退为全量下发
+    }
+    probs := resp.Answers["tool"].Probabilities
+    return slices.DeleteFunc(tools, func(t provider.Tool) bool {
+        return probs[t.Function.Name] < 0.1
+    }), nil
+}
+
+resp, err := provider.RunToolLoopWithOptions(ctx, p, req, handler,
+    provider.RunToolLoopOptions{MaxRounds: 5, ToolSelector: selector})
+```
+
+Selector 在每轮的请求关键路径上同步执行，给 `ctx` 设好超时。
 
 ## 模型能力元数据
 

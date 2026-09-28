@@ -147,6 +147,15 @@ var (
 	ErrEmptyRerankDocuments = errors.New("rerank documents are empty")
 	// ErrInvalidRerankerConfig 表示 RerankerConfig 缺少必填字段。
 	ErrInvalidRerankerConfig = errors.New("invalid reranker config")
+
+	// ErrNilDecider 表示调用方传入了 nil 的 Decider。
+	ErrNilDecider = errors.New("decider is nil")
+	// ErrNilDecideRequest 表示调用方传入了 nil 的结构化判断请求。
+	ErrNilDecideRequest = errors.New("decide request is nil")
+	// ErrInvalidDecideRequest 表示 DecideRequest 未通过发送前校验。
+	ErrInvalidDecideRequest = errors.New("invalid decide request")
+	// ErrInvalidDeciderConfig 表示 DeciderConfig 缺少必填字段。
+	ErrInvalidDeciderConfig = errors.New("invalid decider config")
 )
 
 func providerIsNil(p Provider) bool {
@@ -209,6 +218,7 @@ const (
 	ProviderCohere      ProviderName = "cohere"    // Cohere 兼容 API
 	ProviderAzureOpenAI ProviderName = "azure"     // Azure OpenAI
 	ProviderBedrock     ProviderName = "bedrock"   // Amazon Bedrock OpenAI 兼容 API
+	ProviderTypeSafe    ProviderName = "typesafe"  // TypeSafe AI Jev 结构化判断 API，见 NewDecider
 )
 
 // ProviderConfig 描述一个供应商的连接配置。
