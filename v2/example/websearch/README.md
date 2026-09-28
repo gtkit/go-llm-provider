@@ -49,7 +49,7 @@ go test -race ./...
 
 | 防线 | 位置 | 做什么 |
 |---|---|---|
-| 内容净化 | `Toolset.Handler` 内，调 `SanitizeText` | 命中可疑指令特征词整段替换为占位符并回调 `OnSuspicious` 审计；否则转义 `---`、`##` 等结构符，防止伪造 prompt 分节 |
+| 内容净化 | `Toolset.Handler` 内，对标题、URL、站点名、正文逐一调 `SanitizeText` 并按字符限长 | 特征词在规范化副本上匹配（全角折半角、删除零宽字符、各类空白归一），全角或零宽打散的关键词同样命中；命中的字段整段替换为占位符，任一字段命中即对该条结果回调一次 `OnSuspicious` 审计；否则转义 `---`、`##` 等结构符，防止伪造 prompt 分节 |
 | 结构隔离 | `LoopOptions` 的 `ToolResultTransformer` | 把结果包进 `<search_results>` 并转义内部尖括号，防止结果自带同名标签提前闭合让注入逃逸 |
 | 语义声明 + 引用校验 | `SystemPrompt` 与 `HasFabricatedRef` | 提示词里显式声明标签内是数据不是指令；回答后校验 `[ref:N]` 指向真实存在的来源，拦住编造出处 |
 

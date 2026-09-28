@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -157,15 +158,19 @@ func (t *Toolset) encode(query string, hits []SearchHit, limit int) string {
 	payload := searchPayload{Query: query, Results: make([]searchResult, 0, len(hits))}
 	accepted := make([]SearchHit, 0, len(hits))
 	for i, hit := range hits {
+		// URL 与 Site 同样由被搜到的页面控制，和标题、正文一样可能携带注入文本。
+		title := t.opts.sanitize(hit.Title)
+		url := t.opts.sanitize(hit.URL)
+		site := t.opts.sanitize(hit.Site)
 		text := t.opts.sanitize(hit.Text())
-		if text == SanitizedPlaceholder && t.opts.OnSuspicious != nil {
+		if t.opts.OnSuspicious != nil && slices.Contains([]string{title, url, site, text}, SanitizedPlaceholder) {
 			t.opts.OnSuspicious(hit)
 		}
 		result := searchResult{
 			Ref:     i + 1,
-			Title:   truncateRunes(t.opts.sanitize(hit.Title), 120),
-			URL:     hit.URL,
-			Site:    hit.Site,
+			Title:   truncateRunes(title, 120),
+			URL:     truncateRunes(url, 500),
+			Site:    truncateRunes(site, 100),
 			Content: truncateRunes(text, t.opts.maxTextLen()),
 		}
 		if !hit.Published.IsZero() {

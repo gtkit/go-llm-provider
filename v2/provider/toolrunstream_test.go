@@ -78,7 +78,7 @@ func TestRunToolLoopStreamExecutesToolsAcrossRounds(t *testing.T) {
 
 	var toolName, toolArgs string
 	resp, err := RunToolLoopStreamWithOptions(t.Context(), p,
-		&ChatRequest{Messages: []Message{UserText("巴黎天气如何")}},
+		&ChatRequest{Messages: []Message{UserText("巴黎天气如何")}, Tools: offeredTools("get_weather")},
 		func(_ context.Context, name, args string) (string, error) {
 			toolName, toolArgs = name, args
 			return `{"weather":"sunny"}`, nil
@@ -176,7 +176,7 @@ func TestRunToolLoopStreamAppliesToolResultTransformer(t *testing.T) {
 	}
 
 	resp, err := RunToolLoopStreamWithOptions(t.Context(), p,
-		&ChatRequest{Messages: []Message{UserText("hi")}},
+		&ChatRequest{Messages: []Message{UserText("hi")}, Tools: offeredTools("f")},
 		func(context.Context, string, string) (string, error) { return "raw-result", nil },
 		nil,
 		RunToolLoopOptions{

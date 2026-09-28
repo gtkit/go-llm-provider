@@ -8,11 +8,16 @@
 
 ### Changed
 
+- ⚠ 工具循环（`RunToolLoop` / `RunToolLoopWithOptions`）只执行 `req.Tools` 中声明的工具：模型请求的函数名不在其中时，handler 不被调用，该调用以新增哨兵 `ErrToolNotOffered` 经 `ToolErrorEncoder` 生成工具结果回传模型，循环继续。此前模型可以调用任意未声明的工具。**迁移**：依赖 handler 处理未声明工具的调用方，把这些工具加入 `req.Tools`
+
 ### Deprecated
 
 ### Removed
 
 ### Fixed
+
+- `example/toolsecurity` 的注入特征检测改在规范化副本上进行（全角折半角、删除零宽字符、各类空白归一），全角字母、零宽字符、NBSP 打散的注入短语不再漏检；截断与日志预览改为按字符计，不再切出非法 UTF-8
+- `PROMPT_INJECTION_DEFENSE.md` 模板同步：新增 `NormalizeForDetection` 与 `TruncateRunes`，`Sanitize` 的 `maxLen` 按字符计，用例表补充全角与零宽绕过样例
 
 ### Security
 

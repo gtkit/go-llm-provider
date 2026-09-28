@@ -32,6 +32,9 @@ type ToolResultTransformer func(ctx context.Context, call ToolCall, result strin
 // 返回 error 视为该响应不可信，RunToolLoopWithOptions 整体返回该 error，
 // 不会把未通过校验的响应交还给调用方。达到 MaxRounds 上限而中止的路径不会经过校验，
 // 因为那条路径本身已经是 error，没有可返回的最终响应。
+//
+// 流式工具循环中校验发生在最后一轮全部 chunk 经 onChunk 送出之后，只决定返回值与错误；
+// 需要"未通过校验的内容不外露"时，调用方在 onChunk 中缓冲，待循环成功返回后再展示。
 type ResponseValidator func(ctx context.Context, resp *ChatResponse) error
 
 // ToolSelector 在每一轮请求下发前裁剪本轮可用的工具集。
@@ -44,6 +47,9 @@ type ResponseValidator func(ctx context.Context, resp *ChatResponse) error
 // Tool.Function.Parameters）仍与调用方共享，不得修改。
 //
 // 返回空切片表示本轮不提供任何工具，模型将直接作答。
+//
+// 执行侧以本轮下发的函数工具为白名单：模型请求未下发的工具时不调用 handler、不重试，
+// 以 ErrToolNotOffered 调用 ToolErrorEncoder 生成工具结果回传模型，因此裁剪同时是执行边界。
 //
 // 返回 error 会中止整个工具循环：裁剪可能承载调用方的权限边界，钩子失败时
 // 回退为全量下发会把本该屏蔽的工具暴露给模型，因此不做回退。
@@ -95,6 +101,8 @@ type ToolRetryOptions struct {
 
 	// ShouldRetry 判定某个 handler 错误是否值得重试。
 	// nil 时默认重试所有非 context 取消错误。
+	// 有副作用的工具（写库、发消息、扣款等）开启重试时，handler 需以幂等键去重，
+	// 或在此只放行可安全重放的错误：首次调用可能已生效后才返回错误。
 	ShouldRetry func(err error) bool
 }
 
@@ -197,6 +205,7 @@ func RunToolLoopWithOptions(ctx context.Context, p Provider, req *ChatRequest, h
 			return nil, err
 		}
 		roundReq.Tools = tools
+		offered := offeredToolNames(tools)
 
 		resp, err := p.Chat(ctx, &roundReq)
 		if err != nil {
@@ -220,7 +229,7 @@ func RunToolLoopWithOptions(ctx context.Context, p Provider, req *ChatRequest, h
 		// 将模型的 tool_calls 响应追加到对话历史
 		messages = append(messages, resp.AssistantMessage())
 
-		toolMessages, err := executeToolCalls(ctx, resp.ToolCalls, handler, encoder, opts.ToolResultTransformer, opts.ParallelToolCalls, retry)
+		toolMessages, err := executeToolCalls(ctx, resp.ToolCalls, offered, handler, encoder, opts.ToolResultTransformer, opts.ParallelToolCalls, retry)
 		if err != nil {
 			return nil, err
 		}
@@ -243,6 +252,18 @@ func selectRoundTools(ctx context.Context, selector ToolSelector, messages []Mes
 	}
 
 	return selected, nil
+}
+
+// offeredToolNames 返回本轮可在客户端执行的函数工具名集合。
+// 服务端工具（WebSearch）不产生客户端 ToolCall，不计入。
+func offeredToolNames(tools []Tool) map[string]struct{} {
+	names := make(map[string]struct{}, len(tools))
+	for _, tool := range tools {
+		if tool.WebSearch == nil {
+			names[tool.Function.Name] = struct{}{}
+		}
+	}
+	return names
 }
 
 // maxIterations 返回一个用于 for range 的迭代次数。
@@ -273,6 +294,7 @@ func addUsage(a, b Usage) Usage {
 func executeToolCalls(
 	ctx context.Context,
 	toolCalls []ToolCall,
+	offered map[string]struct{},
 	handler ToolHandler,
 	encoder ToolErrorEncoder,
 	transformer ToolResultTransformer,
@@ -282,7 +304,7 @@ func executeToolCalls(
 	if !parallel || len(toolCalls) <= 1 {
 		messages := make([]Message, 0, len(toolCalls))
 		for _, call := range toolCalls {
-			msg, err := executeToolCall(ctx, call, handler, encoder, transformer, retry)
+			msg, err := executeToolCall(ctx, call, offered, handler, encoder, transformer, retry)
 			if err != nil {
 				return nil, err
 			}
@@ -299,7 +321,7 @@ func executeToolCalls(
 	for i, call := range toolCalls {
 		go func(index int, toolCall ToolCall) {
 			defer wg.Done()
-			msg, err := executeToolCall(ctx, toolCall, handler, encoder, transformer, retry)
+			msg, err := executeToolCall(ctx, toolCall, offered, handler, encoder, transformer, retry)
 			if err != nil {
 				errCh <- err
 				return
@@ -320,7 +342,11 @@ func executeToolCalls(
 	return results, nil
 }
 
-func executeToolCall(ctx context.Context, call ToolCall, handler ToolHandler, encoder ToolErrorEncoder, transformer ToolResultTransformer, retry ToolRetryOptions) (Message, error) {
+func executeToolCall(ctx context.Context, call ToolCall, offered map[string]struct{}, handler ToolHandler, encoder ToolErrorEncoder, transformer ToolResultTransformer, retry ToolRetryOptions) (Message, error) {
+	if _, ok := offered[call.Function.Name]; !ok {
+		return encodeToolError(ctx, encoder, call, ErrToolNotOffered)
+	}
+
 	var lastErr error
 	for attempt := 1; attempt <= retry.MaxAttempts; attempt++ {
 		result, err := handler(ctx, call.Function.Name, call.Function.Arguments)
@@ -354,7 +380,11 @@ func executeToolCall(ctx context.Context, call ToolCall, handler ToolHandler, en
 	}
 
 	// 重试耗尽或不可重试：按既有行为将错误编码为 tool 结果回传模型。
-	msg, encodeErr := encoder(ctx, call, lastErr)
+	return encodeToolError(ctx, encoder, call, lastErr)
+}
+
+func encodeToolError(ctx context.Context, encoder ToolErrorEncoder, call ToolCall, err error) (Message, error) {
+	msg, encodeErr := encoder(ctx, call, err)
 	if encodeErr != nil {
 		return Message{}, fmt.Errorf("encode tool error result: %w", encodeErr)
 	}

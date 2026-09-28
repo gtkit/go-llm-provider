@@ -208,7 +208,7 @@ func TestRunToolLoopUsesCustomToolErrorEncoder(t *testing.T) {
 	resp, err := RunToolLoopWithOptions(
 		t.Context(),
 		p,
-		&ChatRequest{Messages: []Message{UserText("hello")}},
+		&ChatRequest{Messages: []Message{UserText("hello")}, Tools: offeredTools("explode")},
 		func(context.Context, string, string) (string, error) {
 			return "", handlerErr
 		},
@@ -264,7 +264,7 @@ func TestRunToolLoopDefaultExecutionRemainsSerial(t *testing.T) {
 	resp, err := RunToolLoop(
 		t.Context(),
 		p,
-		&ChatRequest{Messages: []Message{UserText("hello")}},
+		&ChatRequest{Messages: []Message{UserText("hello")}, Tools: offeredTools("one", "two")},
 		2,
 		func(_ context.Context, _ string, _ string) (string, error) {
 			current := active.Add(1)
@@ -313,7 +313,7 @@ func TestRunToolLoopParallelToolCallsPreserveMessageOrder(t *testing.T) {
 	resp, err := RunToolLoopWithOptions(
 		t.Context(),
 		p,
-		&ChatRequest{Messages: []Message{UserText("hello")}},
+		&ChatRequest{Messages: []Message{UserText("hello")}, Tools: offeredTools("slow", "fast")},
 		func(_ context.Context, name, _ string) (string, error) {
 			current := active.Add(1)
 			for {
@@ -378,7 +378,7 @@ func TestRunToolLoopStopsOnContextErrorFromHandler(t *testing.T) {
 	resp, err := RunToolLoop(
 		t.Context(),
 		p,
-		&ChatRequest{Messages: []Message{UserText("hello")}},
+		&ChatRequest{Messages: []Message{UserText("hello")}, Tools: offeredTools("cancel")},
 		2,
 		func(context.Context, string, string) (string, error) {
 			return "", fmt.Errorf("wrapped: %w", context.Canceled)

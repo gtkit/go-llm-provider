@@ -332,7 +332,7 @@ func TestRunToolLoopCarriesReasoningIntoNextRound(t *testing.T) {
 		},
 	}
 
-	resp, err := RunToolLoop(t.Context(), p, &ChatRequest{Messages: []Message{UserText("巴黎天气")}}, 3,
+	resp, err := RunToolLoop(t.Context(), p, &ChatRequest{Messages: []Message{UserText("巴黎天气")}, Tools: offeredTools("get_weather")}, 3,
 		func(context.Context, string, string) (string, error) { return `{"weather":"sunny"}`, nil })
 	require.NoError(t, err)
 	assert.Equal(t, "巴黎晴天", resp.Content)
@@ -376,7 +376,7 @@ func TestRunToolLoopStreamAssemblesThinkingBlocks(t *testing.T) {
 		},
 	}
 
-	resp, err := RunToolLoopStream(t.Context(), p, &ChatRequest{Messages: []Message{UserText("hi")}}, 3,
+	resp, err := RunToolLoopStream(t.Context(), p, &ChatRequest{Messages: []Message{UserText("hi")}, Tools: offeredTools("get_weather")}, 3,
 		func(context.Context, string, string) (string, error) { return "sunny", nil }, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "晴天", resp.Content)

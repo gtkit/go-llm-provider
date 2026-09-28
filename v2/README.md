@@ -1559,8 +1559,9 @@ resp, err := provider.RunToolLoopWithOptions(
 - `RunToolLoop` 等价于使用兼容默认 options 调用 `RunToolLoopWithOptions`
 - `ParallelToolCalls` 默认关闭
 - `ToolErrorEncoder` 默认使用安全脱敏编码器
-- `ToolRetry` 零值表示不重试（仅执行一次），保持既有行为；`MaxAttempts > 1` 时按 `Backoff` 等待并重试，`ShouldRetry` 默认重试所有非 context 取消错误
+- `ToolRetry` 零值表示不重试（仅执行一次），保持既有行为；`MaxAttempts > 1` 时按 `Backoff` 等待并重试，`ShouldRetry` 默认重试所有非 context 取消错误。重试会重放 handler：有副作用的工具（下单、转账、发消息）要么在 handler 内用幂等键去重，要么通过 `ShouldRetry` 只放行可安全重放的错误
 - `ToolSelector` 默认为 `nil`，全量下发 `req.Tools`（既有行为）；设置后每轮下发前裁剪工具集，见下节
+- **执行白名单**：每轮只执行本轮下发的函数工具（`req.Tools` 或 `ToolSelector` 的返回值）。模型请求的函数名不在其中时，handler 不会被调用，该调用以 `ErrToolNotOffered` 经 `ToolErrorEncoder` 生成工具结果回传模型，循环继续
 - `AccumulateUsage` 默认关闭，返回最后一轮的 `Usage`（既有行为）；设为 `true` 后，返回响应的 `Usage` 为**所有轮次**的 token 消耗累加值，便于多轮工具循环的成本统计（某轮 provider 未返回 usage 则按 0 计入）
 
 思考模型（DeepSeek V4、Kimi K3、Claude 5、Gemini 3 等）要求把上一轮的推理内容随工具调用回传，
@@ -1588,6 +1589,7 @@ resp, err := provider.RunToolLoopWithOptions(ctx, p, req, handler,
 - **返回 error 会中止整个循环**，不会回退成全量下发：裁剪可能承载调用方的权限边界，静默回退会把本该屏蔽的工具暴露给模型
 - **不影响调用方的请求**：`tools` 是本轮的切片副本，原地重排或截断都不会改到 `req.Tools`；但元素内部的引用字段（如 `Tool.Function.Parameters`）与调用方共享，不要修改
 - `RunToolLoopStreamWithOptions` 语义完全一致
+- **裁剪同时是执行边界**：模型请求本轮已被筛掉的工具时，handler 不会执行，模型收到 `ErrToolNotOffered` 编码的工具结果
 - **裁剪过度的表现**：模型反复请求已被筛掉的工具，或直接放弃任务，循环空转到 `MaxRounds` 上限。库无法判断哪个工具是"需要的"，保守起见给模型留一个兜底工具
 - 钩子在请求关键路径上同步执行，每轮一次。它应当是本地判断；需要远程检索时自行加缓存与超时
 
@@ -1598,7 +1600,7 @@ resp, err := provider.RunToolLoopWithOptions(ctx, p, req, handler,
 工具执行结果如果来自外部不可信数据源（网页抓取、第三方 API、用户上传内容等），可能携带试图让模型偏离原任务的指令文本（间接提示注入）。`RunToolLoopOptions` 提供两个可选钩子，让调用方在结果进入对话历史前、以及最终响应返回前接入自己的处理逻辑，`RunToolLoopStreamWithOptions` 同样支持：
 
 - `ToolResultTransformer`：在工具结果写回对话历史前对其加工。返回 error 会中止整个工具循环。
-- `ResponseValidator`：在返回最终响应前对其校验。返回 error 时整个循环返回该 error，不会把未通过校验的响应交还给调用方。
+- `ResponseValidator`：在返回最终响应前对其校验。返回 error 时整个循环返回该 error，不会把未通过校验的响应交还给调用方。流式版本中校验发生在最后一轮全部 chunk 经 `onChunk` 送出之后，只决定返回值与错误；需要未通过校验的内容不外露时，在 `onChunk` 中缓冲，成功返回后再展示。
 
 ```go
 resp, err := provider.RunToolLoopWithOptions(

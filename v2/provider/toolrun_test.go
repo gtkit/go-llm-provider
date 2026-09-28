@@ -9,6 +9,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// offeredTools 构造只含函数名的工具集，使工具循环的白名单放行对应调用。
+func offeredTools(names ...string) []Tool {
+	tools := make([]Tool, 0, len(names))
+	for _, name := range names {
+		tools = append(tools, Tool{Function: FunctionDef{Name: name}})
+	}
+	return tools
+}
+
 // toolLoopProvider 在第一轮返回一次工具调用，之后返回最终文本，
 // 用于驱动 RunToolLoop 走完一轮工具执行。
 func toolLoopProvider() *stubProvider {
@@ -42,6 +51,7 @@ func TestRunToolLoopToolRetrySucceedsAfterFailures(t *testing.T) {
 	}
 
 	resp, err := RunToolLoopWithOptions(context.Background(), toolLoopProvider(), &ChatRequest{
+		Tools:    offeredTools("f"),
 		Messages: []Message{UserText("hi")},
 	}, handler, RunToolLoopOptions{
 		MaxRounds: 5,
@@ -62,6 +72,7 @@ func TestRunToolLoopNoRetryByDefault(t *testing.T) {
 	}
 
 	resp, err := RunToolLoopWithOptions(context.Background(), toolLoopProvider(), &ChatRequest{
+		Tools:    offeredTools("f"),
 		Messages: []Message{UserText("hi")},
 	}, handler, RunToolLoopOptions{MaxRounds: 5})
 	require.NoError(t, err)
@@ -80,6 +91,7 @@ func TestRunToolLoopToolRetryRespectsShouldRetry(t *testing.T) {
 	}
 
 	_, err := RunToolLoopWithOptions(context.Background(), toolLoopProvider(), &ChatRequest{
+		Tools:    offeredTools("f"),
 		Messages: []Message{UserText("hi")},
 	}, handler, RunToolLoopOptions{
 		MaxRounds: 5,
@@ -105,6 +117,7 @@ func TestRunToolLoopToolRetryStopsOnContextCancel(t *testing.T) {
 	}
 
 	_, err := RunToolLoopWithOptions(ctx, toolLoopProvider(), &ChatRequest{
+		Tools:    offeredTools("f"),
 		Messages: []Message{UserText("hi")},
 	}, handler, RunToolLoopOptions{
 		MaxRounds: 5,
@@ -219,6 +232,7 @@ func TestRunToolLoopToolResultTransformerNilPassesThrough(t *testing.T) {
 	}
 
 	resp, err := RunToolLoopWithOptions(t.Context(), p, &ChatRequest{
+		Tools:    offeredTools("f"),
 		Messages: []Message{UserText("hi")},
 	}, func(context.Context, string, string) (string, error) {
 		return "raw-result", nil
@@ -249,6 +263,7 @@ func TestRunToolLoopAppliesToolResultTransformer(t *testing.T) {
 
 	var seenCall ToolCall
 	resp, err := RunToolLoopWithOptions(t.Context(), p, &ChatRequest{
+		Tools:    offeredTools("f"),
 		Messages: []Message{UserText("hi")},
 	}, func(context.Context, string, string) (string, error) {
 		return "raw-result", nil
@@ -283,6 +298,7 @@ func TestRunToolLoopToolResultTransformerErrorAbortsLoop(t *testing.T) {
 
 	boom := errors.New("boom")
 	resp, err := RunToolLoopWithOptions(t.Context(), p, &ChatRequest{
+		Tools:    offeredTools("f"),
 		Messages: []Message{UserText("hi")},
 	}, func(context.Context, string, string) (string, error) {
 		return "raw-result", nil
@@ -319,6 +335,7 @@ func TestRunToolLoopToolResultTransformerAppliesOnlyAfterRetrySucceeds(t *testin
 	var attempts int
 	var transformerCalls int
 	resp, err := RunToolLoopWithOptions(t.Context(), p, &ChatRequest{
+		Tools:    offeredTools("f"),
 		Messages: []Message{UserText("hi")},
 	}, func(context.Context, string, string) (string, error) {
 		attempts++
@@ -365,6 +382,7 @@ func TestRunToolLoopParallelToolCallsAppliesTransformerToEachCall(t *testing.T) 
 	}
 
 	resp, err := RunToolLoopWithOptions(t.Context(), p, &ChatRequest{
+		Tools:    offeredTools("one", "two"),
 		Messages: []Message{UserText("hi")},
 	}, func(_ context.Context, name, _ string) (string, error) {
 		return name + "-result", nil

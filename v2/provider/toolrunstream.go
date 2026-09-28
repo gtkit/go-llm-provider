@@ -22,7 +22,9 @@ func RunToolLoopStream(ctx context.Context, p Provider, req *ChatRequest, maxRou
 }
 
 // RunToolLoopStreamWithOptions 以 RunToolLoopOptions 控制流式工具循环，
-// 选项语义与 RunToolLoopWithOptions 一致（含 AccumulateUsage 的跨轮 usage 累加）。
+// 选项语义与 RunToolLoopWithOptions 一致（含 AccumulateUsage 的跨轮 usage 累加），
+// 唯一差别在 ResponseValidator 的时机：校验发生在最后一轮全部 chunk 经 onChunk 送出之后，
+// 只决定返回值与错误。需要未通过校验的内容不外露时，在 onChunk 中缓冲，成功返回后再展示。
 func RunToolLoopStreamWithOptions(ctx context.Context, p Provider, req *ChatRequest, handler ToolHandler, onChunk func(StreamChunk), opts RunToolLoopOptions) (*ChatResponse, error) {
 	if providerIsNil(p) {
 		return nil, ErrNilProvider
@@ -54,6 +56,7 @@ func RunToolLoopStreamWithOptions(ctx context.Context, p Provider, req *ChatRequ
 			return nil, err
 		}
 		roundReq.Tools = tools
+		offered := offeredToolNames(tools)
 
 		stream, err := p.ChatStream(ctx, &roundReq)
 		if err != nil {
@@ -94,7 +97,7 @@ func RunToolLoopStreamWithOptions(ctx context.Context, p Provider, req *ChatRequ
 			ThinkingBlocks: result.thinkingBlocks,
 			ToolCalls:      result.toolCalls,
 		})
-		toolMessages, err := executeToolCalls(ctx, result.toolCalls, handler, encoder, opts.ToolResultTransformer, opts.ParallelToolCalls, retry)
+		toolMessages, err := executeToolCalls(ctx, result.toolCalls, offered, handler, encoder, opts.ToolResultTransformer, opts.ParallelToolCalls, retry)
 		if err != nil {
 			return nil, err
 		}

@@ -621,6 +621,7 @@ resp, err := provider.RunToolLoopWithOptions(
 - `RunToolLoop` 等价于使用兼容默认 options 调用 `RunToolLoopWithOptions`
 - `ParallelToolCalls` 默认关闭
 - `ToolErrorEncoder` 默认使用安全脱敏编码器
+- **执行白名单**：只执行 `req.Tools` 中声明的工具。模型请求的函数名不在其中时，handler 不会被调用，该调用以 `ErrToolNotOffered` 经 `ToolErrorEncoder` 生成工具结果回传模型，循环继续
 
 #### 工具结果加工与响应校验
 

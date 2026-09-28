@@ -35,6 +35,9 @@ type ToolResultTransformer func(ctx context.Context, call ToolCall, result strin
 type ResponseValidator func(ctx context.Context, resp *ChatResponse) error
 
 // RunToolLoopOptions configures the additive RunToolLoop execution path.
+//
+// 工具循环以 req.Tools 中的函数工具为白名单：模型请求未下发的工具时不调用 handler，
+// 以 ErrToolNotOffered 调用 ToolErrorEncoder 生成工具结果回传模型。
 type RunToolLoopOptions struct {
 	// MaxRounds limits the maximum number of tool loop rounds.
 	// If MaxRounds <= 0, a safe default limit is used.
@@ -125,6 +128,11 @@ func RunToolLoopWithOptions(ctx context.Context, p Provider, req *ChatRequest, h
 		encoder = DefaultToolErrorEncoder
 	}
 
+	offered := make(map[string]struct{}, len(req.Tools))
+	for _, tool := range req.Tools {
+		offered[tool.Function.Name] = struct{}{}
+	}
+
 	for round := range maxIterations(opts.MaxRounds) {
 		// 浅拷贝基础字段，再为可变 slice 建立独立 header，避免未来实现误修改调用方请求。
 		// 注意：这里只隔离了 slice 本身，不会深拷贝 Tool.Function.Parameters 等引用类型字段。
@@ -151,7 +159,7 @@ func RunToolLoopWithOptions(ctx context.Context, p Provider, req *ChatRequest, h
 		// 将模型的 tool_calls 响应追加到对话历史
 		messages = append(messages, resp.AssistantMessage())
 
-		toolMessages, err := executeToolCalls(ctx, resp.ToolCalls, handler, encoder, opts.ToolResultTransformer, opts.ParallelToolCalls)
+		toolMessages, err := executeToolCalls(ctx, resp.ToolCalls, offered, handler, encoder, opts.ToolResultTransformer, opts.ParallelToolCalls)
 		if err != nil {
 			return nil, err
 		}
@@ -173,6 +181,7 @@ func maxIterations(n int) int {
 func executeToolCalls(
 	ctx context.Context,
 	toolCalls []ToolCall,
+	offered map[string]struct{},
 	handler ToolHandler,
 	encoder ToolErrorEncoder,
 	transformer ToolResultTransformer,
@@ -181,7 +190,7 @@ func executeToolCalls(
 	if !parallel || len(toolCalls) <= 1 {
 		messages := make([]Message, 0, len(toolCalls))
 		for _, call := range toolCalls {
-			msg, err := executeToolCall(ctx, call, handler, encoder, transformer)
+			msg, err := executeToolCall(ctx, call, offered, handler, encoder, transformer)
 			if err != nil {
 				return nil, err
 			}
@@ -198,7 +207,7 @@ func executeToolCalls(
 	for i, call := range toolCalls {
 		go func(index int, toolCall ToolCall) {
 			defer wg.Done()
-			msg, err := executeToolCall(ctx, toolCall, handler, encoder, transformer)
+			msg, err := executeToolCall(ctx, toolCall, offered, handler, encoder, transformer)
 			if err != nil {
 				errCh <- err
 				return
@@ -219,7 +228,11 @@ func executeToolCalls(
 	return results, nil
 }
 
-func executeToolCall(ctx context.Context, call ToolCall, handler ToolHandler, encoder ToolErrorEncoder, transformer ToolResultTransformer) (Message, error) {
+func executeToolCall(ctx context.Context, call ToolCall, offered map[string]struct{}, handler ToolHandler, encoder ToolErrorEncoder, transformer ToolResultTransformer) (Message, error) {
+	if _, ok := offered[call.Function.Name]; !ok {
+		return encodeToolError(ctx, encoder, call, ErrToolNotOffered)
+	}
+
 	result, err := handler(ctx, call.Function.Name, call.Function.Arguments)
 	if err == nil {
 		if transformer != nil {
@@ -239,6 +252,10 @@ func executeToolCall(ctx context.Context, call ToolCall, handler ToolHandler, en
 		return Message{}, err
 	}
 
+	return encodeToolError(ctx, encoder, call, err)
+}
+
+func encodeToolError(ctx context.Context, encoder ToolErrorEncoder, call ToolCall, err error) (Message, error) {
 	msg, encodeErr := encoder(ctx, call, err)
 	if encodeErr != nil {
 		return Message{}, fmt.Errorf("encode tool error result: %w", encodeErr)

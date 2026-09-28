@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/gtkit/json/v2"
 
@@ -20,7 +21,7 @@ func main() {
 	}
 }
 
-// maxFetchedContentLen 是单次抓取内容允许进入 prompt 的最大长度，
+// maxFetchedContentLen 是单次抓取内容允许进入 prompt 的最大字符数，
 // 超长内容截断，防止填满 context window（第一道防线：长度截断）。
 const maxFetchedContentLen = 2000
 
@@ -61,22 +62,46 @@ var markdownEscaper = strings.NewReplacer(
 // sanitizeFetchedContent 是业务侧实现的第一道防线：长度截断 + 特征词检测降级替换 + 结构符转义。
 // 命中可疑特征词时替换为安全占位符并记审计日志，而不是直接抛错中断整条流程。
 func sanitizeFetchedContent(content string) string {
-	if len(content) > maxFetchedContentLen {
-		content = content[:maxFetchedContentLen] + "...[TRUNCATED]"
-	}
+	content = truncateRunes(content, maxFetchedContentLen, "...[TRUNCATED]")
 
+	normalized := normalizeForDetection(content)
 	for _, pattern := range suspiciousPatterns {
-		if pattern.MatchString(content) {
-			preview := content
-			if len(preview) > 60 {
-				preview = preview[:60] + "..."
-			}
-			fmt.Fprintf(os.Stderr, "[security] 检测到疑似提示词注入内容，已替换：%q\n", preview)
+		if pattern.MatchString(normalized) {
+			fmt.Fprintf(os.Stderr, "[security] 检测到疑似提示词注入内容，已替换：%q\n", truncateRunes(content, 60, "..."))
 			return "[SANITIZED: 原始内容包含疑似注入指令，已被安全策略替换]"
 		}
 	}
 
 	return markdownEscaper.Replace(content)
+}
+
+// normalizeForDetection 生成只用于特征匹配的副本：全角 ASCII 折为半角、删除零宽等格式字符、
+// 各类空白（NBSP、全角空格等）归一为空格。攻击者用这些字符打散关键词时正则会直接失配；
+// 原文不做改写，避免误伤正常内容的排版。
+func normalizeForDetection(text string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 0xFF01 && r <= 0xFF5E:
+			return r - 0xFEE0
+		case unicode.Is(unicode.Cf, r):
+			return -1
+		case unicode.IsSpace(r):
+			return ' '
+		}
+		return r
+	}, text)
+}
+
+// truncateRunes 按字符截断并追加 suffix；按字节截断会切断多字节字符，产生非法 UTF-8。
+func truncateRunes(text string, maxRunes int, suffix string) string {
+	n := 0
+	for i := range text {
+		if n == maxRunes {
+			return text[:i] + suffix
+		}
+		n++
+	}
+	return text
 }
 
 // fetchWebPage 模拟一次网页抓取：返回内容来自外部不可信来源，

@@ -12,11 +12,19 @@
 
 ### Changed
 
+- ⚠ 工具循环（`RunToolLoop` / `RunToolLoopWithOptions` / `RunToolLoopStream` / `RunToolLoopStreamWithOptions`）只执行本轮下发的函数工具：模型请求的函数名不在本轮工具集（`req.Tools` 或 `ToolSelector` 的返回值）中时，handler 不被调用、不进入重试，该调用以新增哨兵 `ErrToolNotOffered` 经 `ToolErrorEncoder` 生成工具结果回传模型，循环继续。此前模型可以调用任意未下发、或已被 `ToolSelector` 裁掉的工具，裁剪无法充当权限边界。**迁移**：依赖 handler 处理未声明工具的调用方，把这些工具加入 `req.Tools`（或 `ToolSelector` 的返回值）；`WebSearch` 服务端工具不受影响
+
 ### Deprecated
 
 ### Removed
 
 ### Fixed
+
+- `ResponseValidator` 与 `RunToolLoopStreamWithOptions` 的文档写明流式校验时机：校验在最后一轮全部 chunk 经 `onChunk` 送出之后进行，只决定返回值与错误；需要未通过校验的内容不外露时，在 `onChunk` 中缓冲
+- `ToolRetryOptions` 文档补充幂等约束：有副作用的工具开启重试时，用幂等键去重或通过 `ShouldRetry` 只放行可安全重放的错误
+- `example/toolsecurity` 与 `example/websearch` 的注入特征检测改在规范化副本上进行（全角折半角、删除零宽字符、各类空白归一），全角字母、零宽字符、NBSP 打散的注入短语不再漏检；截断与日志预览改为按字符计，不再切出非法 UTF-8
+- `example/websearch` 对搜索结果的 URL 与站点名同样净化并限长，标题、URL、站点名、正文任一命中都对该条结果回调一次 `OnSuspicious`（此前只检测正文，标题命中不告警）
+- `PROMPT_INJECTION_DEFENSE.md` 模板同步：新增 `NormalizeForDetection` 与 `TruncateRunes`，`Sanitize` 的 `maxLen` 按字符计，用例表补充全角与零宽绕过样例
 
 ### Security
 
