@@ -44,7 +44,7 @@ cd v2 && ANTHROPIC_API_KEY=... GEMINI_API_KEY=... DEEPSEEK_API_KEY=... ZHIPU_API
 
 ### R-03 内建搜索未覆盖的平台
 
-- **Kimi**：`$web_search` 声明为 `{"type":"builtin_function","function":{"name":"$web_search"}}`，模型返回 `tool_call` 后调用方必须把 `arguments` 原样回传成 `role="tool"` 消息，平台才执行搜索。这与 `Tool.WebSearch` 的现有契约"服务端执行、不产生客户端 `ToolCall`"冲突。接入需要一次独立的契约演进：允许原生搜索产生一次客户端往返、`RunToolLoop` 自动消化该 tool_call（不能落到调用方的 `ToolHandler`）、裸 `Chat` 下的语义定义。
+- **Kimi**：`$web_search` 声明为 `{"type":"builtin_function","function":{"name":"$web_search"}}`，模型返回 `tool_call` 后调用方必须把 `arguments` 原样回传成 `role="tool"` 消息，平台才执行搜索。这与 `Tool.WebSearch` 的现有契约"服务端执行、不产生客户端 `ToolCall`"冲突。接入需要一次独立的契约演进：允许原生搜索产生一次客户端往返、应用如何处理该 tool_call，以及单次 `Chat` 的往返语义定义。
 - **火山方舟**：联网内容插件的协议细节未取得——文档站正文为 JS 渲染，多次抓取均为空。**解除条件**：拿到官方协议文档或真实 key 实测。
 - **百度千帆**：AI 搜索在独立端点 `/v2/ai_search/chat/completions`，不是 chat 端点上的工具或参数，属于另一种产品形态，接入方式与本条其余平台不同。
 - **DeepSeek**：二手来源称其 Anthropic 兼容端点支持原生搜索，但官方变更日志中检索不到任何 web search 条目。**解除条件**：官方文档证实。

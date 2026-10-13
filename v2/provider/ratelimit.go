@@ -84,7 +84,7 @@ type RateLimiterStats struct {
 // 与平台侧限流的关系：这里把超额请求挡在发出之前，减少 429；
 // 平台真的返回 429 时仍应配合 WithRetry 与 Breaker 处理。
 //
-// token 额度采用"预扣 + 结算"：请求前按 EstimateTokens 口径预扣
+// token 额度采用"预扣 + 结算"：请求前按本地消息估算预扣
 // （误差 ±30%），响应返回后用真实 Usage 结算差额。请求失败时保留预扣不返还，
 // 宁可保守也不放大超额风险。
 //
@@ -399,17 +399,17 @@ func (b *tokenBucket) availableAt(now time.Time) int {
 // 中间件与装饰器
 // ============================================================
 
-// EstimateChatRequestTokens 按 EstimateTokens 口径估算一次 Chat 请求
+// EstimateChatRequestTokens 按本地启发式估算一次 Chat 请求
 // 需要预扣的 token 数：输入估算 + 输出预留（req.MaxTokens 优先，
 // 未设置时用 reserveOutput）。req 为 nil 返回 0。
 //
-// 与 EstimateTokens 同为启发式估算（误差 ±30%），用于限流预扣，
+// 该估算用于限流预扣，不能保证精确 token 数，
 // 不可用于计费——计费一律以响应返回的 Usage 为准。
 func EstimateChatRequestTokens(req *ChatRequest, reserveOutput int) int {
 	if req == nil {
 		return 0
 	}
-	total := EstimateTokens(req.Messages)
+	total := estimateTokens(req.Messages)
 	if req.MaxTokens > 0 {
 		return total + req.MaxTokens
 	}
@@ -595,4 +595,46 @@ func TryWithEmbedderRateLimit(e Embedder, l *RateLimiter) (Embedder, error) {
 		return nil, ErrNilRateLimiter
 	}
 	return WithEmbedderMiddlewares(e, RateLimitEmbedMiddleware(l)), nil
+}
+
+// estimateTokensPerAttachment 是图片/文件等非文本内容的固定估算预算。
+// 各平台对多媒体的 token 折算差异很大，这里取保守中间值。
+const estimateTokensPerAttachment = 800
+
+// estimateTokens 仅用于客户端限流预扣，不能代替供应商 Usage。
+func estimateTokens(msgs []Message) int {
+	total := 0
+	for _, msg := range msgs {
+		total += 4 // 每条消息的角色与分隔开销
+		for _, part := range msg.Content {
+			switch part.Type {
+			case ContentTypeText:
+				total += estimateTextTokens(part.Text)
+			default:
+				total += estimateTokensPerAttachment
+			}
+		}
+		for _, call := range msg.ToolCalls {
+			total += 8 + estimateTextTokens(call.Function.Name) + estimateTextTokens(call.Function.Arguments)
+		}
+		if msg.ToolCallID != "" {
+			total += 4
+		}
+	}
+	return total
+}
+
+// cjkRuneStart 起始码点之上视为 CJK 及其他全宽字符，按 1 token/字估算。
+const cjkRuneStart = 0x2E80
+
+func estimateTextTokens(s string) int {
+	cjk, other := 0, 0
+	for _, r := range s {
+		if r >= cjkRuneStart {
+			cjk++
+		} else {
+			other++
+		}
+	}
+	return cjk + (other+3)/4
 }

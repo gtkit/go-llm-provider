@@ -24,8 +24,8 @@ import (
 // 返回的 map 会一路传到 HTTP 层，构造器交出后不得再修改它。
 type extraFieldsBuilder func(*ChatRequest) map[string]any
 
-// extraFieldsBuilders 按 provider 名登记顶层扩展字段构造器，是"哪些平台需要
-// 注入"的唯一来源：构造时据此决定是否包装 HTTPDoer，请求时据此产出字段。
+// extraFieldsBuilders 按 provider 名登记平台专用的顶层扩展字段构造器。
+// 通用零值参数不依赖该表，所有兼容平台都会保留显式零值。
 // 初始化后只读，因此可被并发的 NewProvider 与请求路径同时查表。
 var extraFieldsBuilders = map[ProviderName]extraFieldsBuilder{
 	ProviderDeepSeek: thinkingTypeExtraFields,
@@ -38,22 +38,25 @@ var extraFieldsBuilders = map[ProviderName]extraFieldsBuilder{
 // extraFieldsCtxKey 是 context 传递顶层扩展字段的私有 key 类型。
 type extraFieldsCtxKey struct{}
 
-// needsExtraFields 报告该 provider 是否登记了顶层扩展字段构造器。
-func needsExtraFields(name ProviderName) bool {
-	_, ok := extraFieldsBuilders[name]
-
-	return ok
-}
-
-// withExtraFields 在该 provider 登记了构造器且本次请求确有扩展字段时，
-// 把待注入字段写入 context；其余情况原样返回。
+// withExtraFields 合并平台字段与 SDK 无法表达的显式零值。
+// 非零值已经由 SDK 编码，不能重复追加同名 JSON 键。
 func withExtraFields(ctx context.Context, name ProviderName, req *ChatRequest) context.Context {
-	build, ok := extraFieldsBuilders[name]
-	if !ok || req == nil {
+	if req == nil {
 		return ctx
 	}
 
-	fields := build(req)
+	var fields map[string]any
+	if build := extraFieldsBuilders[name]; build != nil {
+		fields = build(req)
+	}
+	for key, value := range map[string]*float32{"temperature": req.Temperature, "top_p": req.TopP} {
+		if value != nil && *value == 0 {
+			if fields == nil {
+				fields = make(map[string]any)
+			}
+			fields[key] = *value
+		}
+	}
 	if len(fields) == 0 {
 		return ctx
 	}

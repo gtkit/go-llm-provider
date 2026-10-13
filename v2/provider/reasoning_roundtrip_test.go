@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -307,102 +306,6 @@ func TestGeminiAssistantPartsReplayThoughtSignature(t *testing.T) {
 // ============================================================
 // 工具循环：推理往返端到端
 // ============================================================
-
-// TestRunToolLoopCarriesReasoningIntoNextRound 锁定非流式工具循环的推理往返：
-// 第一轮的 Reasoning / ThinkingBlocks / ThoughtSignature 必须出现在第二轮的 assistant 消息上，
-// 工具结果消息携带函数名。
-func TestRunToolLoopCarriesReasoningIntoNextRound(t *testing.T) {
-	t.Parallel()
-
-	var requests []*ChatRequest
-	p := &stubProvider{
-		name: ProviderDeepSeek,
-		chat: func(_ context.Context, req *ChatRequest) (*ChatResponse, error) {
-			requests = append(requests, req)
-			if len(requests) == 1 {
-				return &ChatResponse{
-					Reasoning:      "先查天气",
-					ThinkingBlocks: []ThinkingBlock{{Thinking: "先查天气", Signature: "sig"}},
-					ToolCalls: []ToolCall{{
-						ID: "call_1", Function: FunctionCall{Name: "get_weather", Arguments: "{}"}, ThoughtSignature: "ts",
-					}},
-				}, nil
-			}
-			return &ChatResponse{Content: "巴黎晴天"}, nil
-		},
-	}
-
-	resp, err := RunToolLoop(t.Context(), p, &ChatRequest{Messages: []Message{UserText("巴黎天气")}, Tools: offeredTools("get_weather")}, 3,
-		func(context.Context, string, string) (string, error) { return `{"weather":"sunny"}`, nil })
-	require.NoError(t, err)
-	assert.Equal(t, "巴黎晴天", resp.Content)
-
-	require.Len(t, requests, 2)
-	require.Len(t, requests[1].Messages, 3)
-	assistant := requests[1].Messages[1]
-	assert.Equal(t, "先查天气", assistant.Reasoning)
-	assert.Equal(t, []ThinkingBlock{{Thinking: "先查天气", Signature: "sig"}}, assistant.ThinkingBlocks)
-	assert.Equal(t, "ts", assistant.ToolCalls[0].ThoughtSignature)
-
-	tool := requests[1].Messages[2]
-	assert.Equal(t, "call_1", tool.ToolCallID)
-	assert.Equal(t, "get_weather", tool.ToolName, "Gemini functionResponse 需要函数名")
-}
-
-// TestRunToolLoopStreamAssemblesThinkingBlocks 锁定流式工具循环对思考块的拼装：
-// 签名到达即闭合一个块，加密块整块收下，工具调用的签名随拼装保留。
-func TestRunToolLoopStreamAssemblesThinkingBlocks(t *testing.T) {
-	t.Parallel()
-
-	var round int
-	var secondRoundReq *ChatRequest
-	p := &stubProvider{
-		name: ProviderAnthropic,
-		chatStream: func(_ context.Context, req *ChatRequest) (*StreamReader, error) {
-			round++
-			if round == 1 {
-				return chunkStream([]StreamChunk{
-					{ReasoningDelta: "先"},
-					{ReasoningDelta: "查天气"},
-					{ThinkingSignature: "sig-1"},
-					{RedactedThinking: "ENC"},
-					{ToolCalls: []ToolCallDelta{{Index: 0, ID: "c1", Function: FunctionCallDelta{Name: "get_weather"}, ThoughtSignature: "ts"}}},
-					{ToolCalls: []ToolCallDelta{{Index: 0, Function: FunctionCallDelta{Arguments: `{}`}}}},
-					{FinishReason: "tool_calls"},
-				}), nil
-			}
-			secondRoundReq = req
-			return chunkStream([]StreamChunk{{Delta: "晴天", FinishReason: "stop"}}), nil
-		},
-	}
-
-	resp, err := RunToolLoopStream(t.Context(), p, &ChatRequest{Messages: []Message{UserText("hi")}, Tools: offeredTools("get_weather")}, 3,
-		func(context.Context, string, string) (string, error) { return "sunny", nil }, nil)
-	require.NoError(t, err)
-	assert.Equal(t, "晴天", resp.Content)
-
-	require.NotNil(t, secondRoundReq)
-	assistant := secondRoundReq.Messages[1]
-	assert.Equal(t, "先查天气", assistant.Reasoning)
-	assert.Equal(t, []ThinkingBlock{
-		{Thinking: "先查天气", Signature: "sig-1"},
-		{Redacted: "ENC"},
-	}, assistant.ThinkingBlocks)
-	require.Len(t, assistant.ToolCalls, 1)
-	assert.Equal(t, "ts", assistant.ToolCalls[0].ThoughtSignature)
-	assert.Equal(t, "get_weather", secondRoundReq.Messages[2].ToolName)
-}
-
-func TestThinkingAssemblerIgnoresUnsignedReasoning(t *testing.T) {
-	t.Parallel()
-
-	a := newThinkingAssembler()
-	a.add(&StreamChunk{ReasoningDelta: "没有签名的推理"})
-	assert.Nil(t, a.result(), "无签名的思考文本平台无法校验，不得拼成可回传的块")
-
-	a.add(&StreamChunk{ThinkingSignature: "s"})
-	assert.Equal(t, []ThinkingBlock{{Thinking: "没有签名的推理", Signature: "s"}}, a.result())
-}
 
 func TestToolResultMessageFor(t *testing.T) {
 	t.Parallel()

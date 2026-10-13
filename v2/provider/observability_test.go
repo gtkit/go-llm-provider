@@ -421,3 +421,16 @@ func TestWithEmbedderObservabilityReturnsErroringEmbedderOnNilEmbedder(t *testin
 	require.ErrorIs(t, err, ErrNilEmbedder)
 	assert.Nil(t, resp)
 }
+
+func TestCombineObserveHooks(t *testing.T) {
+	t.Parallel()
+
+	var order []string
+	hook := CombineObserveHooks(
+		func(context.Context, ObserveEvent) { order = append(order, "a") },
+		nil,
+		func(context.Context, ObserveEvent) { order = append(order, "b") },
+	)
+	hook(t.Context(), ObserveEvent{})
+	assert.Equal(t, []string{"a", "b"}, order)
+}

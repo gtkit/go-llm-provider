@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gtkit/json/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -159,20 +160,18 @@ func TestDeepSeekStructuredSmoke(t *testing.T) {
 		Status string `json:"status"`
 	}
 
-	out, resp, err := GenerateJSONWithValidator[smokeResult](ctx, p, &ChatRequest{
+	resp, err := p.Chat(ctx, &ChatRequest{
 		Messages: []Message{
 			SystemText("只输出 JSON 对象，不要输出 Markdown。"),
 			UserText(`返回 {"status":"ok"}`),
 		},
-		MaxTokens: 1024,
-	}, func(v smokeResult) error {
-		if v.Status != "ok" {
-			return ErrStructuredValidation
-		}
-		return nil
+		MaxTokens:      1024,
+		ResponseFormat: JSONObjectFormat(),
 	})
 	require.NoError(t, err)
 	require.NotNil(t, resp)
+	var out smokeResult
+	require.NoError(t, json.Unmarshal([]byte(resp.Content), &out))
 	assert.Equal(t, "ok", out.Status)
 	assert.NotZero(t, resp.Usage.TotalTokens)
 }

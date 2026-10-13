@@ -32,7 +32,7 @@ type WebSearchOptions struct {
 // 智谱与百炼两个 OpenAI 兼容平台；其他 provider 收到该工具时返回
 // ErrInvalidRequest，不静默丢弃。是否支持可用
 // ModelCapabilities.Supports(CapabilityWebSearch) 预检。未覆盖的平台接入搜索的
-// 推荐方式是普通函数工具 + RunToolLoop，由调用方 ToolHandler 调用搜索 API，
+// 推荐方式是普通函数工具，由调用方执行搜索 API 并回传工具结果，
 // 见 README"国内平台的联网搜索接入"一节。
 //
 // 逐平台差异：

@@ -246,7 +246,7 @@ func TestEstimateChatRequestTokens(t *testing.T) {
 	assert.Equal(t, 0, EstimateChatRequestTokens(nil, 100))
 
 	req := &ChatRequest{Messages: []Message{UserText("hello world")}}
-	base := EstimateTokens(req.Messages)
+	base := estimateTokens(req.Messages)
 	assert.Equal(t, base+128, EstimateChatRequestTokens(req, 128))
 	assert.Equal(t, base, EstimateChatRequestTokens(req, -10))
 
@@ -467,7 +467,6 @@ func TestRateLimiterConcurrentAcquire(t *testing.T) {
 	var granted atomic.Int64
 	for range 64 {
 		wg.Go(func() {
-
 			if err := l.Acquire(t.Context(), 100); err == nil {
 				granted.Add(1)
 				l.Settle(100, 50)

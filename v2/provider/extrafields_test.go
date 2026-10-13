@@ -26,22 +26,16 @@ func extraFieldsContext(t *testing.T, fields map[string]any) context.Context {
 // 构造器登记表
 // ============================================================
 
-func TestNeedsExtraFieldsMatchesBuilderRegistry(t *testing.T) {
+func TestExtraFieldsBuildersAreNonNil(t *testing.T) {
 	t.Parallel()
 
-	// needsExtraFields 决定构造时是否包装 HTTPDoer，withExtraFields 决定请求时
-	// 是否写入字段。两者必须以同一张登记表为准，否则会出现"登记了却没包装
-	// Doer"（字段被静默丢弃）或"包装了却查不到构造器"（白包一层）。
+	// 平台专用字段来自同一张只读登记表；通用零值补偿不依赖此表。
 	require.NotEmpty(t, extraFieldsBuilders)
 
 	for name, build := range extraFieldsBuilders {
-		assert.Truef(t, needsExtraFields(name), "registered provider=%s", name)
 		// 登记成 nil 能编译通过，但会让 withExtraFields 在请求路径上 panic
 		require.NotNilf(t, build, "registered provider=%s has nil builder", name)
 	}
-
-	assert.False(t, needsExtraFields(ProviderOpenAI))
-	assert.False(t, needsExtraFields(ProviderName("unregistered")))
 }
 
 // TestExtraFieldsBuildersConcurrentLookup 为"登记表初始化后只读，可并发查表"
@@ -54,9 +48,6 @@ func TestExtraFieldsBuildersConcurrentLookup(t *testing.T) {
 	var wg sync.WaitGroup
 	for range 32 {
 		wg.Go(func() {
-
-			// 构造路径与请求路径查的是同一张表
-			_ = needsExtraFields(ProviderArk)
 			_ = withExtraFields(context.Background(), ProviderArk, req)
 		})
 	}

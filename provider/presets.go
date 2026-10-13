@@ -1,10 +1,8 @@
 package provider
 
 import (
-	"errors"
 	"fmt"
 	"maps"
-	"slices"
 )
 
 // 预置各平台的 BaseURL 和推荐默认模型。
@@ -137,90 +135,4 @@ func NewEmbedderFromPreset(name ProviderName, apiKey, model string) (Embedder, e
 		APIKey:  apiKey,
 		Model:   model,
 	})
-}
-
-// QuickRegistry 是一个便捷函数，根据一组 apiKey 映射快速创建 Registry。
-// keys 的 key 是 ProviderName，value 是 APIKey。
-// 只会注册提供了非空 APIKey 的平台。
-// 同一个 APIKey 会同时尝试注册 Chat Provider 与 Embedder（若该平台有 embedding 预设）。
-// 注册失败的条目会被静默跳过；如果需要显式错误，请使用 QuickRegistryStrict。
-//
-// 用法示例：
-//
-//	reg := provider.QuickRegistry(map[provider.ProviderName]string{
-//	    provider.ProviderDeepSeek: os.Getenv("DEEPSEEK_API_KEY"),
-//	    provider.ProviderQwen:     os.Getenv("QWEN_API_KEY"),
-//	    provider.ProviderZhipu:    os.Getenv("ZHIPU_API_KEY"),
-//	})
-func QuickRegistry(keys map[ProviderName]string) *Registry {
-	reg := NewRegistry()
-	names := make([]ProviderName, 0, len(keys))
-	for name := range keys {
-		names = append(names, name)
-	}
-	slices.Sort(names)
-
-	for _, name := range names {
-		key := keys[name]
-		if key == "" {
-			continue
-		}
-
-		if p, err := NewProviderFromPreset(name, key, ""); err == nil {
-			reg.Register(p)
-		}
-
-		// 若该平台有 embedding 预设，同时注册 embedder；没有则静默跳过
-		if e, err := NewEmbedderFromPreset(name, key, ""); err == nil {
-			reg.RegisterEmbedder(e)
-		}
-	}
-	return reg
-}
-
-// QuickRegistryStrict 与 QuickRegistry 类似，但会返回所有注册失败的错误。
-// Provider 与 Embedder 的注册错误都会累积到返回值中；
-// 平台明确无 embedding 模型（如 DeepSeek、Moonshot）不视为错误。
-func QuickRegistryStrict(keys map[ProviderName]string) (*Registry, error) {
-	reg := NewRegistry()
-	names := make([]ProviderName, 0, len(keys))
-	for name := range keys {
-		names = append(names, name)
-	}
-	slices.Sort(names)
-
-	var errs []error
-	for _, name := range names {
-		key := keys[name]
-		if key == "" {
-			continue
-		}
-
-		p, err := NewProviderFromPreset(name, key, "")
-		if err != nil {
-			errs = append(errs, fmt.Errorf("register provider %q: %w", name, err))
-		} else {
-			reg.Register(p)
-		}
-
-		// 该平台有 embedding 预设才尝试注册；无预设跳过不报错
-		preset, ok := presetCatalog[name]
-		if !ok || preset.EmbeddingModel == "" {
-			continue
-		}
-
-		e, err := NewEmbedderFromPreset(name, key, "")
-		if err != nil {
-			errs = append(errs, fmt.Errorf("register embedder %q: %w", name, err))
-			continue
-		}
-
-		reg.RegisterEmbedder(e)
-	}
-
-	if len(errs) > 0 {
-		return reg, errors.Join(errs...)
-	}
-
-	return reg, nil
 }

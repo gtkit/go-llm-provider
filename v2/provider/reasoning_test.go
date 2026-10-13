@@ -62,7 +62,7 @@ func TestThinkingTypeExtraFields(t *testing.T) {
 	for _, name := range []ProviderName{ProviderDeepSeek, ProviderZhipu, ProviderMoonshot, ProviderArk} {
 		t.Run(string(name), func(t *testing.T) {
 			t.Parallel()
-			require.True(t, needsExtraFields(name))
+			require.NotNil(t, extraFieldsBuilders[name])
 			ctx := withExtraFields(t.Context(), name, &ChatRequest{Thinking: &Thinking{Enabled: &enabled}})
 			fields, ok := ctx.Value(extraFieldsCtxKey{}).(map[string]any)
 			require.True(t, ok)

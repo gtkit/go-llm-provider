@@ -3,7 +3,7 @@
 // 主包故意不内置 Logging / TokenStats / Retry / RateLimit 等具体策略——
 // 本文件展示调用方用 ~30 行就可以自行实现任一能力。
 //
-// 运行前：至少设置一个 provider 的 API key 环境变量（如 OPENAI_API_KEY / QWEN_API_KEY）。
+// 运行前：设置 OPENAI_API_KEY 环境变量。
 package main
 
 import (
@@ -26,17 +26,9 @@ func main() {
 }
 
 func run() error {
-	reg := provider.QuickRegistry(map[provider.ProviderName]string{
-		provider.ProviderOpenAI:      os.Getenv("OPENAI_API_KEY"),
-		provider.ProviderDeepSeek:    os.Getenv("DEEPSEEK_API_KEY"),
-		provider.ProviderQwen:        os.Getenv("QWEN_API_KEY"),
-		provider.ProviderZhipu:       os.Getenv("ZHIPU_API_KEY"),
-		provider.ProviderSiliconFlow: os.Getenv("SILICONFLOW_API_KEY"),
-	})
-
-	base, err := reg.Default()
+	base, err := provider.NewProviderFromPreset(provider.ProviderOpenAI, os.Getenv("OPENAI_API_KEY"), "")
 	if err != nil {
-		return fmt.Errorf("set at least one provider API key before running: %w", err)
+		return fmt.Errorf("create provider: %w", err)
 	}
 
 	// 累计 token 计数器（由 TokenStats Middleware 填充，主程序消费）

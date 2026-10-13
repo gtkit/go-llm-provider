@@ -17,20 +17,9 @@ func main() {
 }
 
 func run() error {
-	reg, err := provider.QuickRegistryStrict(map[provider.ProviderName]string{
-		provider.ProviderOpenAI:      os.Getenv("OPENAI_API_KEY"),
-		provider.ProviderQwen:        os.Getenv("QWEN_API_KEY"),
-		provider.ProviderZhipu:       os.Getenv("ZHIPU_API_KEY"),
-		provider.ProviderSiliconFlow: os.Getenv("SILICONFLOW_API_KEY"),
-		provider.ProviderMoonshot:    os.Getenv("MOONSHOT_API_KEY"),
-	})
+	p, err := provider.NewProviderFromPreset(provider.ProviderOpenAI, os.Getenv("OPENAI_API_KEY"), "")
 	if err != nil {
-		return fmt.Errorf("build registry failed: %w", err)
-	}
-
-	p, err := reg.Default()
-	if err != nil {
-		return fmt.Errorf("set at least one vision-capable provider API key: %w", err)
+		return fmt.Errorf("create provider: %w", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

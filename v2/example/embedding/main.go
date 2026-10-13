@@ -1,7 +1,7 @@
 // Package main 演示 go-llm-provider 的 embedding 能力：最小 RAG 检索闭环。
 //
 // 流程：
-//  1. QuickRegistry 同时注册 chat + embedding provider
+//  1. 分别构造 chat 与 embedding provider
 //  2. EmbedBatch 把 FAQ 文档库向量化（离线索引阶段）
 //  3. SimpleEmbed 把用户问题转向量（在线查询阶段）
 //  4. 手写余弦相似度，取 Top-1 最相近的 FAQ 条目
@@ -40,21 +40,13 @@ func main() {
 }
 
 func run() error {
-	reg := provider.QuickRegistry(map[provider.ProviderName]string{
-		provider.ProviderOpenAI:      os.Getenv("OPENAI_API_KEY"),
-		provider.ProviderQwen:        os.Getenv("QWEN_API_KEY"),
-		provider.ProviderZhipu:       os.Getenv("ZHIPU_API_KEY"),
-		provider.ProviderSiliconFlow: os.Getenv("SILICONFLOW_API_KEY"),
-		provider.ProviderQianfan:     os.Getenv("QIANFAN_API_KEY"),
-	})
-
-	emb, err := reg.DefaultEmbedder()
+	emb, err := provider.NewEmbedderFromPreset(provider.ProviderOpenAI, os.Getenv("OPENAI_API_KEY"), "")
 	if err != nil {
-		return fmt.Errorf("至少设置一个支持 embedding 的平台 API Key（OpenAI / Qwen / Zhipu / SiliconFlow / Qianfan）: %w", err)
+		return fmt.Errorf("create embedder: %w", err)
 	}
-	chat, err := reg.Default()
+	chat, err := provider.NewProviderFromPreset(provider.ProviderOpenAI, os.Getenv("OPENAI_API_KEY"), "")
 	if err != nil {
-		return fmt.Errorf("至少设置一个 chat provider 的 API Key: %w", err)
+		return fmt.Errorf("create provider: %w", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)

@@ -28,7 +28,7 @@ const (
 	CapabilityEmbedding Capability = "embedding"
 	// CapabilityWebSearch indicates built-in provider-native web search mapping
 	// (WebSearchTool). Providers without it can still perform web search through
-	// a regular function tool executed by the caller's ToolHandler (see README).
+	// a regular function tool executed by the application (see README).
 	CapabilityWebSearch Capability = "web_search"
 	// CapabilityRerank 表示平台提供 OpenAI 兼容的 /rerank 端点（Reranker 接口）。
 	CapabilityRerank Capability = "rerank"

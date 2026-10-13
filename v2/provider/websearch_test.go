@@ -215,7 +215,7 @@ func TestAnthropicProviderChatStreamPauseTurnReturnsError(t *testing.T) {
 	}
 }
 
-func TestStreamPauseTurnBillsThroughRecorder(t *testing.T) {
+func TestStreamPauseTurnReportsObservedUsage(t *testing.T) {
 	t.Parallel()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -228,14 +228,14 @@ func TestStreamPauseTurnBillsThroughRecorder(t *testing.T) {
 	p, err := NewAnthropicProvider(NativeProviderConfig{APIKey: "test-key", BaseURL: srv.URL})
 	require.NoError(t, err)
 
-	// 完整计费链路：ChatStream → observedStream → stream_complete 事件 →
-	// NewBillingHook → UsageRecorder。pause_turn 已产生真实消耗，即使流以错误
-	// 终止，用量也必须记入存储，不漏账。
-	store := NewMemoryUsageStore()
-	billed := WithObservability(p, ObserveOptions{OnEvent: NewBillingHook(store)})
-
-	ctx := WithUserID(t.Context(), "u1")
-	stream, err := billed.ChatStream(ctx, &ChatRequest{
+	// 流终止事件保留供应商实际用量，供调用方计量。
+	var events []ObserveEvent
+	observed := WithObservability(p, ObserveOptions{OnEvent: func(_ context.Context, event ObserveEvent) {
+		if event.Operation == ObserveOperationStreamComplete {
+			events = append(events, event)
+		}
+	}})
+	stream, err := observed.ChatStream(t.Context(), &ChatRequest{
 		Messages: []Message{UserText("搜一下")},
 		Tools:    []Tool{WebSearchTool()},
 	})
@@ -249,14 +249,16 @@ func TestStreamPauseTurnBillsThroughRecorder(t *testing.T) {
 	}
 	require.NoError(t, stream.Close())
 
-	totals, ok := store.UserTotals("u1")
-	require.True(t, ok, "pause_turn 的消耗必须记入计费存储")
-	assert.Equal(t, 18, totals.Usage.PromptTokens)
-	assert.Equal(t, 2, totals.Usage.CompletionTokens)
-	assert.Equal(t, 3, totals.Usage.WebSearchRequests)
+	require.Len(t, events, 1)
+	event := events[0]
+	assert.Equal(t, StreamFinishError, event.StreamFinish)
+	require.ErrorIs(t, event.Err, ErrUnsupportedCapability)
+	assert.Equal(t, 18, event.Usage.PromptTokens)
+	assert.Equal(t, 2, event.Usage.CompletionTokens)
+	assert.Equal(t, 3, event.Usage.WebSearchRequests)
 }
 
-func TestStreamWebSearchSuccessBillsThroughRecorder(t *testing.T) {
+func TestStreamWebSearchSuccessReportsObservedUsage(t *testing.T) {
 	t.Parallel()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -269,13 +271,14 @@ func TestStreamWebSearchSuccessBillsThroughRecorder(t *testing.T) {
 	p, err := NewGeminiProvider(NativeProviderConfig{APIKey: "test-key", BaseURL: srv.URL, Model: "gemini-2.5-flash"})
 	require.NoError(t, err)
 
-	// 成功路径的完整计费链路：ChatStream → observedStream → stream_complete →
-	// NewBillingHook → UsageRecorder，搜索双口径用量都必须落到存储。
-	store := NewMemoryUsageStore()
-	billed := WithObservability(p, ObserveOptions{OnEvent: NewBillingHook(store)})
-
-	ctx := WithUserID(t.Context(), "u1")
-	stream, err := billed.ChatStream(ctx, &ChatRequest{
+	// 流终止事件保留供应商实际用量，供调用方计量。
+	var events []ObserveEvent
+	observed := WithObservability(p, ObserveOptions{OnEvent: func(_ context.Context, event ObserveEvent) {
+		if event.Operation == ObserveOperationStreamComplete {
+			events = append(events, event)
+		}
+	}})
+	stream, err := observed.ChatStream(t.Context(), &ChatRequest{
 		Messages: []Message{UserText("搜一下")},
 		Tools:    []Tool{WebSearchTool()},
 	})
@@ -288,12 +291,14 @@ func TestStreamWebSearchSuccessBillsThroughRecorder(t *testing.T) {
 	}
 	require.NoError(t, stream.Close())
 
-	totals, ok := store.UserTotals("u1")
-	require.True(t, ok, "成功的流式搜索用量必须记入计费存储")
-	assert.Equal(t, 9, totals.Usage.PromptTokens)
-	assert.Equal(t, 5, totals.Usage.CompletionTokens)
-	assert.Equal(t, 2, totals.Usage.WebSearchRequests)
-	assert.Equal(t, 1, totals.Usage.WebSearchGroundedPrompts)
+	require.Len(t, events, 1)
+	event := events[0]
+	assert.Equal(t, StreamFinishEOF, event.StreamFinish)
+	require.NoError(t, event.Err)
+	assert.Equal(t, 9, event.Usage.PromptTokens)
+	assert.Equal(t, 5, event.Usage.CompletionTokens)
+	assert.Equal(t, 2, event.Usage.WebSearchRequests)
+	assert.Equal(t, 1, event.Usage.WebSearchGroundedPrompts)
 }
 
 func TestWebSearchToolChoiceContract(t *testing.T) {

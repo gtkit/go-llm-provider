@@ -3,7 +3,7 @@
 // 设计思路：
 //   - 国内主流大模型（千问/百炼、智谱、DeepSeek、百度千帆、硅基流动等）
 //     目前都兼容 OpenAI Chat Completions API，因此底层统一使用 go-openai 客户端。
-//   - 上层通过 Provider 接口 + Registry 注册表实现多模型切换，
+//   - 上层通过 Provider 接口调用指定模型，
 //     业务代码只需关心 ProviderName，不需要记各平台的 BaseURL 和细节差异。
 //   - 支持流式和非流式两种调用模式，支持 Tool Use / Function Calling。
 package provider
@@ -16,7 +16,6 @@ import (
 	"net"
 	"net/http"
 	"slices"
-	"sync"
 	"time"
 
 	"github.com/gtkit/json/v2"
@@ -32,17 +31,6 @@ var (
 	ErrNilChatRequest = errors.New("chat request is nil")
 	// ErrStreamNotInitialized indicates that the stream reader has no underlying stream.
 	ErrStreamNotInitialized = errors.New("stream is not initialized")
-	// ErrToolHandlerRequired indicates that RunToolLoop requires a tool handler.
-	ErrToolHandlerRequired = errors.New("tool handler is required")
-	// ErrToolNotOffered 表示模型请求的工具不在本轮下发的工具集中；工具循环不执行该调用，
-	// 而以此错误调用 ToolErrorEncoder 生成工具结果回传模型。
-	ErrToolNotOffered = errors.New("tool not offered in this round")
-	// ErrToolArgumentsInvalid 表示工具调用参数不是合法 JSON（常见于输出被 max_tokens 截断）；
-	// 工具循环不调用 handler，而以此错误调用 ToolErrorEncoder 生成工具结果回传模型。
-	ErrToolArgumentsInvalid = errors.New("tool arguments are not valid JSON")
-	// ErrToolHandlerPanic 表示工具执行期间的回调（handler、ToolResultTransformer、ToolErrorEncoder
-	// 等）发生 panic；工具循环恢复 panic 并以包装此错误的 error 中止，错误文本含工具名、panic 值与堆栈。
-	ErrToolHandlerPanic = errors.New("tool execution panicked")
 	// ErrInvalidProviderConfig indicates that ProviderConfig is missing required fields.
 	ErrInvalidProviderConfig = errors.New("invalid provider config")
 	// ErrInvalidToolChoice indicates that ChatRequest.ToolChoice contains an unsupported value.
@@ -57,18 +45,6 @@ var (
 	ErrInvalidEmbedderConfig = errors.New("invalid embedder config")
 	// ErrNilFileUploadRequest 表示调用方传入了 nil 的文件上传请求。
 	ErrNilFileUploadRequest = errors.New("file upload request is nil")
-	// ErrNilStructuredTarget indicates that GenerateJSONInto received a nil target.
-	ErrNilStructuredTarget = errors.New("structured target is nil")
-	// ErrStructuredDecode indicates that structured response content could not be decoded.
-	ErrStructuredDecode = errors.New("structured response decode failed")
-	// ErrStructuredValidation indicates that decoded structured response content failed caller validation.
-	ErrStructuredValidation = errors.New("structured response validation failed")
-	// ErrEmptyEmbeddingVector indicates that a vector operation received no vector data.
-	ErrEmptyEmbeddingVector = errors.New("embedding vector is empty")
-	// ErrZeroEmbeddingVector indicates that cosine similarity received a zero-length magnitude vector.
-	ErrZeroEmbeddingVector = errors.New("embedding vector magnitude is zero")
-	// ErrEmbeddingDimensionMismatch indicates that vector dimensions differ.
-	ErrEmbeddingDimensionMismatch = errors.New("embedding vector dimensions mismatch")
 	// ErrUnsupportedCapability 表示所选供应商不支持请求的能力。
 	ErrUnsupportedCapability = errors.New("unsupported provider capability")
 
@@ -108,16 +84,6 @@ var (
 	// 与 *ProviderError 互认：errors.Is(err, ErrNetwork) 在 Code == ErrorCodeNetwork 时返回 true。
 	ErrNetwork = errors.New("provider network error")
 
-	// ErrModelNotPriced 表示 PricingTable 中没有该模型的费率条目。
-	ErrModelNotPriced = errors.New("model not found in pricing table")
-
-	// ErrQuotaExceeded 表示调用方配额已用尽，请求未发往平台。
-	ErrQuotaExceeded = errors.New("user quota exceeded")
-
-	// ErrInvalidPricing 表示 PricingTable 中的费率或传入的用量数据非法，
-	// 包括负值、费率越界、token 子集关系不成立或最终金额溢出。
-	ErrInvalidPricing = errors.New("invalid pricing rate or usage")
-
 	// ErrBreakerOpen 表示熔断器处于打开状态，请求未发往平台。
 	ErrBreakerOpen = errors.New("circuit breaker is open")
 
@@ -130,12 +96,6 @@ var (
 
 	// ErrNilRateLimiter 表示调用方传入了 nil 的限流器。
 	ErrNilRateLimiter = errors.New("rate limiter is nil")
-
-	// ErrInvalidBalanceStrategy 表示 BalanceOptions.Strategy 取值不被支持。
-	ErrInvalidBalanceStrategy = errors.New("invalid balance strategy")
-
-	// ErrNilPricingRegistry 表示在 nil 的 *PricingRegistry 上执行了替换操作。
-	ErrNilPricingRegistry = errors.New("pricing registry is nil")
 
 	// ErrNilReranker 表示调用方传入了 nil 的 Reranker。
 	ErrNilReranker = errors.New("reranker is nil")
@@ -195,7 +155,7 @@ func DefaultHTTPClient() *http.Client {
 	}
 }
 
-// ProviderName identifies a registered provider.
+// ProviderName identifies a provider.
 type ProviderName string
 
 const (
@@ -491,7 +451,7 @@ type Usage struct {
 	// WebSearchGroundedPrompts 是"按触发 grounding 的请求"口径的搜索用量
 	// （单次调用为 0 或 1，聚合后可累加）：仅 Gemini 上报（Gemini 2.5 系按
 	// grounded prompt 计费的口径），Anthropic 恒为 0。
-	// 两种口径在 ModelRate 中按配置的费率二选一计费，见 PricingTable.Cost。
+	// 两种口径由调用方按供应商的计价规则选择。
 	WebSearchGroundedPrompts int
 }
 
@@ -846,11 +806,8 @@ func NewProvider(cfg ProviderConfig) (Provider, error) {
 		// 字段，需要在 HTTP 层旁路取出（见 respfields.go）。
 		httpClient = &searchCaptureDoer{next: httpClient}
 	}
-	if needsExtraFields(cfg.Name) {
-		// 该平台有 go-openai 无法表达的顶层扩展字段（如方舟的 thinking），
-		// 通过包装 HTTPDoer 在发送前注入（见 extrafields.go）。
-		httpClient = &extraFieldsDoer{next: httpClient}
-	}
+	// 所有兼容平台均需补回 SDK 省略的显式零值；同时承载平台扩展字段。
+	httpClient = &extraFieldsDoer{next: httpClient}
 	ocfg.HTTPClient = httpClient
 
 	return &openaiProvider{
@@ -1319,175 +1276,4 @@ func buildOpenAIMessage(m Message, echoReasoning bool) (openai.ChatCompletionMes
 	}
 
 	return om, nil
-}
-
-// ============================================================
-// Registry：多 Provider 注册与切换
-// ============================================================
-
-// Registry 管理多个 Provider 与 Embedder 实例，支持按名称获取。
-// Provider 与 Embedder 在内部使用两张独立的 map，互不影响。
-type Registry struct {
-	mu        sync.RWMutex
-	providers map[ProviderName]Provider
-	fallback  ProviderName // 默认 provider
-
-	embedders        map[ProviderName]Embedder
-	fallbackEmbedder ProviderName // 默认 embedder
-}
-
-// NewRegistry 创建一个空的注册表。
-func NewRegistry() *Registry {
-	return &Registry{
-		providers: make(map[ProviderName]Provider),
-		embedders: make(map[ProviderName]Embedder),
-	}
-}
-
-// Register 注册一个 Provider。如果是注册表中的第一个，会自动设为 fallback。
-//
-// Register 仅保证忽略接口值本身为 nil 的 Provider。对于 typed nil 的接口值，
-// 它会继续调用 p.Name()；自定义 Provider 实现应保证 Name 在 nil receiver 下不会 panic，
-// 或者在传入 Register 前由调用方自行避免 typed nil。
-func (r *Registry) Register(p Provider) {
-	if providerIsNil(p) {
-		return
-	}
-
-	name := p.Name()
-	if name == "" {
-		return
-	}
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	r.providers[name] = p
-	if r.fallback == "" {
-		r.fallback = name
-	}
-}
-
-// SetDefault 设置默认 Provider。
-func (r *Registry) SetDefault(name ProviderName) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if _, ok := r.providers[name]; !ok {
-		return fmt.Errorf("provider %q not registered", name)
-	}
-	r.fallback = name
-	return nil
-}
-
-// Get 按名称获取 Provider。
-func (r *Registry) Get(name ProviderName) (Provider, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	p, ok := r.providers[name]
-	if !ok {
-		return nil, fmt.Errorf("provider %q not registered", name)
-	}
-	return p, nil
-}
-
-// Default 返回默认的 Provider。
-func (r *Registry) Default() (Provider, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	if r.fallback == "" {
-		return nil, errors.New("no provider registered")
-	}
-	return r.providers[r.fallback], nil
-}
-
-// Names 返回所有已注册的 Provider 名称。
-func (r *Registry) Names() []ProviderName {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	names := make([]ProviderName, 0, len(r.providers))
-	for name := range r.providers {
-		names = append(names, name)
-	}
-	slices.Sort(names)
-	return names
-}
-
-// ============================================================
-// Embedder 注册与切换
-// ============================================================
-
-// RegisterEmbedder 注册一个 Embedder。如果是注册表中的第一个 embedder，
-// 会自动设为默认 embedder。
-//
-// 与 Register 对齐：typed nil 的 Embedder 实现需保证 Name() 不 panic，
-// 或调用方自行避免 typed nil。
-func (r *Registry) RegisterEmbedder(e Embedder) {
-	if embedderIsNil(e) {
-		return
-	}
-
-	name := e.Name()
-	if name == "" {
-		return
-	}
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	r.embedders[name] = e
-	if r.fallbackEmbedder == "" {
-		r.fallbackEmbedder = name
-	}
-}
-
-// GetEmbedder 按名称获取 Embedder。
-func (r *Registry) GetEmbedder(name ProviderName) (Embedder, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	e, ok := r.embedders[name]
-	if !ok {
-		return nil, fmt.Errorf("embedder %q not registered", name)
-	}
-	return e, nil
-}
-
-// DefaultEmbedder 返回默认的 Embedder。
-func (r *Registry) DefaultEmbedder() (Embedder, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	if r.fallbackEmbedder == "" {
-		return nil, errors.New("no embedder registered")
-	}
-	return r.embedders[r.fallbackEmbedder], nil
-}
-
-// SetDefaultEmbedder 设置默认 Embedder。
-func (r *Registry) SetDefaultEmbedder(name ProviderName) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if _, ok := r.embedders[name]; !ok {
-		return fmt.Errorf("embedder %q not registered", name)
-	}
-	r.fallbackEmbedder = name
-	return nil
-}
-
-// EmbedderNames 返回所有已注册的 Embedder 名称。
-func (r *Registry) EmbedderNames() []ProviderName {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	names := make([]ProviderName, 0, len(r.embedders))
-	for name := range r.embedders {
-		names = append(names, name)
-	}
-	slices.Sort(names)
-	return names
 }

@@ -1,4 +1,4 @@
-# 四模块质量门禁：v1（根模块）、v2（主开发模块）、billingstore 与 websearch（示例子模块）。
+# 核心模块质量门禁：v1（根模块）、v2（主开发模块）。
 # smoke 任务仅手动触发（真实调用平台 API，消耗额度），需在仓库 Secrets 配置对应 key。
 name: CI
 
@@ -67,48 +67,6 @@ jobs:
       - name: 测试（race）
         run: go test -race -count=1 -timeout=5m ./...
 
-  billingstore:
-    name: billingstore（示例子模块）
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: v2/example/billingstore/go.mod
-          cache-dependency-path: v2/example/billingstore/go.sum
-      - name: go vet
-        working-directory: v2/example/billingstore
-        run: go vet ./...
-      - name: golangci-lint
-        uses: golangci/golangci-lint-action@v8
-        with:
-          version: ${{ env.GOLANGCI_LINT_VERSION }}
-          working-directory: v2/example/billingstore
-      - name: 测试（race）
-        working-directory: v2/example/billingstore
-        run: go test -race -count=1 -timeout=5m ./...
-
-  websearch:
-    name: websearch（示例子模块）
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: v2/example/websearch/go.mod
-          cache-dependency-path: v2/example/websearch/go.sum
-      - name: go vet
-        working-directory: v2/example/websearch
-        run: go vet ./...
-      - name: golangci-lint
-        uses: golangci/golangci-lint-action@v8
-        with:
-          version: ${{ env.GOLANGCI_LINT_VERSION }}
-          working-directory: v2/example/websearch
-      - name: 测试（race）
-        working-directory: v2/example/websearch
-        run: go test -race -count=1 -timeout=5m ./...
-
   fuzz:
     name: fuzz 短跑（回归防护）
     runs-on: ubuntu-latest
@@ -121,7 +79,7 @@ jobs:
       - name: 各 fuzz 目标 30 秒
         working-directory: v2/provider
         run: |
-          for target in FuzzFormatMicros FuzzPricingTableCost FuzzAnthropicStreamChunk FuzzGeminiStreamChunk FuzzSSEReader FuzzEstimateTokensAndTrim; do
+          for target in FuzzAnthropicStreamChunk FuzzGeminiStreamChunk FuzzSSEReader FuzzInjectExtraFields; do
             echo "== ${target} =="
             go test -fuzz="^${target}\$" -fuzztime=30s -run '^$' .
           done

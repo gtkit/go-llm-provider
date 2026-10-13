@@ -491,39 +491,6 @@ func TestBreakerConcurrentUse(t *testing.T) {
 	assert.Contains(t, []BreakerState{BreakerClosed, BreakerOpen, BreakerHalfOpen}, b.State())
 }
 
-func TestFallbackSwitchesOnBreakerOpen(t *testing.T) {
-	t.Parallel()
-
-	clock := newFakeClock()
-	b := newBreakerWithClock(BreakerOptions{FailureThreshold: 1, OpenDuration: time.Hour}, clock.Now)
-	primary := WithBreaker(&stubProvider{
-		name: ProviderDeepSeek,
-		chat: func(context.Context, *ChatRequest) (*ChatResponse, error) {
-			return nil, retryableErr()
-		},
-	}, b)
-	secondary := &stubProvider{
-		name: ProviderZhipu,
-		chat: func(context.Context, *ChatRequest) (*ChatResponse, error) {
-			return &ChatResponse{Content: "from secondary"}, nil
-		},
-	}
-
-	chain, err := NewFallbackProvider(primary, secondary)
-	require.NoError(t, err)
-
-	req := &ChatRequest{Messages: []Message{UserText("hi")}}
-	resp, err := chain.Chat(t.Context(), req)
-	require.NoError(t, err)
-	require.Equal(t, "from secondary", resp.Content)
-
-	// 此时链首已熔断，默认判定必须让 ErrBreakerOpen 也切换。
-	require.Equal(t, BreakerOpen, b.State())
-	resp, err = chain.Chat(t.Context(), req)
-	require.NoError(t, err)
-	assert.Equal(t, "from secondary", resp.Content)
-}
-
 func BenchmarkBreakerAllowReport(b *testing.B) {
 	br := NewBreaker(BreakerOptions{FailureThreshold: 1 << 20, Window: time.Hour})
 	b.ReportAllocs()

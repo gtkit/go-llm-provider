@@ -2,6 +2,8 @@
 
 Go 语言统一多模型 LLM 调用库。一套代码接入 OpenAI 以及 DeepSeek、通义千问、智谱、百度千帆、硅基流动、Moonshot、火山方舟等 OpenAI 兼容平台。
 
+当前工作区已删除清单中的业务策略 API，属于尚未发布的不兼容变更；模块路径和版本暂不调整。请按 [迁移说明](MIGRATION.md) 将身份、账务、工具执行、历史与路由留在应用；Eino 通过独立 adapter 接入。
+
 ## 为什么做这个
 
 国内主流大模型平台现在都兼容了 OpenAI Chat Completions 协议，本质上只是 BaseURL 和 APIKey 的差异。但每次接入新平台还是要翻文档查地址、记模型名、写一堆重复的初始化代码。
@@ -10,10 +12,9 @@ Go 语言统一多模型 LLM 调用库。一套代码接入 OpenAI 以及 DeepSe
 
 - 预置了各平台的 BaseURL 和推荐模型，传个 APIKey 就能用
 - 统一的 `Provider` 接口，业务代码不需要关心底层是哪个平台
-- `Registry` 注册表管理多个 Provider，运行时按名称切换
 - 支持非流式和流式两种调用模式
-- 完整的 Tool Use / Function Calling 支持，包含自动循环执行的 `RunToolLoop`
-- 厂商原生联网搜索工具透传（`WebSearchTool`，映射 Anthropic / Gemini / OpenAI Responses 三条原生路径，以及智谱与百炼两个 OpenAI 兼容平台），搜索次数进入统一计费口径
+- Tool Use / Function Calling 协议：声明工具、接收调用、回传结果，执行由应用管理
+- 厂商原生联网搜索工具透传（`WebSearchTool`，映射 Anthropic / Gemini / OpenAI Responses 三条原生路径，以及智谱与百炼两个 OpenAI 兼容平台），搜索用量进入统一 Usage
 - OpenAI 兼容 Files API 文件管理（`FileService`：上传 / 内容抽取 / 删除），覆盖 Moonshot、通义千问、智谱的文档问答流程
 - 主包保持轻量，零额外厂商 SDK 依赖；OpenAI 兼容路径复用 `sashabaranov/go-openai`，非兼容路径用标准库 `net/http`
 
@@ -25,12 +26,11 @@ llm-provider/
 ├── README.md
 ├── CHANGELOG.md
 ├── provider/
-│   ├── provider.go            # 核心：Provider 接口、Registry、请求/响应、Tool Use 类型
+│   ├── provider.go            # 核心：Provider 接口、请求/响应、Tool Use 类型
 │   ├── content.go             # Message 多模态 ContentPart 与便捷构造器
 │   ├── files.go               # FileService：OpenAI 兼容 Files API（上传/抽取/删除）
 │   ├── presets.go             # 各平台预设配置（BaseURL + Chat/Embedding 默认模型）
 │   ├── helpers.go             # Chat 便捷函数：SimpleChat、CollectStream
-│   ├── toolrun.go             # RunToolLoop：Tool Use 自动循环执行器
 │   ├── reasoning.go           # Thinking 结构与推理模式常量
 │   ├── compat_thinking.go     # DeepSeek / 智谱 / Kimi / 方舟共享的顶层 thinking 扩展字段映射
 │   ├── compat_qwen.go         # 百炼专属映射（顶层 enable_thinking / thinking_budget）
@@ -44,11 +44,8 @@ llm-provider/
 │   ├── errors.go              # ProviderError / ErrorCode / WrapProviderError
 │   ├── middleware.go          # Middleware / Handler 类型 + WithMiddlewares 装饰器
 │   ├── retry.go               # WithRetry / RetryMiddleware / BackoffFunc
-│   ├── fallback.go            # FallbackProvider 多 provider 失败切换
 │   ├── breaker.go             # Breaker 熔断器：滑动窗口计数 + 指数退避冷却 + 半开探测
 │   ├── ratelimit.go           # RateLimiter 客户端限流：RPM / TPM 令牌桶 + 响应头自适应
-│   ├── balance.go             # BalancedProvider 加权负载均衡 + 故障转移
-│   ├── pricing_registry.go    # PricingRegistry 价格表原子热替换
 │   ├── reranker.go            # Reranker 接口：OpenAI 兼容 /rerank 端点
 │   ├── decider.go             # Decider 接口：TypeSafe AI Jev 结构化判断
 │   ├── observability.go       # WithObservability / ObserveEvent 观测 hook
@@ -61,8 +58,6 @@ llm-provider/
 │   ├── middleware_test.go     # Middleware 装饰器 + 洋葱顺序测试
 │   ├── breaker_test.go        # 熔断状态机 / 退避 / 中间件单测
 │   ├── ratelimit_test.go      # 令牌桶 / 预扣结算 / 头自适应单测
-│   ├── balance_test.go        # 权重分布 / 故障转移 / 策略单测
-│   ├── pricing_registry_test.go # 价格热替换与并发计价单测
 │   ├── reranker_test.go       # rerank 协议映射与边界单测
 │   ├── observability_test.go  # 观测 hook 单测
 │   └── runtime_test.go        # 运行时集成测试
@@ -72,12 +67,7 @@ llm-provider/
     ├── structured/main.go     # Structured Output 示例
     ├── vision/main.go         # Vision 多模态输入示例（text + image）
     ├── tooluse/main.go        # Tool Use 手动多轮示例
-    ├── toolloop/main.go       # RunToolLoop 自动循环示例
-    ├── toolsecurity/main.go   # 工具结果间接提示注入防护示例
     ├── middleware/main.go     # Middleware：Logging / TokenStats / Retry 参考实现
-    ├── chatbilling/main.go    # 按用户计费端到端：计费 hook / 配额 / 余额硬限 / 流式工具循环 / 摘要压缩 / 账单
-    ├── billingstore/          # 计费存储参考实现（Redis + GORM，独立 go.mod）
-    ├── websearch/             # 联网搜索工具参考实现（博查接入 + 注入防护），独立 go.mod
     └── embedding/main.go      # Embedding + RAG 最小闭环示例
 ```
 
@@ -172,36 +162,27 @@ import (
 )
 
 func main() {
-    // 一行创建注册表，传入各平台 API Key（空值自动跳过）
-    reg := provider.QuickRegistry(map[provider.ProviderName]string{
-        provider.ProviderOpenAI:    os.Getenv("OPENAI_API_KEY"),
-        provider.ProviderDeepSeek:  os.Getenv("DEEPSEEK_API_KEY"),
-        provider.ProviderQwen:      os.Getenv("QWEN_API_KEY"),
-        provider.ProviderZhipu:     os.Getenv("ZHIPU_API_KEY"),
-        provider.ProviderAnthropic: os.Getenv("ANTHROPIC_API_KEY"),
-        provider.ProviderGemini:    os.Getenv("GEMINI_API_KEY"),
-    })
-
+    p, err := provider.NewProviderFromPreset(provider.ProviderOpenAI, os.Getenv("OPENAI_API_KEY"), "")
+    if err != nil {
+        fmt.Fprintln(os.Stderr, err)
+        return
+    }
     ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
     defer cancel()
-
-    // 拿默认 provider，直接对话
-    p, _ := reg.Default()
-    reply, _ := provider.SimpleChat(ctx, p, "用一句话介绍 Go 语言")
+    reply, err := provider.SimpleChat(ctx, p, "用一句话介绍 Go 语言")
+    if err != nil {
+        fmt.Fprintln(os.Stderr, err)
+        return
+    }
     fmt.Println(reply)
 }
 ```
 
-设置环境变量后运行：
-
-```bash
-export OPENAI_API_KEY="sk-xxxxxxxx"
-go run main.go
-```
+设置 `OPENAI_API_KEY` 后运行 `go run ./example`。密钥为空时构造返回错误；模型留空使用厂商预设。其他平台使用对应的 `ProviderName` 和密钥。
 
 ## 使用方式
 
-库提供三个层级的创建方式，由简到灵活。
+使用厂商预设或自定义连接配置创建单个实例；多实例装配与路由由应用负责。
 
 ### 升级说明
 
@@ -214,7 +195,6 @@ go run main.go
 - `ChatRequest.EnableThinking` 已被移除，请改用 `ChatRequest.Thinking = &provider.Thinking{...}`。
 - 如需强制 JSON 输出，改用 `ChatRequest.ResponseFormat = provider.JSONObjectFormat()` 或 `provider.JSONSchemaFormatStrict(...)`。
 - 新代码优先使用 `provider.AllPresets()` 读取预设；`provider.Presets` 仅为兼容旧代码保留。
-- 如果你不希望 `QuickRegistry` 静默跳过失败项，请改用 `QuickRegistryStrict`。
 
 | 项目 | v1 | v2 |
 |------|----|----|
@@ -233,46 +213,7 @@ go run main.go
 | 企业入口 | 不支持 | `NewAzureOpenAIProvider` / `NewBedrockOpenAIProvider` |
 | 典型升级动作 | 原样继续用即可 | 需要改 import 路径、消息构造方式、thinking 配置方式 |
 
-### 方式一：QuickRegistry（推荐日常使用）
-
-传一组 `ProviderName -> APIKey` 的映射，自动使用预设的 BaseURL 和默认模型。空 APIKey 会被自动跳过，不会报错。
-
-```go
-reg := provider.QuickRegistry(map[provider.ProviderName]string{
-    provider.ProviderOpenAI:      os.Getenv("OPENAI_API_KEY"),
-    provider.ProviderDeepSeek:    os.Getenv("DEEPSEEK_API_KEY"),
-    provider.ProviderQwen:        os.Getenv("QWEN_API_KEY"),
-    provider.ProviderZhipu:       os.Getenv("ZHIPU_API_KEY"),
-    provider.ProviderSiliconFlow: os.Getenv("SILICONFLOW_API_KEY"),
-    provider.ProviderMoonshot:    os.Getenv("MOONSHOT_API_KEY"),
-    provider.ProviderAnthropic:   os.Getenv("ANTHROPIC_API_KEY"),
-    provider.ProviderGemini:      os.Getenv("GEMINI_API_KEY"),
-    provider.ProviderXAI:         os.Getenv("XAI_API_KEY"),
-    provider.ProviderGroq:        os.Getenv("GROQ_API_KEY"),
-    provider.ProviderMistral:     os.Getenv("MISTRAL_API_KEY"),
-    provider.ProviderCohere:      os.Getenv("COHERE_API_KEY"),
-})
-
-// 默认 provider 按成功注册的 ProviderName 排序后取第一个
-p, err := reg.Default()
-```
-
-如果你希望注册失败时立刻拿到错误，改用 `QuickRegistryStrict`：
-
-```go
-reg, err := provider.QuickRegistryStrict(map[provider.ProviderName]string{
-    provider.ProviderOpenAI:    os.Getenv("OPENAI_API_KEY"),
-    provider.ProviderDeepSeek:  os.Getenv("DEEPSEEK_API_KEY"),
-    provider.ProviderQwen:      os.Getenv("QWEN_API_KEY"),
-    provider.ProviderAnthropic: os.Getenv("ANTHROPIC_API_KEY"),
-    provider.ProviderGemini:    os.Getenv("GEMINI_API_KEY"),
-})
-if err != nil {
-    log.Fatal(err)
-}
-```
-
-### 方式二：NewProviderFromPreset（指定模型）
+### 方式一：NewProviderFromPreset（指定模型）
 
 使用预设地址，但自定义模型名。适合同一个平台想用不同模型的场景。
 
@@ -284,12 +225,10 @@ p, err := provider.NewProviderFromPreset(
     "qwen-max",  // 留空则使用预设的默认模型
 )
 
-// 手动注册到 Registry
-reg := provider.NewRegistry()
-reg.Register(p)
+// 应用直接保存并调用 p。
 ```
 
-### 方式三：NewProvider（完全自定义）
+### 方式二：NewProvider（完全自定义）
 
 适合私有部署、自建推理服务、或新平台接入。自定义接入的平台若接受 OpenAI 标准的
 `reasoning_effort`，加上 `SupportsReasoningEffort: true` 即可使用 `Thinking.Effort`
@@ -307,7 +246,7 @@ if err != nil {
 }
 ```
 
-### 方式四：走网关 / 代理覆盖 Host
+### 方式三：走网关 / 代理覆盖 Host
 
 内置平台的流量要经过自建网关、企业代理或中转服务时，保留原来的 `ProviderName`，只把 `BaseURL` 换成网关地址即可。`Name` 不变，平台能力判定与平台专属字段注入（如火山方舟的 `thinking`）照旧生效。
 
@@ -367,7 +306,6 @@ r, err := provider.NewReranker(provider.RerankerConfig{
 
 末尾多余的 `/` 会被忽略，`https://gw.example.com/v1` 与 `https://gw.example.com/v1/` 等价。
 
-预设构造入口（`QuickRegistry`、`NewProviderFromPreset`、`NewEmbedderFromPreset`、`NewRerankerFromPreset`）使用预设中的官方地址；要指向网关就用上面这组全量配置构造函数。
 
 ### Claude / Gemini 原生 HTTP Provider
 
@@ -411,7 +349,7 @@ gemini, err := provider.NewGeminiProvider(provider.NativeProviderConfig{
 
 OpenAI 官方已把 Responses API（`POST {BaseURL}/responses`）作为推理、工具调用与多轮的推荐入口，
 DeepSeek、火山方舟、智谱、Kimi 也提供同形端点。`NewOpenAIResponsesProvider` 返回的仍是统一的
-`Provider`，业务代码、`RunToolLoop`、观测与计费都不需要改：
+`Provider`，可通过统一接口调用并接入观测：
 
 ```go
 p, err := provider.NewOpenAIResponsesProvider(provider.OpenAIResponsesConfig{
@@ -460,11 +398,10 @@ ollama, err := provider.NewOllamaProvider(provider.OllamaProviderConfig{
 })
 ```
 
-`NewProviderFromPreset(provider.ProviderOllama, "", "llama3.2")` 也可以创建本地 provider；`QuickRegistry` 仍按 API key 注册云平台，空 key 会跳过 Ollama。
 
 原生路径已映射 `/api/chat` 的完整能力，与云平台共用同一套请求类型：
 
-- **Tool Use**：`Tools` 下发为 Ollama 的函数工具，`RunToolLoop` / `RunToolLoopStream` 可直接用。Ollama 不签发调用 ID，库按 `ollama_<函数名>_<序号>` 合成；工具结果带 `tool_name`（`ToolResultMessageFor` 或按 ID 反查）。`ToolChoice` 只接受默认的自动选择，`ParallelToolCalls` 无对应参数，非默认取值返回 `ErrInvalidRequest`。
+- **Tool Use**：`Tools` 下发为 Ollama 的函数工具，由应用执行。Ollama 不签发调用 ID，库按 `ollama_<函数名>_<序号>` 合成；工具结果带 `tool_name`（`ToolResultMessageFor` 或按 ID 反查）。`ToolChoice` 只接受默认的自动选择，`ParallelToolCalls` 无对应参数，非默认取值返回 `ErrInvalidRequest`。
 - **结构化输出**：`JSONObjectFormat()` 映射为 `format: "json"`，`JSONSchemaFormat` 把 schema 原样下发。
 - **思考**：`Thinking.Enabled` 映射 `think: true/false`，`Thinking.Effort` 映射 `think: "low"|"medium"|"high"`（gpt-oss 等支持档位的模型）；响应的 `thinking` 归位到 `Reasoning` / `ReasoningDelta`，回传历史时写回 assistant 的 `thinking`。
 - **图片**：`ImageDataPart` 与 data URL 映射为 `images`；Ollama 不拉取远程 URL，`ImageURLPart("https://...")` 返回 `ErrInvalidRequest`。
@@ -516,7 +453,7 @@ fmt.Println(answer)
 
 ```go
 p, err := provider.NewProvider(provider.ProviderConfig{
-    Name:    "local-vllm",                    // 自定义名称，仅用于 Registry 区分与日志，不影响请求
+    Name:    "local-vllm",                    // 自定义名称，用于实例识别与日志，不影响请求
     BaseURL: "http://localhost:8000/v1",      // 指向本地服务的 OpenAI 兼容端点，注意通常要带 /v1
     APIKey:  "not-needed",                    // 多数本地服务不校验 key，但本库要求非空，随便填一个占位即可
     Model:   "Qwen2.5-72B-Instruct",          // 你实际部署/加载的模型名，必须和服务端一致
@@ -630,7 +567,7 @@ p, err := provider.NewProvider(provider.ProviderConfig{
 - **超时用 `context`**：本库刻意不设 `http.Client.Timeout`，避免截断本地大模型的慢响应；请求级超时一律用 `context.WithTimeout`。
 - **能力差异**：本地模型对 Tool Use、结构化输出、Vision 的支持取决于模型与服务实现，不要假设和云平台一致；不支持时可能返回错误或忽略相关字段。
 - **`Usage` 可能为 0**：部分本地服务不回传 token 统计，`resp.Usage` 为空属正常。
-- **横切能力照常可用**：`WithRetry`、`NewFallbackProvider`、`WithObservability` 对本地 provider 一视同仁，可把本地模型作为云模型的 fallback，或反之。
+- **横切能力照常可用**：`WithRetry`、`WithObservability` 可用于本地 provider；本地和云端模型的路由由应用决定。
 
 ## 调用方式
 
@@ -650,48 +587,6 @@ reply, err := provider.SimpleChat(ctx, p, "什么是 goroutine？")
 reply, err := provider.SimpleChatWithSystem(ctx, p,
     "你是一个资深 Go 工程师，回答简洁准确",
     "解释一下 context.Context 的作用",
-)
-```
-
-#### PromptTask — 可复用的单轮任务（润色/翻译/摘要）
-
-把某类单轮任务的 system prompt 构造逻辑与常用参数绑定成一个可复用值，调用时按运行时参数拼装 system prompt。适合翻译（目标语言）、润色（风格）这类同一套 prompt 骨架、只是变量不同的场景。
-
-```go
-type TranslateParams struct {
-    TargetLang string
-}
-
-var Translate = provider.PromptTask[TranslateParams]{
-    System: func(p TranslateParams) string {
-        return fmt.Sprintf("你是专业翻译，请将用户输入翻译成%s，只返回译文", p.TargetLang)
-    },
-}
-
-reply, err := Translate.Run(ctx, p, TranslateParams{TargetLang: "英文"}, "今天天气真好")
-```
-
-> **安全提示**：`System` 闭包完全由调用方实现，库不对拼接内容做任何检测或转义；如果 `TargetLang` 这类字段直接来自用户输入并原样拼进 system prompt，就是把不可信数据混入 system prompt——这条路径是一次性 `Chat` 调用，不经过 `RunToolLoop` 的 `ToolResultTransformer` / `ResponseValidator` 钩子。优先用受限枚举/白名单校验这类字段的取值；确需接受自由文本，参照 [`PROMPT_INJECTION_DEFENSE.md`](../PROMPT_INJECTION_DEFENSE.md#prompttask-另一类混入路径不经过-runtoolloop-的钩子) 在闭包内部净化后再拼接。不可信的正文内容应始终走 `input` 参数（对应 user message），不要拼进 `System`。
-
-不需要运行时参数的任务可将参数类型设为 `struct{}`：
-
-```go
-var Polish = provider.PromptTask[struct{}]{
-    System: func(struct{}) string { return "你是文案润色助手，只返回润色后的文本" },
-}
-
-reply, err := Polish.Run(ctx, p, struct{}{}, rawText)
-```
-
-需要结构化输出时用 `RunPromptTaskJSON`，请求会按 `GenerateJSON` 规则自动补 `ResponseFormat`：
-
-```go
-type TranslateResult struct {
-    Text string `json:"text"`
-}
-
-result, resp, err := provider.RunPromptTaskJSON[TranslateParams, TranslateResult](
-    ctx, Translate, p, TranslateParams{TargetLang: "英文"}, "今天天气真好",
 )
 ```
 
@@ -946,66 +841,16 @@ if resp.Search != nil {
   落点未公开），解析器在响应顶层与 `choices[].message` / `choices[].delta` 三处查找，取不到时
   `Sources` 为空而非报错。进展见 [ROADMAP](../ROADMAP.md)。
 - **仅保证单轮**：Anthropic 的 `AssistantMessage()` 不保存服务端工具块、引用与 `encrypted_content`，无法无损回传续跑，因此原生搜索当前**仅保证单轮**（一次 `Chat`/`ChatStream`）；多轮追问请每轮重新发起，或改用函数工具模式。
-- **能否与函数工具混用**：智谱、百炼与 OpenAI Responses 允许混用。Anthropic 的服务端工具块尚不支持跨轮往返、Gemini 2.5 系平台不支持 `google_search` 与函数声明同用，这两条路径在客户端返回 `ErrInvalidRequest`；Anthropic 侧同理禁止与结构化输出组合。Gemini 3 官方已支持搜索与函数工具组合，但本库当前不做模型嗅探、统一按 2.5 系口径拒绝，该组合待后续版本支持。纯搜索场景与 `RunToolLoop` 兼容（服务端执行，不产生客户端 `ToolCall`）。
+- **能否与函数工具混用**：智谱、百炼与 OpenAI Responses 允许混用。Anthropic 的服务端工具块尚不支持跨轮往返、Gemini 2.5 系平台不支持 `google_search` 与函数声明同用，这两条路径在客户端返回 `ErrInvalidRequest`；Anthropic 侧同理禁止与结构化输出组合。Gemini 3 官方已支持搜索与函数工具组合，但本库当前不做模型嗅探、统一按 2.5 系口径拒绝，该组合待后续版本支持。纯搜索由服务端执行，不产生客户端 `ToolCall`。
 - **输入约束**：纯搜索请求的 `ToolChoice` 只接受 `nil` / `ToolChoiceAuto`（由模型决定是否搜索，Gemini 侧此时不下发 `functionCallingConfig`）；重复声明搜索工具、同一 `Tool` 同时设 `Function` 与 `WebSearch`、`ToolChoiceRequired`/`ToolChoiceFunction`/`ToolChoiceNone` 与服务端搜索工具组合、Gemini 搜索叠加 `CandidateCount > 1`，均返回 `ErrInvalidRequest`。
-- **pause_turn**：Anthropic 在服务端工具长时间运行时可能暂停回合（`stop_reason: "pause_turn"`），续跑需要回传服务端工具块，当前不支持——返回 `*PauseTurnError`（`errors.Is` 命中 `ErrUnsupportedCapability`）。**不要原样重发请求**，那会重新执行搜索、二次计费；应降低 `MaxUses` 或改用函数工具模式。该错误携带暂停前已产生的 `Usage` 与 `Search`，观测/计费层会自动提取用量，不会漏账。
+- **pause_turn**：Anthropic 在服务端工具长时间运行时可能暂停回合（`stop_reason: "pause_turn"`），续跑需要回传服务端工具块，当前不支持——返回 `*PauseTurnError`（`errors.Is` 命中 `ErrUnsupportedCapability`）。**不要原样重发请求**，那会重新执行搜索、二次计费；应降低 `MaxUses` 或改用函数工具模式。该错误携带暂停前已产生的 `Usage` 与 `Search`，观测层会提取用量供调用方记录。
 - **搜索元数据与错误**：查询、来源、Google Search 入口通过 `ChatResponse.Search` / 最终 `StreamChunk.Search` 返回（`SearchMetadata`）；平台经 HTTP 200 报告的搜索失败（如 `max_uses_exceeded`、`too_many_requests`）进入 `SearchMetadata.Errors`，调用方据此区分"未搜索"与"搜索失败"，本库不静默丢弃。**合规提示**：Gemini 响应携带 `SearchEntryPoint` 时，Google 要求向终端用户展示 Search Suggestions；回复文本级的引用区间暂不透出。
-- **计费口径（双口径二选一）**：`Usage.WebSearchRequests` 承载"按次数"口径（Anthropic 实际搜索次数 / Gemini 去空去重后的 query 数），`Usage.WebSearchGroundedPrompts` 承载"按 grounded prompt"口径（Gemini，0 或 1）。费率按平台计费规则在 `ModelRate.WebSearchPer1K` 与 `ModelRate.GroundedPromptPer1K` 中**二选一**配置（微元/1000 次）：Anthropic 与 Gemini 3 系按次数配前者，Gemini 2.5 系按 grounded prompt 配后者。双配无条件返回 `ErrInvalidPricing`（配置错误，启动期可用 `PricingTable.Validate()` 提前发现），全缺或口径与用量不符返回 `ErrModelNotPriced`，不静默漏账。智谱与百炼的搜索按平台各自的规则另行计费，本库当前**不在这两家平台填充** `Usage.WebSearchRequests`（它们是否回传搜索次数、字段名为何尚未实测），计费口径以平台账单为准。
+- **搜索用量**：`Usage.WebSearchRequests` 和 `Usage.WebSearchGroundedPrompts` 保留平台返回的计次事实；费用计算与对账由应用按供应商规则处理。智谱与百炼目前不填充搜索次数，以平台账单为准。
 - **流式**：搜索过程中的服务端工具事件不会出现在 `StreamChunk.ToolCalls` 中，搜索计次与元数据随最终 chunk（`FinishReason` 非空）给出。
 
 #### 未覆盖平台的联网搜索接入（函数工具模式）
 
-DeepSeek、Kimi、火山方舟、千帆等平台本库当前不做内建搜索映射，原因各不相同：
-Kimi 的 `$web_search` 要求调用方把工具参数原样回传后平台才执行搜索，与"服务端执行、
-不产生客户端 `ToolCall`"的现有契约冲突；千帆的 AI 搜索在独立端点（`/v2/ai_search/chat/completions`）
-而非 chat 端点上的工具；火山方舟与 DeepSeek 的协议细节尚未取得可信来源。各项的进展与
-解除条件见 [ROADMAP](../ROADMAP.md)。
-
-这些平台上接搜索的做法是把它定义成**标准函数工具**，由业务侧 `ToolHandler` 调用搜索 API
-（智谱独立 Web Search API `/api/paas/v4/web_search`、千帆 AI Search `/v2/ai_search/web_search`、
-博查等第三方搜索服务），搜索结果与来源链接作为工具结果回传模型。这条路径的完整参考实现见
-[`example/websearch`](example/websearch/)（独立 go.mod，含博查接入、三道提示注入防线、引用校验与
-可运行 demo），换搜索服务商只需替换一个 `SearchClient` 实现：
-
-```go
-searchTool := provider.Tool{
-    Function: provider.FunctionDef{
-        Name:        "web_search",
-        Description: "搜索互联网并返回相关资料与来源链接",
-        Parameters: provider.ParamSchema{
-            Type: "object",
-            Properties: map[string]provider.ParamSchema{
-                "query": {Type: "string", Description: "搜索关键词"},
-            },
-            Required: []string{"query"},
-        },
-    },
-}
-
-resp, err := provider.RunToolLoop(ctx, p, &provider.ChatRequest{
-    Messages: []provider.Message{provider.UserText("搜索并介绍 Go 1.26 的主要变化")},
-    Tools:    []provider.Tool{searchTool},
-}, 5, func(ctx context.Context, name, arguments string) (string, error) {
-    if name != "web_search" {
-        return "", fmt.Errorf("不支持的工具：%s", name)
-    }
-    // 解析 arguments 后调用智谱 / 千帆 / 博查等搜索客户端，
-    // 返回 JSON 字符串（含标题、URL、摘要）。
-    return searchService.SearchJSON(ctx, arguments)
-})
-```
-
-这种模式的优点：不修改统一 `Provider` API、所有平台共用同一个 `web_search`
-工具、域名白名单/超时/结果数量/缓存/费用全部由业务层统一控制、来源链接
-完整保留可返回给终端用户。实践注意：
-
-- 工具结果**保留标题与 URL**，不要只回摘要——模型引用与用户溯源都依赖来源；
-- **限制条数与单条摘要长度**，不要塞整页正文，避免大量占用输入 token；
-- 千帆若需要"搜索＋回答"一步完成，可直接调用其 AI Search Chat Completions，
-  无需进入 `RunToolLoop`；
-- 确需使用厂商 Chat API 内置搜索（如智谱私有 `web_search` 工具、百炼
-  `enable_search`）时，在业务侧单独实现原生 HTTP 客户端，不要把私有字段
-  扩散进统一的 `ChatRequest`。
+将搜索声明为普通函数工具，应用接收 `ToolCalls` 后调用自己的搜索客户端，再用 `ToolResultMessageFor` 回传结果。授权、域名限制、超时、结果数量、缓存与费用由应用处理；来源链接随工具结果保存。厂商原生搜索仍使用 `WebSearchTool`。
 
 ### 多模态输入（图像 / 文件）
 
@@ -1092,7 +937,7 @@ type FileService interface {
 }
 ```
 
-> 注意：`WithRetry` / `WithMiddlewares` / `NewFallbackProvider` 等包装后的 Provider 不再实现 `FileService`，请在包装前保留原始句柄用于文件操作。平台是否提供 Files API 以能力矩阵 File Upload 列与平台官方文档为准（如 DeepSeek 无此接口，调用会返回平台侧错误）。
+> 注意：`WithRetry` / `WithMiddlewares` 等包装后的 Provider 不再实现 `FileService`，请在包装前保留原始句柄用于文件操作。平台是否提供 Files API 以能力矩阵 File Upload 列与平台官方文档为准（如 DeepSeek 无此接口，调用会返回平台侧错误）。
 
 **流程一：内容抽取（Moonshot / 智谱）**——上传后用 `FileContent` 拉取平台抽取好的文档文本，作为 system 消息传入：
 
@@ -1222,15 +1067,14 @@ type Thinking struct {
 思考模型在工具循环中普遍要求把上一轮的推理内容原样回传：DeepSeek 带 `tools` 时缺失
 `reasoning_content` 直接 400；Kimi K3 要求回传完整 assistant 消息；Anthropic 开启思考并
 使用工具时必须回传带签名的 `thinking` 块；Gemini 3 要求回传 `functionCall` 上的
-`thoughtSignature`。库把这些载体统一放在 `Message` 上，`resp.AssistantMessage()`、
-`RunToolLoop` 与 `RunToolLoopStream` 自动携带，调用方手动管理历史时只需照常追加：
+`thoughtSignature`。库把这些载体统一放在 `Message` 上，`resp.AssistantMessage()` 可构造需要回传的 assistant 消息，调用方负责追加和保存：
 
 - `Message.Reasoning`：推理文本，OpenAI 兼容路径映射为 `reasoning_content`，只对已知接受该字段的
   平台下发（DeepSeek / 智谱 / Kimi / 百炼 / 方舟；OpenAI 官方端点会拒绝该字段）。自定义接入的平台用
   `ProviderConfig.SupportsReasoningContent` 声明。不需要回传时置空即可省下这部分输入 token。
 - `Message.ThinkingBlocks`：Anthropic 的签名思考块与加密块（`redacted_thinking`），原样回传、
   不得改写；没有签名的块不会下发。流式下由 `StreamChunk.ThinkingSignature` / `RedactedThinking`
-  标记块边界，`RunToolLoopStream` 已内置拼装。
+  标记块边界，由应用或 adapter 拼装。
 - `ToolCall.ThoughtSignature`：Gemini 3 的工具调用签名，随 `ToolCalls` 回传。
 - `Message.ToolName`：工具结果对应的函数名，Gemini 的 `functionResponse` 必需；用
   `ToolResultMessageFor(call, result)` 构造即可自动带上，只给 `ToolCallID` 时库会在同一请求内反查。
@@ -1371,9 +1215,7 @@ for {
 }
 ```
 
-流式下思考块的边界由 `chunk.ThinkingSignature`（Anthropic 签名，随块结束到达一次）与
-`chunk.RedactedThinking`（加密块）标记；`RunToolLoopStream` 已内置拼装，手动消费流时可参考
-`thinkingAssembler` 的做法：签名到达即把此前累积的 `ReasoningDelta` 闭合为一个 `ThinkingBlock`。
+流式签名与加密块通过 `StreamChunk.ThinkingSignature`、`RedactedThinking` 和对应块索引透出。调用方按块顺序保留这些字段；Eino adapter 提供流消息转换。
 
 ### Structured Output（结构化输出）
 
@@ -1407,77 +1249,11 @@ resp, err := p.Chat(ctx, &provider.ChatRequest{
 `responseJsonSchema`（接受标准 JSON Schema，含 `additionalProperties` 等关键字）。函数工具的
 入参也可用 `FunctionDef.Strict` 请求严格约束（OpenAI / Anthropic），schema 需满足平台的严格模式要求。
 
-如果你希望直接把 JSON 回复解码到 Go 类型，可以使用类型化助手：
-
-```go
-type CitySummary struct {
-    City    string `json:"city"`
-    Summary string `json:"summary"`
-}
-
-result, resp, err := provider.GenerateJSON[CitySummary](ctx, p, &provider.ChatRequest{
-    Messages: []provider.Message{
-        provider.UserText("返回一个包含 city 和 summary 的 JSON 对象"),
-    },
-})
-if err != nil {
-    log.Fatal(err)
-}
-
-fmt.Println(result.City, result.Summary)
-fmt.Println(resp.Usage.TotalTokens)
-```
-
-`GenerateJSON` 会在请求未设置 `ResponseFormat` 时自动使用 `JSONObjectFormat()`；如果你已经传入 `JSONSchemaFormatStrict(...)`，它会保留原有格式设置。需要复用已有变量时用 `GenerateJSONInto(ctx, p, req, &target)`。
-
-如果需要在解码后做业务校验，使用 validator 变体。校验失败时可以通过 `errors.Is(err, provider.ErrStructuredValidation)` 判断：
-
-```go
-result, resp, err := provider.GenerateJSONWithValidator[CitySummary](ctx, p, req, func(v CitySummary) error {
-    if v.City == "" {
-        return fmt.Errorf("city is required")
-    }
-    return nil
-})
-if err != nil {
-    log.Fatal(err)
-}
-
-fmt.Println(result.City, resp.Usage.TotalTokens)
-```
-
-#### 从 Go 类型自动生成 schema
-
-不想手写 `ParamSchema` 时，可让库通过反射从目标类型派生 json_schema，避免 schema 与结构体不一致：
-
-```go
-type CitySummary struct {
-    City    string `json:"city"`
-    Summary string `json:"summary"`
-    Temp    int    `json:"temp,omitempty"` // omitempty / 指针字段不进 required
-    Color   string `json:"color" jsonschema:"enum=red|green|blue"`
-}
-
-// 直接调用并解码（请求未设置 ResponseFormat 时自动注入派生 schema）
-result, resp, err := provider.GenerateJSONWithSchema[CitySummary](ctx, p, &provider.ChatRequest{
-    Messages: []provider.Message{provider.UserText("描述一个城市")},
-})
-
-// 或只生成 schema / ResponseFormat 自行使用
-schema, err := provider.SchemaFromType[CitySummary]()        // 返回 ParamSchema
-format, err := provider.JSONSchemaFormatFor[CitySummary]("") // 返回 *ResponseFormat
-```
-
-覆盖范围为 OpenAI 兼容结构化输出的常用子集：结构体、string / bool / 整型 / 浮点、切片数组、`map[string]T`、`time.Time`、匿名嵌入字段扁平化；读取 `json` tag 决定字段名与可选性，`jsonschema:"enum=..."` 为 string 字段生成枚举。`interface{}`/`any`、channel、函数、非 string 键的 map、自引用类型会返回错误而非静默降级，需在构造请求前显式处理。`GenerateJSONWithSchema` 也有 `...WithSchemaValidator` 变体，在解码后运行业务校验。
-
-两点取舍需注意：
-
-- **`map[string]T` 不展开值类型**：受限于 `ParamSchema.AdditionalProperties` 为 `*bool`，map 仅生成 `{"type":"object","additionalProperties":true}`，值类型 `T` 不写入 schema；但 `T` 仍会走统一的受支持校验，`map[string]chan int`、`map[string]any` 这类仍会返回错误，不会被绕过。
-- **默认非 strict**：`JSONSchemaFormatFor` / `GenerateJSONWithSchema` 生成的是非 strict 的 `json_schema`。OpenAI strict 模式要求每个属性都进 `required` 并以 nullable union 表达可选字段，而 `ParamSchema.Type` 为单一字符串无法表达 union，故默认非 strict。若你的类型所有字段都必填且需要 strict，用 `provider.JSONSchemaFormatStrict(name, schema)` 组合 `SchemaFromType[T]()` 的结果。
+回复解码和业务校验由调用方完成：检查 `Chat` 的错误后，用 `github.com/gtkit/json/v2` 的 `json.Unmarshal([]byte(resp.Content), &result)` 解码。完整示例见 [`example/structured/main.go`](example/structured/main.go)。
 
 ### Token counting
 
-支持原生 token counting 的 provider 会实现 `TokenCounter`。当前 Gemini（`countTokens`）与 Anthropic（`/v1/messages/count_tokens`，免费端点）原生 provider 支持 `CountTokens`；其他 provider 会返回 `ErrUnsupportedCapability`。注意：Anthropic 官方将该计数定义为**估算值**，与实际计费 token 可能有少量偏差——适合摘要压缩阈值（`CompactOptions.TriggerTokens`）与额度预检，不应作为无安全余量的硬额度判定，结算一律以响应 `Usage` 为准。无原生支持时退回误差更大的 `EstimateTokens` 本地启发式。
+支持原生 token counting 的 provider 会实现 `TokenCounter`。当前 Gemini（`countTokens`）与 Anthropic（`/v1/messages/count_tokens`，免费端点）原生 provider 支持 `CountTokens`；其他 provider 会返回 `ErrUnsupportedCapability`。注意：Anthropic 官方将该计数定义为**估算值**，与实际计费 token 可能有少量偏差——可供应用的历史与额度策略参考，不应作为无安全余量的硬额度判定，结算一律以响应 `Usage` 为准。无原生支持时由应用决定是否另行估算。
 
 ```go
 count, err := provider.CountTokens(ctx, gemini, &provider.ChatRequest{
@@ -1497,163 +1273,7 @@ if err != nil {
 fmt.Println(count.TotalTokens)
 ```
 
-### 方式一：RunToolLoop（推荐）
-
-`RunToolLoop` 自动处理 Tool Use 的完整循环：发请求 → 检测 tool_calls → 执行工具 → 回传结果 → 再次请求 → ... 直到模型给出最终文本回复。
-
-```go
-resp, err := provider.RunToolLoop(ctx, p, &provider.ChatRequest{
-    Messages: []provider.Message{
-        provider.UserText("北京天气怎么样？"),
-    },
-    Tools: tools,
-}, 5, func(ctx context.Context, name, arguments string) (string, error) {
-    switch name {
-    case "get_weather":
-        var args struct {
-            City string `json:"city"`
-        }
-        json.Unmarshal([]byte(arguments), &args)
-        // 调用真实的天气 API ...
-        return `{"temperature": 28, "condition": "晴"}`, nil
-    default:
-        return "", fmt.Errorf("unknown tool: %s", name)
-    }
-})
-
-fmt.Println(resp.Content) // "北京现在 28°C，天气晴朗。"
-```
-
-参数说明：
-
-- `maxRounds`：最大循环次数（推荐显式设为 5-10；`<=0` 时使用 20 轮安全上限），防止模型无限调用工具
-- `handler`：工具执行函数，接收函数名和 JSON 参数，返回结果字符串
-- 如果 handler 返回 error，`RunToolLoop` 默认会把**脱敏后的** JSON 错误结果回传给模型，让模型有机会纠正，但不会默认暴露原始内部错误细节
-
-如果你需要自定义错误回传格式或显式开启并行工具执行，使用 `RunToolLoopWithOptions`：
-
-```go
-resp, err := provider.RunToolLoopWithOptions(
-    ctx,
-    p,
-    req,
-    handler,
-    provider.RunToolLoopOptions{
-        MaxRounds:          5,
-        ParallelToolCalls: true,
-        ToolErrorEncoder: func(_ context.Context, tc provider.ToolCall, err error) (provider.Message, error) {
-            return provider.ToolResultMessageJSON(tc.ID, map[string]string{
-                "error": err.Error(),
-                "mode":  "custom",
-            })
-        },
-        // 工具 handler 出错时按策略重试，仍区分 context 取消（不重试、直接上抛）
-        ToolRetry: provider.ToolRetryOptions{
-            MaxAttempts: 3,
-            Backoff:     provider.ExponentialBackoff(100*time.Millisecond, time.Second),
-        },
-    },
-)
-```
-
-默认值：
-
-- `RunToolLoop` 等价于使用兼容默认 options 调用 `RunToolLoopWithOptions`
-- `ParallelToolCalls` 默认关闭
-- `ToolErrorEncoder` 默认使用安全脱敏编码器
-- `ToolRetry` 零值表示不重试（仅执行一次），保持既有行为；`MaxAttempts > 1` 时按 `Backoff` 等待并重试，`ShouldRetry` 默认重试所有非 context 取消错误。重试会重放 handler：有副作用的工具（下单、转账、发消息）要么在 handler 内用幂等键去重，要么通过 `ShouldRetry` 只放行可安全重放的错误
-- `ToolSelector` 默认为 `nil`，全量下发 `req.Tools`（既有行为）；设置后每轮下发前裁剪工具集，见下节
-- **执行白名单**：每轮只执行本轮下发的函数工具（`req.Tools` 或 `ToolSelector` 的返回值）。模型请求的函数名不在其中时，handler 不会被调用，该调用以 `ErrToolNotOffered` 经 `ToolErrorEncoder` 生成工具结果回传模型，循环继续
-- **参数校验**：参数非空且不是合法 JSON（常见于输出被 `max_tokens` 截断）时，handler 不会被调用、不进入重试，该调用以 `ErrToolArgumentsInvalid` 经 `ToolErrorEncoder` 生成工具结果回传模型，循环继续
-- **默认错误文案**：`DefaultToolErrorEncoder` 对 `ErrToolNotOffered`、`ErrToolArgumentsInvalid` 输出提示模型改正调用的固定文案，handler 返回的业务错误统一输出 `tool execution failed`
-- **panic 恢复**：执行工具期间的回调（handler、`ToolResultTransformer`、`ToolErrorEncoder`、`ToolRetryOptions` 的回调）panic 时，循环以包装 `ErrToolHandlerPanic` 的错误中止，错误文本含工具名、panic 值与堆栈；串行与并行执行一致
-- `AccumulateUsage` 默认关闭，返回最后一轮的 `Usage`（既有行为）；设为 `true` 后，返回响应的 `Usage` 为**所有轮次**的 token 消耗累加值，便于多轮工具循环的成本统计（某轮 provider 未返回 usage 则按 0 计入）
-
-思考模型（DeepSeek V4、Kimi K3、Claude 5、Gemini 3 等）要求把上一轮的推理内容随工具调用回传，
-`RunToolLoop` / `RunToolLoopStream` 已自动携带 `Reasoning`、`ThinkingBlocks`、`ThoughtSignature`
-并给工具结果补上函数名，无需额外配置；细节见「Thinking」一节的「推理内容往返」。
-
-#### 工具集裁剪（Tool Routing）
-
-工具数量大时，每轮把全部工具定义塞进请求有两个代价：token 成本随工具数线性上升，候选越多模型选错的概率越高。`ToolSelector` 让调用方在**每一轮**下发前决定本轮给哪些工具：
-
-```go
-resp, err := provider.RunToolLoopWithOptions(ctx, p, req, handler,
-    provider.RunToolLoopOptions{
-        MaxRounds: 5,
-        ToolSelector: func(_ context.Context, msgs []provider.Message, tools []provider.Tool) ([]provider.Tool, error) {
-            // 依据可以是关键词、规则、向量相似度，或当前用户的权限
-            return pickRelevant(msgs, tools), nil
-        },
-    },
-)
-```
-
-- **每轮都调用**：`msgs` 是该轮累积到的完整对话历史（含上一轮的工具结果），所以第 2 轮起可以依据工具执行结果继续收窄——例如查到订单号之后才放开退款工具。仅在首轮裁剪用不着这个钩子，直接改 `req.Tools` 即可
-- **返回空切片是合法的**，表示本轮不提供任何工具，模型直接作答
-- **返回 error 会中止整个循环**，不会回退成全量下发：裁剪可能承载调用方的权限边界，静默回退会把本该屏蔽的工具暴露给模型
-- **不影响调用方的请求**：`tools` 是本轮的切片副本，原地重排或截断都不会改到 `req.Tools`；但元素内部的引用字段（如 `Tool.Function.Parameters`）与调用方共享，不要修改
-- `RunToolLoopStreamWithOptions` 语义完全一致
-- **裁剪同时是执行边界**：模型请求本轮已被筛掉的工具时，handler 不会执行，模型收到 `ErrToolNotOffered` 编码的工具结果
-- **裁剪过度的表现**：模型反复请求已被筛掉的工具，或直接放弃任务，循环空转到 `MaxRounds` 上限。库无法判断哪个工具是"需要的"，保守起见给模型留一个兜底工具
-- 钩子在请求关键路径上同步执行，每轮一次。它应当是本地判断；需要远程检索时自行加缓存与超时
-
-库不提供内置的筛选实现：筛选依据（关键词表、向量索引、角色权限）来自业务上下文，库看不到，内置实现只会把业务判断固化成库的约定。
-
-#### 工具结果加工与响应校验
-
-工具执行结果如果来自外部不可信数据源（网页抓取、第三方 API、用户上传内容等），可能携带试图让模型偏离原任务的指令文本（间接提示注入）。`RunToolLoopOptions` 提供两个可选钩子，让调用方在结果进入对话历史前、以及最终响应返回前接入自己的处理逻辑，`RunToolLoopStreamWithOptions` 同样支持：
-
-- `ToolResultTransformer`：在工具结果写回对话历史前对其加工。返回 error 会中止整个工具循环。
-- `ResponseValidator`：在返回最终响应前对其校验。返回 error 时整个循环返回该 error，不会把未通过校验的响应交还给调用方。流式版本中校验发生在最后一轮全部 chunk 经 `onChunk` 送出之后，只决定返回值与错误；需要未通过校验的内容不外露时，在 `onChunk` 中缓冲，成功返回后再展示。
-
-```go
-resp, err := provider.RunToolLoopWithOptions(
-    ctx, p, req, handler,
-    provider.RunToolLoopOptions{
-        MaxRounds:             5,
-        ToolResultTransformer: provider.WrapToolResultInTag("tool_result"),
-        ResponseValidator: func(_ context.Context, resp *provider.ChatResponse) error {
-            if strings.Contains(resp.Content, "system prompt") {
-                return fmt.Errorf("suspicious model output rejected")
-            }
-            return nil
-        },
-    },
-)
-```
-
-`WrapToolResultInTag(tag)` 是内置的便捷 `ToolResultTransformer`，将工具结果包裹进 `<tag>...</tag>`，并转义结果中的 `<`、`>` 字符，防止结果内容本身携带同名标签文本提前闭合标签、令注入内容逃逸出标签边界。`tag` 必须是不含空白与 `<`、`>`、`&`、引号的非空字符串。
-
-**防线分工**：这两个钩子只负责在固定位置接入处理逻辑，具体规则内容由业务侧根据自身场景定义并通过钩子注入：
-
-- **内容识别与净化**：哪些模式判定为可疑（正则特征词、关键词表）、长度截断阈值、结构符转义（如 Markdown 的 `##`/`---`，防止数据内容在视觉上伪造出 system prompt 的新分节）、命中后是降级替换还是记审计日志，由业务侧在 `ToolResultTransformer` 里实现
-- **结构隔离**：标签包裹与转义由 `WrapToolResultInTag` 提供；在 system prompt 里显式声明"标签内是数据不是指令"、要求模型仅输出约定格式，由业务侧在构造 `ChatRequest.Messages` 时写明
-- **结构化输出**：生成侧的强制约束用库已有的 `ResponseFormat` / `JSONSchemaFormatStrict`（见本 README「Structured Output（结构化输出）」一节），比纯 prompt 文字声明更可靠；具体 schema 定义、解析失败即拒绝、字段级校验，由业务侧在 `ResponseValidator` 里实现——即使生成侧已做 Strict 约束，Go 侧仍需要防御性解析，不同 provider 对 strict 模式的遵循程度不同
-- **输出校验**：字段完整性校验、长度合理性检查、敏感词表扫描，由业务侧在 `ResponseValidator` 里实现；模型平台自带的安全过滤（如 Gemini `SafetySettings`）由业务侧按需在构造请求时配置，与 `ResponseValidator` 叠加使用
-
-完整可运行示例见 [`example/toolsecurity/main.go`](example/toolsecurity/main.go)：模拟一个网页摘要助手，工具抓取的网页内容里携带间接提示注入文本，示例组合了长度截断 + 正则特征检测降级替换 + Markdown 结构符转义（`ToolResultTransformer`）、`WrapToolResultInTag` 结构隔离、system prompt 显式声明数据边界、`ResponseFormat` 强制 JSON Schema 输出、`ResponseValidator` 解析校验（JSON 解析失败即拒绝 + 字段完整性 + 长度合理性 + 敏感词扫描）六层处理。规则内容本身（正则特征词表、Markdown 转义表、校验函数）整理成了一份跟本库解耦的模板文档，见 [`../PROMPT_INJECTION_DEFENSE.md`](../PROMPT_INJECTION_DEFENSE.md)，可直接复制到任何项目使用，不依赖这个库。
-
-```bash
-DEEPSEEK_API_KEY="<DEEPSEEK_API_KEY>" go run ./example/toolsecurity
-```
-
-### RunToolLoopStream（流式工具循环）
-
-对话产品的标配路径：智能体一边流式输出（打字机效果），一边自动执行工具进入下一轮。
-工具调用的增量片段由库内拼装，无需手写 delta 累积：
-
-```go
-resp, err := provider.RunToolLoopStream(ctx, p, req, 10, toolHandler, func(chunk provider.StreamChunk) {
-    fmt.Print(chunk.Delta) // 实时透传给前端（SSE 等）
-})
-// resp 语义与 RunToolLoop 一致；需要跨轮累计 usage 时用
-// RunToolLoopStreamWithOptions + AccumulateUsage
-```
-
-onChunk 会收到所有轮次的全部 chunk（含工具调用轮的空文本帧），按需过滤 `chunk.Delta != ""` 即可。
-
-### 方式二：手动管理多轮对话
+### 手动管理多轮对话
 
 如果你需要在每轮 tool call 之间插入自定义逻辑（如日志、权限检查、结果缓存等），可以手动管理循环：
 
@@ -1818,26 +1438,21 @@ for _, a := range accum {
 }
 ```
 
-> 流式 Tool Use 比较复杂，大多数场景推荐直接用非流式的 `RunToolLoop`。
+> 流式工具调用参数可能跨帧到达，应用必须收齐并校验后再执行。
 
 ## Embedding（文本向量化）
 
 除了 Chat，本库同时提供统一的 `Embedder` 接口，用于把文本转成向量，支撑 RAG、语义搜索、聚类、去重、推荐等场景。
 
-**关键设计**：与 Chat 共用同一套 `Registry` / `Preset` / `QuickRegistry`。`QuickRegistry` 会在注册 chat provider 时，自动为有 embedding 预设的平台（OpenAI / Qwen / 智谱 / 千帆 / 硅基流动 / Gemini）同时注册对应 embedder；DeepSeek、Moonshot、Anthropic、Ollama、xAI 暂未声明 embedding 预设，静默跳过不报错。
+通过 `NewEmbedderFromPreset` 单独构造 Embedder；实例由调用方持有。
 
 ### 基础用法
 
 ```go
-reg := provider.QuickRegistry(map[provider.ProviderName]string{
-    provider.ProviderQwen:   os.Getenv("QWEN_API_KEY"),
-    provider.ProviderZhipu:  os.Getenv("ZHIPU_API_KEY"),
-    provider.ProviderGemini: os.Getenv("GEMINI_API_KEY"),
-})
-
-// 同一个 Registry 同时管 chat 和 embedding
-chat, _ := reg.Default()
-emb,  _ := reg.DefaultEmbedder()
+emb, err := provider.NewEmbedderFromPreset(provider.ProviderOpenAI, os.Getenv("OPENAI_API_KEY"), "")
+if err != nil {
+    return err
+}
 
 // 单条文本 → 向量
 vec, err := provider.SimpleEmbed(ctx, emb, "什么是 goroutine")
@@ -1905,7 +1520,6 @@ query := "怎么申请返还款项"
 queryVec, _ := provider.SimpleEmbed(ctx, emb, query)
 
 // 3. 相似度检索：用内置轻量工具按余弦相似度排序
-best, _ := provider.MostSimilar(queryVec, docVecs)
 
 // 4. 把匹配文档拼进 prompt 让 LLM 回答
 reply, _ := provider.SimpleChatWithSystem(ctx, chat,
@@ -1916,19 +1530,7 @@ reply, _ := provider.SimpleChatWithSystem(ctx, chat,
 
 完整可运行示例见 [`example/embedding/main.go`](example/embedding/main.go)。
 
-### 相似度工具
-
-Embedding 常见的第一步检索可以直接用以下函数：
-
-```go
-score, err := provider.CosineSimilarity(queryVec, docVec)
-ranked, err := provider.RankBySimilarity(queryVec, docVecs)
-best, err := provider.MostSimilar(queryVec, docVecs)
-```
-
-这些函数只做纯内存向量计算，不依赖任何向量数据库；向量存储、文档切片和召回策略仍由业务层决定。
-
-### 直接构造 Embedder（不走 Registry）
+### 自定义 Embedder
 
 ```go
 // 预设配置，只需 APIKey
@@ -2073,37 +1675,6 @@ fmt.Println(refund, queue.Choice, resp.Answers["urgency"].Score, resp.Model)
 - **错误**：非 2xx 返回 `*ProviderError`——401 为 `ErrorCodeAuth`，422 为 `ErrorCodeInvalidRequest`，429 为 `ErrorCodeRateLimit`，529（服务过载）为可重试的 `ErrorCodeServerError`，`Retry-After` 写入 `RetryAfter`；响应头 `x-typesafe-request-id` 写入 `Metadata.RequestID`。
 - **用量**：`Usage.PromptTokens` 为输入 token，`CompletionTokens` 为输出 token。
 
-### 与工具循环组合：用 Jev 做工具路由
-
-`ToolSelector`（见[工具集裁剪](#工具集裁剪tool-routing)）每轮下发前调用一次，把工具名作为 choice 选项交给 Jev 判断，只下发最相关的工具：
-
-```go
-selector := func(ctx context.Context, msgs []provider.Message, tools []provider.Tool) ([]provider.Tool, error) {
-    options := make(map[string]any, len(tools))
-    for _, t := range tools {
-        options[t.Function.Name] = t.Function.Description
-    }
-    resp, err := decider.Decide(ctx, &provider.DecideRequest{
-        State: msgs,
-        Questions: map[string]provider.DecisionQuestion{
-            "tool": {Type: provider.DecisionChoice, Instructions: "下一步最需要调用哪个工具", Criteria: options},
-        },
-    })
-    if err != nil {
-        return nil, err // 返回 error 中止循环，不会回退为全量下发
-    }
-    probs := resp.Answers["tool"].Probabilities
-    return slices.DeleteFunc(tools, func(t provider.Tool) bool {
-        return probs[t.Function.Name] < 0.1
-    }), nil
-}
-
-resp, err := provider.RunToolLoopWithOptions(ctx, p, req, handler,
-    provider.RunToolLoopOptions{MaxRounds: 5, ToolSelector: selector})
-```
-
-Selector 在每轮的请求关键路径上同步执行，给 `ctx` 设好超时。
-
 ## 模型能力元数据
 
 预设模型会暴露一份轻量能力元数据，便于调用方在运行前判断是否支持 Vision、Reasoning、Embedding 等能力：
@@ -2170,45 +1741,6 @@ p, err := provider.NewProvider(provider.ProviderConfig{
 
 ---
 
-## Registry 操作
-
-### 按名称切换 Provider
-
-```go
-zhipu, err := reg.Get(provider.ProviderZhipu)
-if err != nil {
-    fmt.Println("智谱未注册")
-}
-reply, _ := provider.SimpleChat(ctx, zhipu, "你好")
-```
-
-### 设置默认 Provider
-
-```go
-err := reg.SetDefault(provider.ProviderQwen)
-p, _ := reg.Default()  // 现在返回千问的 provider
-```
-
-### 列出所有已注册的 Provider
-
-```go
-for _, name := range reg.Names() {
-    fmt.Println("已注册:", name)
-}
-```
-
-### Embedder 注册管理
-
-Embedder 在 Registry 内独立管理（与 Provider 互不影响），操作方法对称：
-
-```go
-reg.RegisterEmbedder(emb)                      // 注册
-reg.GetEmbedder(provider.ProviderQwen)         // 按名称获取
-reg.DefaultEmbedder()                          // 获取默认
-reg.SetDefaultEmbedder(provider.ProviderZhipu) // 切换默认
-reg.EmbedderNames()                            // 列出所有已注册 embedder
-```
-
 ## Middleware（中间件扩展）
 
 横切关注点走统一的装饰器 + Handler 抽象。本库内置了一组与业务口径无关的策略，
@@ -2222,10 +1754,7 @@ reg.EmbedderNames()                            // 列出所有已注册 embedder
 | 重试 | `WithRetry` / `RetryMiddleware` | 按 `ProviderError.Retryable` 判定，支持指数退避与全抖动，优先采用平台的 `Retry-After` |
 | 熔断 | `WithBreaker` / `BreakerMiddleware` | 滑动窗口计数 + 指数退避冷却 + 半开探测 |
 | 限流 | `WithRateLimit` / `RateLimitMiddleware` | RPM / TPM 令牌桶，token 预扣 + 真实用量结算 |
-| 降级 | `NewFallbackProvider` | 多成员按序切换 |
-| 负载均衡 | `NewBalancedProvider` | 加权轮询 / 加权随机 / 加权最少在途 |
 | 观测 | `WithObservability` | 零依赖事件 hook，不绑定 slog / Prometheus / OTel |
-| 计费与配额 | `NewBillingHook` / `QuotaMiddleware` / `TokenBudgetMiddleware` / `CostBudgetMiddleware` | 按用户与会话归账，额度硬限 |
 
 策略参数一律由调用方注入（熔断阈值、限流额度、价格表、退避曲线），本库不预设
 业务口径；观测与计费只提供事件与接口，落地到哪个后端由调用方决定。
@@ -2359,8 +1888,6 @@ half_open ──探测失败───────────▶ open       （�
   }}
   ```
 
-- **与降级链联动**：`ErrBreakerOpen` 已在默认切换判定内，熔断打开会立刻切到
-  下一个成员，无需自定义 `ShouldFallback`。
 - **高 QPS 服务改用失败率判定**：`FailureThreshold` 是绝对次数，与流量规模无关。
   1 分钟窗口配 5 次失败，在 1000 QPS 下只要上游有 0.1% 的偶发错误率，
   窗口内就会累计到 5 次失败而跳闸——把 99.9% 本可成功的请求一起挡在本地。
@@ -2425,8 +1952,7 @@ if errors.Is(err, provider.ErrLocalRateLimited) {
   让流量匀速铺开，避免整分钟额度被瞬间打出去触发平台的秒级限流；token 桶默认取
   整分钟额度（长上下文单请求需要的额度可能远超 1 秒额度，桶太小会永远拿不到令牌）。
   两者都可用 `RequestBurst` / `TokenBurst` 覆盖。
-- **token 采用"预扣 + 结算"**：请求前按 `EstimateTokens` 口径预扣
-  （`EstimateChatRequestTokens`：输入估算 + `MaxTokens`，未设 `MaxTokens` 时用
+- **限流预扣**：使用本地启发式估算（`EstimateChatRequestTokens`：输入估算 + `MaxTokens`，未设 `MaxTokens` 时用
   `ReserveOutputTokens`），响应返回后用真实 `Usage` 结算差额；流式的结算延后到
   流终止（读到 `io.EOF`、读出错或提前 `Close`）。请求失败时保留预扣不返还，
   宁可保守也不放大超额风险。
@@ -2486,327 +2012,6 @@ observedEmb := provider.WithEmbedderObservability(emb, provider.ObserveOptions{
 `OnEvent` 在调用 goroutine 内同步执行，生产环境里应保持快速、非阻塞；记录日志或指标时不要输出 API Key、prompt 原文、响应正文等敏感内容。`ChatStream` 观测流创建与流终止两个节点，不跟踪中间每个 chunk。
 
 本库自身不会向调用方回显 API Key（响应头按白名单过滤、请求不含密钥）。如需在自己的日志中保留密钥的可追溯性又不暴露完整值，可用 `provider.MaskSecret`（如 `MaskSecret("sk-1234...wxyz")` -> `"sk-1****wxyz"`）。
-
-### 按用户计费与配额
-
-计费能力构建在观测 Hook 之上：一处挂载，所有 `Chat` / `ChatStream` / `Embed` 调用自动按
-ctx 中的用户与会话归账，业务调用点零统计代码。
-
-```go
-store := provider.NewMemoryUsageStore() // 或自行实现 UsageRecorder 接 Redis/DB
-
-billed := provider.WithObservability(base, provider.ObserveOptions{
-    OnEvent: provider.CombineObserveHooks(
-        provider.NewBillingHook(store), // 计费归账
-        myLoggingHook,                  // 日志观测可并存
-    ),
-})
-
-// 请求入口注入身份（如 Gin 鉴权中间件里）：
-ctx = provider.WithUserID(ctx, userID)
-ctx = provider.WithConversationID(ctx, conversationID)
-
-// 业务正常调用，无需任何统计代码
-resp, err := billed.Chat(ctx, req)
-
-// 随时查询累计用量（按用户 / 按会话）：
-userTotals, _ := store.UserTotals(userID)
-convTotals, _ := store.ConversationTotals(userID, conversationID)
-fmt.Println(userTotals.Usage.TotalTokens, convTotals.Calls, convTotals.TerminatedCalls)
-```
-
-`RecordEntry` 携带 EntryID（库生成的幂等键，存储层据此去重）、UserID、ConversationID、
-RequestID（对账，流式与非流式均有值）、响应侧实际模型名、Usage、终止方式等；
-流式调用异常终止（网络中断 / 提前 Close）时仍会发出记录（`Terminated=true`、Usage 可能为零值），
-漏账可观测——收不收钱由 Recorder 策略决定。`MemoryUsageStore` 为单实例场景设计，
-多实例部署换用共享存储实现 `UsageRecorder` 即可，接口不变——
-`example/billingstore/` 提供 Redis + GORM 的参考实现（独立 go.mod，reference 级），
-含 `EntryID` 幂等的 Redis Lua 原子累计、流水异步落库与 `QuotaChecker` 限额；
-Redis Cluster 部署需启用其 `Config.RedisCluster`，让同一用户的多 key 固定到同一 slot。
-它是 **best-effort 参考实现**：计价失败仍以 `costMicros == 0` 落账并经 `OnError` 上抛
-（原始用量入库、可事后重算），刷库不重试、进程崩溃丢缓冲——资金敏感的生产账务
-不可直接照搬，须按业务要求强化（持久化 outbox、失败重试、对账兜底）。
-
-#### 费用计算（PricingTable）
-
-金额一律 int64 微元（1e-6 货币单位），杜绝 float64 精度问题；费率由调用方注入，库不硬编码任何价格：
-
-```go
-table := provider.PricingTable{
-    "deepseek-v4-flash": {
-        InputPer1M:     2_000_000, // 2 元 / 1M tokens（示例价，以官方定价为准）
-        OutputPer1M:    4_000_000,
-        CacheReadPer1M: 200_000,   // 未配置时回落到 InputPer1M
-        Currency:       "CNY",
-    },
-}
-micros, currency, err := table.Cost("deepseek-v4-flash", resp.Usage)
-fmt.Println(provider.FormatMicros(micros), currency) // 如 "0.0123 CNY"
-```
-
-缓存写入支持按 TTL 分档配置费率。Anthropic 的长 TTL 缓存写入单价高于短 TTL，
-两档配同一个价会算错——按各档实际单价配置即可：
-
-```go
-table := provider.PricingTable{
-    "claude-sonnet-5": {
-        InputPer1M:        3_000_000,
-        OutputPer1M:       15_000_000,
-        CacheReadPer1M:    300_000,   // 缓存命中远低于常规输入
-        CacheWritePer1M:   3_750_000, // 未分档部分与未上报明细时的兜底单价
-        CacheWrite5mPer1M: 3_750_000,
-        CacheWrite1hPer1M: 6_000_000, // 长 TTL 写入更贵
-        Currency:          "CNY",
-    },
-}
-```
-
-分档费率只在平台上报了 `Usage.CacheWrite5mTokens` / `CacheWrite1hTokens` 时参与计算：
-未上报明细、或未配置分档费率时，写入总量整体按 `CacheWritePer1M` 计价，
-与不使用分档时的结果一致（示例中的单价仅为格式演示，请以官方定价页为准）。
-
-计费公式先减子集再分档乘价（`ReasoningTokens ⊆ CompletionTokens`、
-`CacheReadTokens + CacheWriteTokens ≤ PromptTokens`、
-`CacheWrite5mTokens + CacheWrite1hTokens ≤ CacheWriteTokens`），不会重复计费；
-原生联网搜索按次计价并与 token 项一并累加，两种口径的费率
-（`WebSearchPer1K` / `GroundedPromptPer1K`，微元/1000 次）**二选一**配置，
-规则见"原生联网搜索"一节。未配价模型、存在搜索用量但未配搜索价、
-或配置口径与用量口径不符时返回 `ErrModelNotPriced`。
-负费率、负 token、子集关系不成立、费率越界、搜索双费率同时配置或
-最终金额超出 `int64` 时返回 `ErrInvalidPricing`，不回绕为错误金额。
-仅支持线性单价，分时折扣、阶梯定价请在业务层处理。
-底层成本价与对用户售价维护两份表即可。可在服务启动或价格表热更新时调用
-`PricingTable.Validate()` 整表校验（范围与搜索双费率互斥），把配置错误挡在计价之前。
-
-#### 价格表热替换（PricingRegistry）
-
-直接持有 `PricingTable` 时，调价只能靠调用方自己保证"整表替换"——有人在线改条目
-就会与计价路径的读发生 data race。`PricingRegistry` 把这个约束变成 API 保证：
-
-```go
-registry, err := provider.NewPricingRegistry(table, "2026-08-21") // 构造即校验 + 整表拷贝
-if err != nil {
-    log.Fatal(err) // 非法费率不会进入生效状态
-}
-
-micros, currency, err := registry.Cost("deepseek-chat", resp.Usage) // 原子读，无锁
-fmt.Println(registry.Version())                                     // 账务落库时一并记录
-
-// 调价：校验通过后一次原子切换，不存在"半新半旧"的中间状态
-if err := registry.Replace(newTable, "2026-09-01"); err != nil {
-    log.Printf("新价格表非法，继续按旧价计费: %v", err)
-}
-```
-
-- 构造与 `Replace` 都会整表拷贝并走 `Validate`，调用方之后再改自己那份表影响不到已生效的价格。
-- `Cost` 走 `atomic.Pointer` 读取，与 `Replace` 并发安全；每次 `Cost` 要么整体按旧价、要么整体按新价。
-- `Rate(model)` 查单条费率零拷贝；`Snapshot()` 返回一致的表 + 版本拷贝（每次调用都拷贝，
-  用于导出或喂给按 `PricingTable` 取价的组件，不要放在热路径）；`Models()` 返回已配价模型名。
-- 空表表示暂无配价，`Cost` 一律返回 `ErrModelNotPriced`，不会静默按零计费。
-
-#### 配额拦截（QuotaChecker）
-
-```go
-guarded, _ := provider.TryWithMiddlewares(billed, provider.MiddlewareOptions{
-    Chat:   []provider.Middleware{provider.QuotaMiddleware(myChecker)},
-    Stream: []provider.StreamMiddleware{provider.QuotaStreamMiddleware(myChecker)},
-})
-```
-
-`QuotaChecker.Allow(ctx, userID, model)` 基于累计真实用量判断，超限返回 `ErrQuotaExceeded`，
-请求不发往平台（语义为"已超额拦下一次"，存在最后一次调用的滞后）。
-ctx 无 userID 的请求默认放行；fail-open / fail-close 由实现方决定。
-
-#### 剩余额度硬限（TokenBudget）
-
-业务从账务系统查出用户剩余 token 数后注入 ctx，单次调用的消耗被硬性限制在剩余额度内：
-
-```go
-guarded, _ := provider.TryWithMiddlewares(billed, provider.MiddlewareOptions{
-    Chat:   []provider.Middleware{provider.TokenBudgetMiddleware()},
-    Stream: []provider.StreamMiddleware{provider.TokenBudgetStreamMiddleware()},
-})
-
-ctx = provider.WithTokenBudget(ctx, remainingTokens)
-resp, err := guarded.Chat(ctx, req) // 剩余不足 → ErrQuotaExceeded；足够 → MaxTokens 被收缩到剩余额度内
-```
-
-输入侧按 `EstimateTokens` 启发式估算（误差 ±30%），输出侧通过收缩 `MaxTokens` 硬限；
-需要零误差结算时结合响应 `Usage` 事后对账。
-
-额度体系是**余额（金额）**而非 token 包时，用金额口径的对应版本——业务注入剩余余额（微元），
-middleware 按 `PricingTable` 完成金额与 token 的换算（输入按无缓存全价保守估算，
-输出按剩余余额反推可负担的 token 数）：
-
-```go
-guarded, _ := provider.TryWithMiddlewares(billed, provider.MiddlewareOptions{
-    Chat:   []provider.Middleware{provider.CostBudgetMiddleware(table)},
-    Stream: []provider.StreamMiddleware{provider.CostBudgetStreamMiddleware(table)},
-})
-
-ctx = provider.WithCostBudget(ctx, remainingMicros) // 如余额 1 元 = 1_000_000 微元
-resp, err := guarded.Chat(ctx, req)
-// 余额不足 → ErrQuotaExceeded；model 未配价 → ErrModelNotPriced；非法费率 → ErrInvalidPricing
-```
-
-注意：金额预算按 `req.Model` 查价，请求需显式指定已配价的模型；
-建议拦截阈值留 20-30% 余量（估算是保守近似），精确扣款始终以响应 `Usage` × 费率结算。
-
-### Fallback Provider
-
-```go
-fallback, err := provider.NewFallbackProvider(primary, backup)
-if err != nil {
-    log.Fatal(err)
-}
-
-resp, err := fallback.Chat(ctx, req)
-```
-
-`FallbackProvider` 会按传入顺序调用 provider。只有当前 provider 返回可重试错误
-（限流 / 超时 / 5xx / 网络错误）时，才会继续尝试下一个 provider；遇到无效请求、
-鉴权失败、内容审核拦截等不可重试错误会立即返回，避免把调用方问题扩散到备用平台。
-
-**同平台多模型降级链**：构造多个实例、各配不同默认模型即可（也可跨平台混编）：
-
-```go
-fast, _ := provider.NewProviderFromPreset(provider.ProviderDeepSeek, key, "deepseek-v4-flash")
-backup, _ := provider.NewProviderFromPreset(provider.ProviderQwen, qwenKey, "qwen-max")
-p, _ := provider.NewFallbackProvider(fast, backup)
-```
-
-降级链使用须知：
-
-- **`req.Model` 必须留空**——它的语义是"显式覆盖默认模型"，会跟随请求传给链上
-  每个成员，导致降级后仍请求同一个模型、降级失效；留空让各成员用自己的默认模型。
-- **切换对调用方功能无感知，但延迟会叠加**（前面成员的失败耗时 + 当前成员耗时）；
-  给各成员配独立的短超时 `HTTPClient` 可以快速失败、快速切换。
-- **流式的降级只发生在流创建阶段**：打字机开始输出后中途断流不会切换（半截内容
-  无法无缝接续），中断会经 `stream_complete`（`Terminated=true`）正常进入计费审计。
-- **计费口径**：`RequestModel` 取链首默认模型，实际服务的模型由响应侧 `Model`
-  如实记录；链上所有可能的模型都应配入 `PricingTable`。
-- 与 `WithRetry` 组合时，把 retry 包在**每个成员**上（先重试同模型再降级），
-  而不是包在整条链外（那会整链重跑）。
-- **自定义切换判定**：多供应商冗余场景常需要放宽切换条件（key 失效、模型下线、
-  业务熔断错也切换），用 `NewFallbackProviderWithOptions` 注入：
-
-  ```go
-  p, _ := provider.NewFallbackProviderWithOptions([]provider.Provider{fast, backup},
-      provider.FallbackOptions{ShouldFallback: func(err error) bool {
-          return provider.IsRetryableError(err) ||
-              errors.Is(err, provider.ErrAuth) || isBreakerOpen(err)
-      }})
-  ```
-
-  无论判定如何，ctx 已取消/超时时都会立即返回、不再尝试后续成员（调用方已放弃）。
-  全部失败时的"服务繁忙"降级响应属于产品 UX 语义，留在业务层包装。
-
-**多厂商两级降级**（厂商内先穷尽所有 model，再切下一个厂商）：`FallbackProvider`
-本身实现 `Provider` 接口，可嵌套组合；简单场景用扁平链把"厂商×model"按优先级
-排成一列效果等价：
-
-```go
-vendorA, _ := provider.NewFallbackProvider(dsChat, dsReasoner)   // 厂商 A 的 model 链
-vendorB, _ := provider.NewFallbackProvider(qwenMax, qwenPlus)    // 厂商 B 的 model 链
-top, _ := provider.NewFallbackProvider(vendorA, vendorB)         // 厂商间降级
-// A 的所有 model 依次失败后，才会尝试 B 的 model 链
-```
-
-嵌套的价值是**每层可配不同的切换判定**（如厂商内只切 5xx/超时、厂商间连 key
-失效也切）；不需要分层策略时，扁平链更简单。
-
-完整示例见 [`example/middleware/main.go`](example/middleware/main.go)。
-示例还演示了 `tokenStatsMiddleware(stats *int64)`，用 `atomic.AddInt64` 累计总 token 消耗。
-
-### 加权负载均衡（BalancedProvider）
-
-降级链是"链首承担全部流量、失败才用下一个"；`BalancedProvider` 是"按权重分摊
-流量"，适合多 key 分摊配额、多地域就近、按成本比例混流。故障转移语义与降级链一致。
-
-```go
-lb, err := provider.NewBalancedProviderWithOptions([]provider.BalanceMember{
-    {
-        Provider: keyA,
-        Weight:   3,                                                    // 承担 3/4 流量
-        Breaker:  provider.NewBreaker(provider.BreakerOptions{Name: "key-a"}),
-    },
-    {
-        Provider: keyB,
-        Weight:   1,
-        Breaker:  provider.NewBreaker(provider.BreakerOptions{Name: "key-b"}),
-    },
-}, provider.BalanceOptions{
-    Strategy:    provider.BalanceWeightedRoundRobin,
-    MaxAttempts: 2, // 单次调用最多尝试 2 个成员，≤0 表示全部
-})
-if err != nil {
-    log.Fatal(err)
-}
-
-resp, err := lb.Chat(ctx, req)
-```
-
-四种策略：
-
-| 策略 | 行为 | 适用 |
-|------|------|------|
-| `BalanceWeightedRoundRobin`（默认） | 平滑加权轮询，按权重把流量均匀铺开，低权重成员插在中间而非攒到末尾 | 多 key 分摊配额 |
-| `BalanceWeightedRandom` | 加权随机，长期分布与权重一致，短期可能连续命中同一成员 | 无状态、成员很多 |
-| `BalanceLeastPending` | 加权最少在途，选 `在途数/权重` 最小的成员 | 各成员时延差异大 |
-| `BalanceSessionAffinity` | 会话粘性，按会话键哈希稳定选中成员 | 多轮会话 + 提示词缓存 |
-
-#### 会话粘性与提示词缓存
-
-前三种策略把同一会话的多轮请求打散到不同成员，每个成员上游的提示词缓存都是冷的。
-缓存命中的输入单价通常只有常规输入的一小部分（Anthropic 约十分之一），
-把长会话打散等于让这部分收益全部消失——`BalanceSessionAffinity` 用来解决这个问题：
-
-```go
-lb, err := provider.NewBalancedProviderWithOptions(members, provider.BalanceOptions{
-    Strategy: provider.BalanceSessionAffinity,
-})
-// 请求入口注入会话标识，同一会话的每一轮都会落到同一个 key
-ctx = provider.WithConversationID(ctx, conversationID)
-resp, err := lb.Chat(ctx, req)
-```
-
-会话键默认取 `ConversationIDFromContext`，再回落 `UserIDFromContext`；
-需要按别的维度粘附（租户、提示词前缀指纹等）时用 `BalanceOptions.SessionKey` 自定义：
-
-```go
-provider.BalanceOptions{
-    Strategy: provider.BalanceSessionAffinity,
-    SessionKey: func(ctx context.Context, req *provider.ChatRequest) string {
-        return tenantFromContext(ctx)
-    },
-}
-```
-
-行为约定：
-
-- **按权重分配会话**：权重大的成员占据更宽的哈希区间、承载更多会话，
-  粘的是"同一会话"，不是把所有流量压到一个成员。
-- **哈希确定性**：不含随机种子，同一会话键在所有副本、进程重启前后都落到同一成员，
-  多副本部署无需共享状态。
-- **会话键为空**（未注入标识、或自定义函数返回空串）的调用退化为平滑加权轮询，
-  不会恒选同一成员。
-- **故障转移不受影响**：粘附成员失败或熔断时，从粘附位置环形向后取下一个未尝试的成员，
-  顺序确定；转移后该轮请求落在冷缓存成员上，属于预期代价。
-- **成员增减会重新分布会话**：哈希区间随权重总和变化，增删 key 后大部分会话会换成员、
-  缓存需要重新预热。调整成员列表宜安排在低峰期。
-
-- **成员级熔断**：`BalanceMember.Breaker` 由均衡器负责申请与上报，不要再用
-  `WithBreaker` 包一层（会双重计数）。熔断打开的成员会以 `ErrBreakerOpen`
-  快速失败并自动转移到下一个成员，冷却到期后自动恢复接流。
-- **故障转移判定**同降级链：默认切换平台侧可重试错误、`ErrBreakerOpen`、
-  `ErrLocalRateLimited`，可用 `BalanceOptions.ShouldFallback` 覆盖。
-  ctx 已取消/超时时立即返回、不再尝试后续成员。
-- **`req.Model` 通常留空**（同降级链的理由），让各成员用自己的默认模型；
-  计费的 `RequestModel` 以首成员为口径，实际服务的模型由响应侧 `Model` 如实记录。
-- **流式只在创建阶段转移**：打字机开始输出后中途断流不会切换。
-- **`lb.Stats()`** 返回每个成员的权重、在途数与熔断状态，可直接喂给健康检查端点。
-- `BalancedProvider` 本身实现 `Provider`，可与 `FallbackProvider`、`WithRetry`
-  嵌套组合：常见装配是"均衡器内每个成员各自带 retry + 熔断 + 限流"。
 
 ### 洋葱模型执行顺序
 
@@ -2873,11 +2078,8 @@ type ProviderError struct {
 
 | Sentinel | 含义 | 出现位置 |
 |----------|------|----------|
-| `ErrBreakerOpen` | 熔断器打开，冷却期内快速失败 | `Breaker` / `BalancedProvider` |
+| `ErrBreakerOpen` | 熔断器打开，冷却期内快速失败 | `Breaker` |
 | `ErrLocalRateLimited` | 客户端限流拦下，区别于平台回传的 `ErrRateLimit` | `RateLimiter` |
-| `ErrQuotaExceeded` | 配额或预算耗尽 | `QuotaMiddleware` / `TokenBudget` / `CostBudget` |
-| `ErrModelNotPriced` | 模型未配价，不静默按零计费 | `PricingTable` / `PricingRegistry` |
-| `ErrInvalidPricing` | 费率或用量数据非法 | `PricingTable` / `PricingRegistry` |
 
 这些错误默认都会触发降级链与均衡器的成员切换（`ErrBreakerOpen`、
 `ErrLocalRateLimited`），或直接返回给调用方（配额与计价类）。
@@ -2974,151 +2176,11 @@ history = append(history, provider.Message{
 })
 ```
 
-### 上下文窗口管理（省 token）
-
-长对话必然触及上下文窗口与成本问题，库提供三个渐进式工具：
-
-**1. 估算**：`EstimateTokens` 无 tokenizer 依赖的启发式估算（CJK 按字、其余按 4 字符/token，
-误差 ±30%），用于预算判断，不用于计费结算：
-
-```go
-if provider.EstimateTokens(history) > 30_000 { /* 触发裁剪或压缩 */ }
-```
-
-**2. 硬裁剪**：`TrimMessagesToTokenBudget` 保留全部 system 与最新消息，从旧到新丢弃超预算部分；
-以"消息组"为单位裁剪（assistant 的 tool_calls 与其结果不拆分），不会裁出非法序列：
-
-```go
-history = provider.TrimMessagesToTokenBudget(history, 30_000)
-```
-
-**3. 摘要压缩**：`CompactMessages` 把较早的历史用一次 LLM 调用总结为摘要消息，
-保留最近 N 组原文——比硬裁剪多花一次摘要调用，但信息不丢失，多轮下净节省显著：
-
-```go
-result, err := provider.CompactMessages(ctx, p, history, provider.CompactOptions{
-    Model:            "deepseek-v4-flash", // 摘要用便宜模型即可
-    KeepRecentGroups: 4,               // 最近 4 组保留原文
-    TriggerTokens:    20_000,          // 低于阈值不压缩，避免短对话空耗
-})
-if err == nil && result.Compacted() {
-    history = result.Messages
-    // 业务缓存摘要，供后续轮次直接组装（system + 摘要 + 新原文），无需每轮压缩：
-    conv.UpdateSummary(result.Summary, result.CompactedCount) // 摘要正文 + 覆盖的消息条数
-}
-```
-
-正确用法是**业务侧缓存压缩结果、按阈值低频触发**，而不是每轮都压缩；
-摘要调用自身的 usage 会经计费 hook 正常归账。压缩失败返回错误，可回退到硬裁剪。
-固定的 system + 摘要前缀还有利于命中平台的 prompt caching，进一步降低输入成本。
-
 ## 在 Gin/HTTP 服务中使用
 
-```go
-var reg *provider.Registry
+在服务启动时构造 Provider 并注入 handler。每次调用传入 `c.Request.Context()`，让请求取消传播到上游。业务负责认证、渠道选择、历史和额度；核心只接收已构造的 `ChatRequest`。
 
-func init() {
-    reg = provider.QuickRegistry(map[provider.ProviderName]string{
-        provider.ProviderDeepSeek: os.Getenv("DEEPSEEK_API_KEY"),
-        provider.ProviderQwen:    os.Getenv("QWEN_API_KEY"),
-    })
-}
-
-func chatHandler(c *gin.Context) {
-    var req struct {
-        Provider string `json:"provider"`
-        Model    string `json:"model"`
-        Message  string `json:"message" binding:"required"`
-    }
-    if err := c.ShouldBindJSON(&req); err != nil {
-        c.JSON(400, gin.H{"error": err.Error()})
-        return
-    }
-
-    var p provider.Provider
-    var err error
-    if req.Provider != "" {
-        p, err = reg.Get(provider.ProviderName(req.Provider))
-    } else {
-        p, err = reg.Default()
-    }
-    if err != nil {
-        c.JSON(400, gin.H{"error": err.Error()})
-        return
-    }
-
-    resp, err := p.Chat(c.Request.Context(), &provider.ChatRequest{
-        Model:    req.Model,
-        Messages: []provider.Message{provider.UserText(req.Message)},
-    })
-    if err != nil {
-        c.JSON(500, gin.H{"error": err.Error()})
-        return
-    }
-    c.JSON(200, gin.H{"content": resp.Content, "usage": resp.Usage})
-}
-```
-
-### SSE 流式转发（含计费与停止生成）
-
-对话产品的典型形态：前端 SSE 打字机 + 按用户计费 + 停止生成。三者组合的完整示例：
-
-```go
-func streamHandler(c *gin.Context) {
-    // 鉴权后注入身份与会话（计费 hook 依赖）；剩余额度硬限按需注入
-    ctx := provider.WithUserID(c.Request.Context(), c.GetString("uid"))
-    ctx = provider.WithConversationID(ctx, c.Query("conv"))
-    // ctx = provider.WithTokenBudget(ctx, remainingTokens)
-
-    stream, err := billed.ChatStream(ctx, &provider.ChatRequest{
-        Messages: history,
-    })
-    if err != nil {
-        if errors.Is(err, provider.ErrQuotaExceeded) {
-            c.JSON(429, gin.H{"error": "额度已用尽"})
-            return
-        }
-        c.JSON(500, gin.H{"error": err.Error()})
-        return
-    }
-    defer stream.Close() // 客户端断开时提前 Close，stream_complete 事件仍会上报
-
-    c.Header("Content-Type", "text/event-stream")
-    c.Header("Cache-Control", "no-cache")
-    for {
-        chunk, err := stream.Recv()
-        if err != nil {
-            break // io.EOF 或错误：计费 hook 已在流终止时自动归账
-        }
-        if chunk.Delta != "" {
-            c.SSEvent("delta", chunk.Delta)
-            c.Writer.Flush()
-        }
-        if chunk.FinishReason != "" {
-            c.SSEvent("finish", chunk.FinishReason)
-        }
-    }
-    c.SSEvent("done", "")
-}
-```
-
-前端"停止生成"按钮只需断开 SSE 连接：`c.Request.Context()` 取消会终止上游流，
-`stream_complete` 事件以 `StreamFinish=closed/error` 上报，计费侧可识别并按策略处理。
-智能体场景把 `ChatStream` 换成 `RunToolLoopStream`，onChunk 里做同样的 SSEvent 转发即可。
-
-请求示例：
-
-```bash
-# 使用默认 provider
-curl -X POST http://localhost:8080/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message": "你好"}'
-
-# 指定使用千问 + 特定模型
-curl -X POST http://localhost:8080/chat \
-  -H "Content-Type: application/json" \
-  -d '{"provider": "qwen", "model": "qwen-max", "message": "你好"}'
-```
+SSE 转发使用 `ChatStream`，持续读取到 EOF；收到 `FinishReason` 后仍需读取尾帧 Usage。客户端断开时关闭流，并处理 `Close` 错误。v2 的 `WithObservability` 提供流终止事件，应用通过自己的 context value 关联身份和调用 ID；示例见 [迁移说明](MIGRATION.md)。
 
 ## 各平台常用模型速查
 
@@ -3302,23 +2364,9 @@ curl -X POST http://localhost:8080/chat \
 
 ## 与编排框架集成（Eino 等）
 
-本库定位是 **provider 客户端层**：统一多平台调用、用量统计、计费、配额。
-它不做 graph 编排、RAG pipeline、多 agent 协作——那是编排框架（如 [Eino](https://github.com/cloudwego/eino)）的职责。
-两者不互斥，集成边界如下：
+使用独立 [einoadapter](../einoadapter/README.md) 把 Provider 接到固定 Eino v0.9.21。每次 Generate/Stream 对应一次核心 Chat/ChatStream；消息、思考签名、工具增量、完整 Usage 与元数据由 adapter 转换，核心不依赖 Eino。
 
-- **适配方向**：Eino 的 `ChatModel` 是接口，可写一个薄适配器把本库 `Provider` 包装成
-  Eino ChatModel（`Chat` ↔ `Generate`、`ChatStream` ↔ `Stream`，`Message`/`ContentPart`
-  与 `schema.Message` 的角色、多模态、tool call 字段均可无损互转）。编排归 Eino，
-  provider 与计费层原样保留。
-- **计费不受影响**：`WithObservability` + `NewBillingHook` 挂在 provider 实例上，
-  Eino 经适配器调用时事件照常触发，ctx 中的 UserID/ConversationID 沿 Eino 的
-  ctx 链路自然透传，归账逻辑无需改动。
-- **不要在两层重复做**：接入编排框架后，工具循环（`RunToolLoopStream`）、
-  上下文管理（`TrimMessagesToTokenBudget`/`CompactMessages`）可改由框架的
-  agent/memory 能力承担，避免两层各裁一遍历史。
-- **何时值得接**：多路召回 RAG、多 agent 工作流成为核心需求时再引入；
-  单知识库检索（embedding + 向量库 + 拼 prompt）用本库的 Embedding 能力即可，
-  不需要为此上编排框架。
+应用负责 Chain/Graph、工具执行、历史、路由和计费。计量接到通用 `ObserveHook`，通过应用自己的 context value 关联调用 ID 与身份，保留唯一写入入口。adapter 尚未发布，本地联调方式见其 README；迁移细节见 [MIGRATION.md](MIGRATION.md)。
 
 ## 核心类型参考
 
@@ -3539,29 +2587,6 @@ type TokenCountResponse struct {
 }
 ```
 
-### RunToolLoop
-
-```go
-func RunToolLoop(
-    ctx context.Context,
-    p Provider,
-    req *ChatRequest,          // 初始请求（含 Messages 和 Tools）
-    maxRounds int,             // 最大循环次数，推荐 5-10
-    handler ToolHandler,       // func(ctx, name, arguments) (result, error)
-) (*ChatResponse, error)
-```
-
-### Registry
-
-```go
-reg := provider.NewRegistry()
-reg.Register(p)                           // 注册
-reg.Get(provider.ProviderDeepSeek)        // 按名称获取
-reg.Default()                             // 获取默认
-reg.SetDefault(provider.ProviderQwen)     // 设置默认
-reg.Names()                               // 列出所有已注册名称
-```
-
 ### 便捷函数
 
 ```go
@@ -3569,25 +2594,14 @@ reg.Names()                               // 列出所有已注册名称
 provider.SimpleChat(ctx, p, "你好")                           // 一问一答
 provider.SimpleChatWithSystem(ctx, p, "你是助手", "你好")       // 带 system prompt
 provider.CollectStream(ctx, p, req, onChunkFn)                // 流式收集+回调
-provider.RunToolLoop(ctx, p, req, maxRounds, handler)         // Tool Use 自动循环
-provider.GenerateJSON[MyType](ctx, p, req)                    // JSON 结构化输出 → Go 类型
-provider.GenerateJSONWithValidator[MyType](ctx, p, req, fn)   // JSON 结构化输出 → Go 类型 + 业务校验
-provider.GenerateJSONInto(ctx, p, req, &out)                  // 解码到已有变量
-provider.GenerateJSONIntoWithValidator(ctx, p, req, &out, fn) // 解码到已有变量 + 业务校验
-task.Run(ctx, p, params, input)                               // PromptTask 单轮任务 → 文本
-provider.RunPromptTaskJSON[P, T](ctx, task, p, params, input) // PromptTask 单轮任务 → JSON 结构化输出
 provider.DefaultHTTPClient()                                  // 默认传输层超时 HTTP 客户端
 provider.NewIdleTimeoutDoer(next, timeout)                    // 响应体读取空闲超时
 provider.WithRetry(p, provider.RetryOptions{...})             // 为 Chat / ChatStream 创建阶段添加重试
-provider.NewFallbackProvider(primary, backup)                 // 多 provider fallback
 provider.WithObservability(p, provider.ObserveOptions{...})   // Chat / ChatStream 观测 hook
 
 // Embedding
 provider.SimpleEmbed(ctx, emb, "你好")                        // 单条文本 → 向量
 provider.EmbedBatch(ctx, emb, []string{"a", "b"})             // 批量 → 向量数组
-provider.CosineSimilarity(a, b)                               // 两个向量余弦相似度
-provider.RankBySimilarity(query, candidates)                  // 按相似度排序
-provider.MostSimilar(query, candidates)                       // 取最相似向量
 provider.NewEmbedderFromPreset(name, apiKey, model)           // 从预设构造
 provider.NewEmbedder(EmbedderConfig{...})                     // 完全自定义
 provider.WithEmbedderObservability(emb, provider.ObserveOptions{...}) // Embed 观测 hook
@@ -3667,11 +2681,11 @@ caps.Supports(provider.CapabilityVision) bool
 
 **为什么 Temperature 和 TopP 是指针类型？**
 
-因为这两个参数的零值 `0.0` 是有意义的（表示贪婪采样），用指针可以区分"未设置"和"设置为 0"。未设置时由各平台使用自己的默认值。
+用指针可以区分“未设置”和“设置为 0”。nil 时不下发对应字段，由平台决定默认行为；显式 `0` 在 OpenAI 兼容 Chat/ChatStream 的最终 JSON 请求中保留为 `0`，不受 SDK 的 `omitempty` 影响。具体取值约束与含义以目标平台为准。
 
-**Tool Use 的 handler 返回 error 时会怎样？**
+**工具执行失败如何处理？**
 
-`RunToolLoop` 会将 error 信息包装为 `{"error": "..."}` 回传给模型。这样模型有机会换一种方式重试或告知用户，而不是直接中断整个流程。
+应用决定中止、重试或把经过脱敏的错误转换成工具结果；核心只负责传输结果消息。
 
 ## 扩展
 
@@ -3820,14 +2834,7 @@ func main() {
         return
     }
 
-    reg := provider.NewRegistry()
-    reg.Register(claude)
-
-    p, err := reg.Get("claude")
-    if err != nil {
-        fmt.Println("get provider:", err)
-        return
-    }
+    p := claude
 
     ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
     defer cancel()
@@ -3848,7 +2855,7 @@ func main() {
 - 如果厂商支持 tool use，把工具调用映射到 `provider.ChatResponse.ToolCalls`
 - 流式响应把文本增量映射到 `provider.StreamChunk.Delta`
 - 流结束时把厂商结束原因映射到 `provider.StreamChunk.FinishReason`
-- 只要 `Chat` / `ChatStream` 的输出符合统一类型，`provider.CollectStream` 和 `provider.RunToolLoop` 就能直接继续使用
+- 只要 `Chat` / `ChatStream` 的输出符合统一类型，`provider.CollectStream` 就能直接继续使用
 
 ## 运行测试
 

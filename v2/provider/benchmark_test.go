@@ -1,104 +1,10 @@
 package provider
 
 import (
-	"context"
-	"io"
 	"strings"
 	"testing"
 	"time"
 )
-
-func BenchmarkCosineSimilarity(b *testing.B) {
-	a := make([]float32, 1536)
-	c := make([]float32, 1536)
-	for i := range a {
-		a[i] = float32(i%7) + 0.1
-		c[i] = float32(i%5) + 0.2
-	}
-
-	b.ReportAllocs()
-	for b.Loop() {
-		_, err := CosineSimilarity(a, c)
-		if err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func BenchmarkRankBySimilarity(b *testing.B) {
-	query := make([]float32, 768)
-	candidates := make([][]float32, 128)
-	for i := range query {
-		query[i] = float32(i%11) + 0.1
-	}
-	for i := range candidates {
-		candidates[i] = make([]float32, len(query))
-		for j := range candidates[i] {
-			candidates[i][j] = float32((i+j)%13) + 0.2
-		}
-	}
-
-	b.ReportAllocs()
-	for b.Loop() {
-		_, err := RankBySimilarity(query, candidates)
-		if err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func BenchmarkGenerateJSON(b *testing.B) {
-	type payload struct {
-		Value string `json:"value"`
-	}
-
-	p := &stubProvider{
-		name: ProviderOpenAI,
-		chat: func(context.Context, *ChatRequest) (*ChatResponse, error) {
-			return &ChatResponse{Content: `{"value":"ok"}`}, nil
-		},
-		chatStream: func(context.Context, *ChatRequest) (*StreamReader, error) {
-			return NewStreamReader(func() (*StreamChunk, error) { return nil, io.EOF }, nil), nil
-		},
-	}
-	req := &ChatRequest{Messages: []Message{UserText("value")}}
-
-	b.ReportAllocs()
-	for b.Loop() {
-		_, _, err := GenerateJSON[payload](context.Background(), p, req)
-		if err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func BenchmarkPricingTableCost(b *testing.B) {
-	table := PricingTable{
-		"deepseek-chat": {
-			InputPer1M:      2_000_000,
-			OutputPer1M:     8_000_000,
-			CacheReadPer1M:  200_000,
-			CacheWritePer1M: 2_000_000,
-			ReasoningPer1M:  8_000_000,
-			Currency:        "CNY",
-		},
-	}
-	usage := Usage{
-		PromptTokens:     12_000,
-		CompletionTokens: 3_000,
-		CacheReadTokens:  8_000,
-		ReasoningTokens:  1_000,
-		TotalTokens:      15_000,
-	}
-
-	b.ReportAllocs()
-	for b.Loop() {
-		micros, _, err := table.Cost("deepseek-chat", usage)
-		if err != nil || micros <= 0 {
-			b.Fatal("unexpected pricing result")
-		}
-	}
-}
 
 // benchmarkHistory 构造一份贴近真实对话的长历史：40 轮混合中英文 + 工具调用组。
 func benchmarkHistory() []Message {
@@ -110,8 +16,10 @@ func benchmarkHistory() []Message {
 		)
 		if i%5 == 0 {
 			msgs = append(msgs,
-				Message{Role: RoleAssistant, Content: []ContentPart{TextPart("")},
-					ToolCalls: []ToolCall{{ID: "c1", Function: FunctionCall{Name: "query_metrics", Arguments: `{"quarter":"Q3","fields":["revenue","margin"]}`}}}},
+				Message{
+					Role: RoleAssistant, Content: []ContentPart{TextPart("")},
+					ToolCalls: []ToolCall{{ID: "c1", Function: FunctionCall{Name: "query_metrics", Arguments: `{"quarter":"Q3","fields":["revenue","margin"]}`}}},
+				},
 				ToolResultMessage("c1", `{"revenue":1234567,"margin":0.38}`),
 			)
 		}
@@ -119,26 +27,14 @@ func benchmarkHistory() []Message {
 	return msgs
 }
 
-// BenchmarkEstimateTokens 基准化额度预检热路径：
-// TokenBudget/CostBudget middleware 每请求对全部历史执行一次估算。
-func BenchmarkEstimateTokens(b *testing.B) {
+// BenchmarkRateLimitEstimateTokens 基准化额度预检热路径：
+// 客户端限流每次请求对全部历史执行一次估算。
+func BenchmarkRateLimitEstimateTokens(b *testing.B) {
 	msgs := benchmarkHistory()
 	b.ReportAllocs()
 	for b.Loop() {
-		if EstimateTokens(msgs) <= 0 {
+		if estimateTokens(msgs) <= 0 {
 			b.Fatal("unexpected estimate")
-		}
-	}
-}
-
-// BenchmarkTrimMessagesToTokenBudget 基准化组感知历史裁剪。
-func BenchmarkTrimMessagesToTokenBudget(b *testing.B) {
-	msgs := benchmarkHistory()
-	budget := EstimateTokens(msgs) / 2
-	b.ReportAllocs()
-	for b.Loop() {
-		if out := TrimMessagesToTokenBudget(msgs, budget); len(out) == 0 {
-			b.Fatal("unexpected empty result")
 		}
 	}
 }

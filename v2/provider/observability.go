@@ -386,3 +386,15 @@ func firstString(value, fallback string) string {
 	}
 	return fallback
 }
+
+// CombineObserveHooks 将多个 ObserveHook 合并为一个，按传入顺序依次调用，
+// 便于同时挂载日志观测与计费等多个切面。nil hook 会被跳过。
+func CombineObserveHooks(hooks ...ObserveHook) ObserveHook {
+	return func(ctx context.Context, event ObserveEvent) {
+		for _, hook := range hooks {
+			if hook != nil {
+				hook(ctx, event)
+			}
+		}
+	}
+}

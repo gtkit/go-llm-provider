@@ -4,7 +4,7 @@ go 1.27
 
 require (
 	github.com/gtkit/json/v2 v2.1.1
-	github.com/sashabaranov/go-openai v1.42.0
+	github.com/sashabaranov/go-openai v1.42.1
 	github.com/stretchr/testify v1.12.1
 )
 

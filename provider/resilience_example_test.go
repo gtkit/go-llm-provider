@@ -25,26 +25,6 @@ func ExampleWithRetry() {
 	// Output: true
 }
 
-func ExampleNewFallbackProviderWithOptions() {
-	primary, _ := provider.NewProvider(provider.ProviderConfig{
-		Name: provider.ProviderDeepSeek, APIKey: "sk-key-a", Model: "deepseek-chat",
-	})
-	backup, _ := provider.NewProvider(provider.ProviderConfig{
-		Name: provider.ProviderQwen, APIKey: "sk-key-b", Model: "qwen3.6-plus",
-	})
-
-	// 降级链：各成员在构造时配置模型，请求里 Model 留空；
-	// 自定义判定放宽切换条件（key 失效也切换到备用厂商）。
-	fb, err := provider.NewFallbackProviderWithOptions(
-		[]provider.Provider{primary, backup},
-		provider.FallbackOptions{ShouldFallback: func(err error) bool {
-			return provider.IsRetryableError(err) || errors.Is(err, provider.ErrAuth)
-		}},
-	)
-	fmt.Println(fb != nil, err == nil)
-	// Output: true true
-}
-
 // breakerExampleProvider 总是返回可重试的服务端错误，用于演示熔断与均衡。
 type breakerExampleProvider struct{}
 
@@ -67,25 +47,6 @@ func (breakerExampleProvider) ChatStream(context.Context, *provider.ChatRequest)
 		Code:      provider.ErrorCodeServerError,
 		Retryable: true,
 	}
-}
-
-// namedExampleProvider 是恒成功的成员，回复内容即自己的名字。
-type namedExampleProvider struct {
-	name provider.ProviderName
-}
-
-func (p namedExampleProvider) Name() provider.ProviderName {
-	return p.name
-}
-
-func (p namedExampleProvider) Chat(context.Context, *provider.ChatRequest) (*provider.ChatResponse, error) {
-	return &provider.ChatResponse{Content: string(p.name)}, nil
-}
-
-func (p namedExampleProvider) ChatStream(context.Context, *provider.ChatRequest) (*provider.StreamReader, error) {
-	return provider.NewStreamReader(func() (*provider.StreamChunk, error) {
-		return &provider.StreamChunk{Delta: string(p.name), FinishReason: "stop"}, nil
-	}, nil), nil
 }
 
 func exampleChatRequest() *provider.ChatRequest {
@@ -142,31 +103,4 @@ func ExampleFailureRateTrip() {
 	// 窗口内成功: 9
 	// 窗口内失败: 1
 	// 熔断状态: closed
-}
-
-func ExampleNewBalancedProvider() {
-	lb, err := provider.NewBalancedProvider(
-		provider.BalanceMember{Provider: namedExampleProvider{name: provider.ProviderDeepSeek}, Weight: 3},
-		provider.BalanceMember{Provider: namedExampleProvider{name: provider.ProviderZhipu}, Weight: 1},
-	)
-	if err != nil {
-		fmt.Println("构造失败:", err)
-		return
-	}
-
-	// 平滑加权轮询按 3:1 把流量铺开，低权重成员插在中间而非攒到末尾。
-	for range 4 {
-		resp, chatErr := lb.Chat(context.Background(), exampleChatRequest())
-		if chatErr != nil {
-			fmt.Println("调用失败:", chatErr)
-			return
-		}
-		fmt.Println(resp.Content)
-	}
-
-	// Output:
-	// deepseek
-	// deepseek
-	// zhipu
-	// deepseek
 }

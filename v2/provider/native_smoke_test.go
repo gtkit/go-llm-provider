@@ -189,7 +189,7 @@ func TestAnthropicCacheWriteTierSmoke(t *testing.T) {
 	t.Logf("usage=%+v", usage)
 
 	// 无论是否命中缓存，归一化后的包含关系必须成立，否则计价会直接失败。
-	require.NoError(t, validateUsage(usage), "归一化后的用量必须自洽")
+	require.LessOrEqual(t, usage.CacheReadTokens+usage.CacheWriteTokens, usage.PromptTokens, "缓存用量必须包含在输入用量内")
 
 	if usage.CacheWriteTokens == 0 {
 		t.Skip("本次调用未产生缓存写入（可能已命中缓存或未达最小可缓存长度），分档断言跳过")

@@ -248,7 +248,7 @@ func TestArkChatStreamInjectsThinking(t *testing.T) {
 }
 
 // ============================================================
-// Embedding / Registry 接入
+// Embedding 接入
 // ============================================================
 
 func TestArkEmbedderFromPreset(t *testing.T) {
@@ -271,15 +271,6 @@ func TestArkEmbedderFromPreset(t *testing.T) {
 		require.NotNil(t, e)
 		assert.Equal(t, ProviderArk, e.Name())
 	})
-}
-
-func TestArkQuickRegistry(t *testing.T) {
-	t.Parallel()
-
-	reg := QuickRegistry(map[ProviderName]string{ProviderArk: "ark-test"})
-
-	assert.Equal(t, []ProviderName{ProviderArk}, reg.Names())
-	assert.Equal(t, []ProviderName{ProviderArk}, reg.EmbedderNames())
 }
 
 // ============================================================

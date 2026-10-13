@@ -1491,7 +1491,7 @@ func (r *trackingReadCloser) Close() error {
 // TestUsageFromAnthropicCacheWriteTiers 覆盖缓存写入分档明细的归一化。
 // 归一化层的契约是"产出自洽数据"：无论平台给的总数与明细是否一致，
 // 输出都必须满足 CacheWrite5m + CacheWrite1h <= CacheWriteTokens，
-// 即能通过 validateUsage——否则计价会直接失败。
+// 调用方可直接使用这些原始用量事实。
 func TestUsageFromAnthropicCacheWriteTiers(t *testing.T) {
 	t.Parallel()
 
@@ -1563,8 +1563,8 @@ func TestUsageFromAnthropicCacheWriteTiers(t *testing.T) {
 			assert.Equal(t, tc.want1h, usage.CacheWrite1hTokens)
 			assert.Equal(t, tc.wantRead, usage.CacheReadTokens)
 
-			// 归一化结果必须可直接计价，不因内部不一致被拒。
-			require.NoError(t, validateUsage(usage),
+			// 分档明细不能超过写入总量。
+			require.LessOrEqual(t, usage.CacheWrite5mTokens+usage.CacheWrite1hTokens, usage.CacheWriteTokens,
 				"归一化输出必须自洽：分档需为写入总量的子集")
 		})
 	}
@@ -1732,25 +1732,6 @@ func TestAnthropicProviderChatCacheWriteTiersEndToEnd(t *testing.T) {
 		CacheWrite1hTokens: 500,
 		TotalTokens:        2407,
 	}, resp.Usage)
-
-	// 分档明细可直接计价：1h 档按自己的更高单价计。
-	table := PricingTable{"claude-sonnet-4-5": {
-		InputPer1M: 3_000_000, OutputPer1M: 15_000_000,
-		CacheReadPer1M: 300_000, CacheWritePer1M: 3_750_000,
-		CacheWrite5mPer1M: 3_750_000, CacheWrite1hPer1M: 6_000_000,
-		Currency: "CNY",
-	}}
-	tieredMicros, _, err := table.Cost("claude-sonnet-4-5", resp.Usage)
-	require.NoError(t, err)
-
-	// 同样的 token 数，抹掉分档明细后按单一写入单价计价，金额应更低——
-	// 这正是分档要修复的少算。
-	flat := resp.Usage
-	flat.CacheWrite5mTokens, flat.CacheWrite1hTokens = 0, 0
-	flatMicros, _, err := table.Cost("claude-sonnet-4-5", flat)
-	require.NoError(t, err)
-	assert.Greater(t, tieredMicros, flatMicros,
-		"1h 档单价更高，分档计价必须高于按单一写入单价计价")
 }
 
 // TestAnthropicStreamThinkingBlockEvents 锁定思考块签名与加密块在流上的透出：

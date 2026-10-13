@@ -26,15 +26,7 @@ func smokeToolLoop(t *testing.T, p Provider, thinking *Thinking) {
 	ctx, cancel := context.WithTimeout(t.Context(), smokeToolLoopTimeout)
 	defer cancel()
 
-	var rounds int
-	counting := &stubProvider{
-		name: p.Name(),
-		chat: func(ctx context.Context, req *ChatRequest) (*ChatResponse, error) {
-			rounds++
-			return p.Chat(ctx, req)
-		},
-	}
-	resp, err := RunToolLoop(ctx, counting, &ChatRequest{
+	req := &ChatRequest{
 		Messages: []Message{
 			SystemText("你必须先调用 get_time 工具拿到当前时间，再用一句话回答。"),
 			UserText("现在几点？"),
@@ -46,12 +38,18 @@ func smokeToolLoop(t *testing.T, p Provider, thinking *Thinking) {
 		}}},
 		Thinking:  thinking,
 		MaxTokens: 512,
-	}, 4, func(context.Context, string, string) (string, error) {
-		return `{"time":"2026-09-20T10:00:00+08:00"}`, nil
-	})
+	}
+	first, err := p.Chat(ctx, req)
+	require.NoError(t, err)
+	require.NotEmpty(t, first.ToolCalls)
+	req.Messages = append(req.Messages, first.AssistantMessage())
+	for _, call := range first.ToolCalls {
+		require.Equal(t, "get_time", call.Function.Name)
+		req.Messages = append(req.Messages, ToolResultMessageFor(call, `{"time":"2026-09-20T10:00:00+08:00"}`))
+	}
+	resp, err := p.Chat(ctx, req)
 	require.NoError(t, err)
 	assert.NotEmpty(t, resp.Content)
-	assert.GreaterOrEqual(t, rounds, 2, "应至少经历一次工具调用回传")
 }
 
 // V-01：Anthropic 原生结构化输出接受无属性的对象 schema（JSONObjectFormat 的落点）。
@@ -89,13 +87,15 @@ func TestVerifyGemini25ResponseJSONSchemaSmoke(t *testing.T) {
 	type city struct {
 		City string `json:"city"`
 	}
-	out, _, err := GenerateJSON[city](ctx, p, &ChatRequest{
+	resp, err := p.Chat(ctx, &ChatRequest{
 		Messages: []Message{UserText("返回巴黎所在城市字段 city")},
 		ResponseFormat: JSONSchemaFormat("city", ParamSchema{
 			Type: "object", Properties: map[string]ParamSchema{"city": {Type: "string"}}, Required: []string{"city"},
 		}),
 	})
 	require.NoError(t, err)
+	var out city
+	require.NoError(t, json.Unmarshal([]byte(resp.Content), &out))
 	assert.NotEmpty(t, out.City)
 }
 

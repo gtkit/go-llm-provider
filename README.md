@@ -2,7 +2,11 @@
 
 Go 语言统一多模型 LLM 调用库。一套代码接入 OpenAI 以及 DeepSeek、通义千问、智谱、百度千帆、硅基流动、Moonshot 等 OpenAI 兼容平台。
 
-> 版本说明：仓库根目录维护 `v1` 代码线，服务存量下游——除缺陷修复外，可回移与类型演进解耦的可靠性能力（重试/降级/用量统计）；多模态、结构化输出、计费体系等类型演进类能力仅在 [`./v2/`](./v2/README.md) 主开发线。
+Eino 用户可使用独立的 [`einoadapter/`](einoadapter/README.md) 开发模块：适配固定 Eino v0.9.21，核心保持不依赖框架。当前通过本地 workspace 联调，尚未发布 adapter 版本。
+
+> 根目录为 v1，`v2/` 提供多模态与更多原生协议接口。本次直接精简两条代码线；已发布 tag 不变，发布版本以后再定。
+
+当前工作区已删除清单中的业务策略 API，属于尚未发布的不兼容变更；模块路径和版本暂不调整。请按 [迁移说明](MIGRATION.md) 将身份、账务、工具执行、历史与路由留在应用；Eino 通过独立 adapter 接入。
 
 ## v2 比 v1 多了什么
 
@@ -10,18 +14,15 @@ Go 语言统一多模型 LLM 调用库。一套代码接入 OpenAI 以及 DeepSe
 
 - 多模态消息：`Message.Content` 升级为 `[]ContentPart`，支持文本、图片 URL、图片 bytes、文件 bytes/URL/ID。
 - Thinking / Reasoning：`ChatRequest.Thinking`（档位与 token 预算两套口径，覆盖 OpenAI / Ark / DeepSeek / Anthropic / Gemini）、`ChatResponse.Reasoning`、`StreamChunk.ReasoningDelta`、`Usage.ReasoningTokens`。
-- Structured Output：`ResponseFormat`、`JSONObjectFormat`、`JSONSchemaFormatStrict` 与 `GenerateJSON` 类型化解码助手。
+- Structured Output：`ResponseFormat`、`JSONObjectFormat`、`JSONSchemaFormatStrict`，解码和校验由调用方负责。
 - 确定性与多候选：`Seed`、`CandidateCount`。
 - Anthropic prompt caching：`WithCacheControl(..., CacheControlEphemeral())`。
 - Gemini 原生 token counting：`TokenCounter` / `CountTokens`。
 - 本地与企业入口：`ProviderOllama`、`NewAzureOpenAIProvider`、`NewBedrockOpenAIProvider`。
 - 更多 OpenAI 兼容 preset：xAI、Groq、Mistral、Cohere。
-- 更完整的横切能力：`ResponseMetadata`、`WithObservability`、客户端限流 `RateLimiter`（RPM / TPM 令牌桶 + 响应头自适应）、价格表原子热替换 `PricingRegistry`、重排序 `Reranker`。可靠性层的 `WithRetry`、`NewFallbackProvider`、`NewBreaker`、`NewBalancedProvider` 已回移 v1。
-- 按用户计费全链路：流式/缓存/推理 token 统一统计、计费 hook 与用量查询、定价表与配额/余额硬限、上下文摘要压缩、流式工具循环、多模态输出（Gemini 图像）。
+- 更完整的横切能力：`ResponseMetadata`、`WithObservability`、客户端限流 `RateLimiter` 与重排序 `Reranker`。`WithRetry`、`NewBreaker` 同时在 v1 提供。
+- 完整原始用量事实：缓存、推理和搜索用量供应用计量；支持 Gemini 图像输出。
 
-v1 继续保留兼容维护，并跟进与类型演进解耦的可靠性能力（重试、降级、熔断、负载均衡）；
-多模态、结构化输出、本地推理、token counting、计费体系等依赖 `Message.Content` 类型演进
-或观测基座的能力只在 v2 增加。
 
 ## 为什么做这个
 
@@ -31,9 +32,8 @@ v1 继续保留兼容维护，并跟进与类型演进解耦的可靠性能力�
 
 - 预置了各平台的 BaseURL 和推荐模型，传个 APIKey 就能用
 - 统一的 `Provider` 接口，业务代码不需要关心底层是哪个平台
-- `Registry` 注册表管理多个 Provider，运行时按名称切换
 - 支持非流式和流式两种调用模式
-- 完整的 Tool Use / Function Calling 支持，包含自动循环执行的 `RunToolLoop`
+- Tool Use / Function Calling 协议：声明工具、接收调用、回传结果，执行由应用管理
 - 主包保持轻量，零额外厂商 SDK 依赖；OpenAI 兼容路径复用 `sashabaranov/go-openai`，非兼容路径用标准库 `net/http`
 
 ## 项目结构
@@ -44,33 +44,26 @@ llm-provider/
 ├── README.md
 ├── CHANGELOG.md
 ├── provider/
-│   ├── provider.go            # 核心：Provider 接口、Registry、请求/响应、Tool Use 类型
+│   ├── provider.go            # 核心：Provider 接口、请求/响应、Tool Use 类型
 │   ├── presets.go             # 各平台预设配置（BaseURL + Chat/Embedding 默认模型）
 │   ├── helpers.go             # Chat 便捷函数：SimpleChat、CollectStream
-│   ├── toolrun.go             # RunToolLoop：Tool Use 自动循环执行器
 │   ├── embedder.go            # Embedder 接口、请求/响应、openaiEmbedder 实现
 │   ├── embedder_helpers.go    # Embedding 便捷函数：SimpleEmbed、EmbedBatch
 │   ├── errors.go              # ProviderError / ErrorCode / WrapProviderError
 │   ├── middleware.go          # Middleware / Handler 类型 + WithMiddlewares 装饰器
 │   ├── retry.go               # WithRetry / RetryMiddleware / BackoffFunc
-│   ├── fallback.go            # FallbackProvider 多 provider 失败切换
 │   ├── breaker.go             # Breaker 熔断器：滑动窗口计数 + 指数退避冷却 + 半开探测
-│   ├── balance.go             # BalancedProvider 加权负载均衡 + 故障转移
 │   ├── provider_test.go       # Chat / Tool Use 单测
 │   ├── embedder_test.go       # Embedding 单测
 │   ├── errors_test.go         # ProviderError / ErrorCode / WrapProviderError 单测
 │   ├── middleware_test.go     # Middleware 装饰器 + 洋葱顺序测试
 │   ├── retry_test.go          # 重试与退避单测
-│   ├── fallback_test.go       # 降级链切换单测
 │   ├── breaker_test.go        # 熔断状态机 / 退避 / 中间件单测
-│   ├── balance_test.go        # 权重分布 / 故障转移 / 策略单测
 │   └── runtime_test.go        # 运行时集成测试
 └── example/
     ├── main.go                # 基础使用示例（Chat）
     ├── native/main.go         # Claude / Gemini 原生 HTTP provider 示例
     ├── tooluse/main.go        # Tool Use 手动多轮示例
-    ├── toolloop/main.go       # RunToolLoop 自动循环示例
-    ├── toolsecurity/main.go   # 工具结果间接提示注入防护示例
     ├── middleware/main.go     # Middleware：Logging / TokenStats / Retry 参考实现
     └── embedding/main.go      # Embedding + RAG 最小闭环示例
 ```
@@ -198,34 +191,27 @@ import (
 )
 
 func main() {
-    // 一行创建注册表，传入各平台 API Key（空值自动跳过）
-    reg := provider.QuickRegistry(map[provider.ProviderName]string{
-        provider.ProviderOpenAI:  os.Getenv("OPENAI_API_KEY"),
-        provider.ProviderDeepSeek: os.Getenv("DEEPSEEK_API_KEY"),
-        provider.ProviderQwen:    os.Getenv("QWEN_API_KEY"),
-        provider.ProviderZhipu:   os.Getenv("ZHIPU_API_KEY"),
-    })
-
+    p, err := provider.NewProviderFromPreset(provider.ProviderOpenAI, os.Getenv("OPENAI_API_KEY"), "")
+    if err != nil {
+        fmt.Fprintln(os.Stderr, err)
+        return
+    }
     ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
     defer cancel()
-
-    // 拿默认 provider，直接对话
-    p, _ := reg.Default()
-    reply, _ := provider.SimpleChat(ctx, p, "用一句话介绍 Go 语言")
+    reply, err := provider.SimpleChat(ctx, p, "用一句话介绍 Go 语言")
+    if err != nil {
+        fmt.Fprintln(os.Stderr, err)
+        return
+    }
     fmt.Println(reply)
 }
 ```
 
-设置环境变量后运行：
-
-```bash
-export OPENAI_API_KEY="sk-xxxxxxxx"
-go run main.go
-```
+设置 `OPENAI_API_KEY` 后运行 `go run ./example`。密钥为空时构造返回错误；模型留空使用厂商预设。其他平台使用对应的 `ProviderName` 和密钥。
 
 ## 使用方式
 
-库提供三个层级的创建方式，由简到灵活。
+使用厂商预设或自定义连接配置创建单个实例；多实例装配与路由由应用负责。
 
 ### 升级说明
 
@@ -236,40 +222,8 @@ go run main.go
 - `ToolChoice` 不再接受任意 `string/any`，请改用 `provider.ToolChoiceAuto`、`provider.ToolChoiceNone`、`provider.ToolChoiceRequired` 或 `provider.ToolChoiceFunction{...}`。
 - `EnableThinking` 目前只对 `DeepSeek` 生效；对其他 provider 开启会直接返回错误。
 - 新代码优先使用 `provider.AllPresets()` 读取预设；`provider.Presets` 仅为兼容旧代码保留。
-- 如果你不希望 `QuickRegistry` 静默跳过失败项，请改用 `QuickRegistryStrict`。
 
-### 方式一：QuickRegistry（推荐日常使用）
-
-传一组 `ProviderName -> APIKey` 的映射，自动使用预设的 BaseURL 和默认模型。空 APIKey 会被自动跳过，不会报错。
-
-```go
-reg := provider.QuickRegistry(map[provider.ProviderName]string{
-    provider.ProviderOpenAI:      os.Getenv("OPENAI_API_KEY"),
-    provider.ProviderDeepSeek:    os.Getenv("DEEPSEEK_API_KEY"),
-    provider.ProviderQwen:        os.Getenv("QWEN_API_KEY"),
-    provider.ProviderZhipu:       os.Getenv("ZHIPU_API_KEY"),
-    provider.ProviderSiliconFlow: os.Getenv("SILICONFLOW_API_KEY"),
-    provider.ProviderMoonshot:    os.Getenv("MOONSHOT_API_KEY"),
-})
-
-// 默认 provider 按成功注册的 ProviderName 排序后取第一个
-p, err := reg.Default()
-```
-
-如果你希望注册失败时立刻拿到错误，改用 `QuickRegistryStrict`：
-
-```go
-reg, err := provider.QuickRegistryStrict(map[provider.ProviderName]string{
-    provider.ProviderOpenAI:   os.Getenv("OPENAI_API_KEY"),
-    provider.ProviderDeepSeek: os.Getenv("DEEPSEEK_API_KEY"),
-    provider.ProviderQwen:     os.Getenv("QWEN_API_KEY"),
-})
-if err != nil {
-    log.Fatal(err)
-}
-```
-
-### 方式二：NewProviderFromPreset（指定模型）
+### 方式一：NewProviderFromPreset（指定模型）
 
 使用预设地址，但自定义模型名。适合同一个平台想用不同模型的场景。
 
@@ -281,12 +235,10 @@ p, err := provider.NewProviderFromPreset(
     "qwen-max",  // 留空则使用预设的默认模型
 )
 
-// 手动注册到 Registry
-reg := provider.NewRegistry()
-reg.Register(p)
+// 应用直接保存并调用 p。
 ```
 
-### 方式三：NewProvider（完全自定义）
+### 方式二：NewProvider（完全自定义）
 
 适合私有部署、自建推理服务、或新平台接入。
 
@@ -302,7 +254,7 @@ if err != nil {
 }
 ```
 
-### 方式四：走网关 / 代理覆盖 Host
+### 方式三：走网关 / 代理覆盖 Host
 
 内置平台的流量要经过自建网关、企业代理或中转服务时，保留原来的 `ProviderName`，只把 `BaseURL` 换成网关地址即可，平台标识不变。
 
@@ -352,7 +304,6 @@ e, err := provider.NewEmbedder(provider.EmbedderConfig{
 
 末尾多余的 `/` 会被忽略，`https://gw.example.com/v1` 与 `https://gw.example.com/v1/` 等价。
 
-预设构造入口（`QuickRegistry`、`NewProviderFromPreset`、`NewEmbedderFromPreset`）使用预设中的官方地址；要指向网关就用上面这组全量配置构造函数。
 
 ## 调用方式
 
@@ -432,47 +383,13 @@ for {
 需要统计用量时读取至 `io.EOF` 并采用最后一个非零 `Usage`；
 遇到不认识该参数的老网关，用 `ChatRequest.StreamUsage = &off` 关闭。
 
-#### 内置重试与多 provider 降级
+#### 内置重试
 
 ```go
-// 重试：基于 ProviderError.Retryable（限流/超时/5xx/网络才重试）
 p = provider.WithRetry(base, provider.RetryOptions{MaxAttempts: 3})
-
-// 降级链：按序尝试，可自定义切换判定（如 key 失效、业务熔断错也切换）；
-// 各成员在构造时配置模型，req.Model 留空（显式指定会覆盖所有成员、导致降级失效）
-fb, _ := provider.NewFallbackProviderWithOptions([]provider.Provider{primary, backup},
-    provider.FallbackOptions{ShouldFallback: func(err error) bool {
-        return provider.IsRetryableError(err) || errors.Is(err, provider.ErrAuth)
-    }})
 ```
 
-ctx 取消/超时后两者都会立即停止，不再发起无意义的尝试。
-`FallbackProvider` 可嵌套组合实现"厂商内穷尽 model 后再切厂商"的两级降级。
-与 v2 的差异：v1 的重试不解析 `Retry-After` 响应头（统一按本地退避策略）。
-
-```go
-// 熔断：连续失败的上游进入冷却，冷却期内请求在本地快速失败、不发往平台
-breaker := provider.NewBreaker(provider.BreakerOptions{Name: "deepseek"})
-p = provider.WithBreaker(base, breaker)
-
-// 加权负载均衡：按权重把流量分摊到多个 key / 地域，成员可各带独立熔断器
-lb, _ := provider.NewBalancedProvider(
-    provider.BalanceMember{Provider: keyA, Weight: 3, Breaker: provider.NewBreaker(provider.BreakerOptions{Name: "key-a"})},
-    provider.BalanceMember{Provider: keyB, Weight: 1, Breaker: provider.NewBreaker(provider.BreakerOptions{Name: "key-b"})},
-)
-```
-
-详见 [熔断](#熔断circuit-breaker) 与 [加权负载均衡](#加权负载均衡balancedprovider)。
-
-> 生产注意：重试/降级为 **at-least-once** 语义——供应商已处理但响应丢失时，重试会再次真实调用，造成重复执行与重复计费（Chat 接口通常无幂等键，无法在客户端去重）。成本敏感场景需保守设置重试次数与超时，并结合供应商账单对账。
-
-如果你希望保留 `Close` 错误，也可以显式处理：
-
-```go
-if err := stream.Close(); err != nil {
-    log.Printf("close stream: %v", err)
-}
-```
+重试按 `ProviderError.Retryable` 分类，context 取消或超时后停止。v1 按本地退避策略等待。供应商已处理但响应丢失时，重试可能再次产生调用与费用，调用方需按业务设置次数与超时。跨模型降级与渠道均衡由应用或网关处理。
 
 #### CollectStream — 流式收集 + 实时回调
 
@@ -562,109 +479,7 @@ provider.ParamSchema{
 }
 ```
 
-### 方式一：RunToolLoop（推荐）
-
-`RunToolLoop` 自动处理 Tool Use 的完整循环：发请求 → 检测 tool_calls → 执行工具 → 回传结果 → 再次请求 → ... 直到模型给出最终文本回复。
-
-```go
-resp, err := provider.RunToolLoop(ctx, p, &provider.ChatRequest{
-    Messages: []provider.Message{
-        {Role: provider.RoleUser, Content: "北京天气怎么样？"},
-    },
-    Tools: tools,
-}, 5, func(ctx context.Context, name, arguments string) (string, error) {
-    switch name {
-    case "get_weather":
-        var args struct {
-            City string `json:"city"`
-        }
-        json.Unmarshal([]byte(arguments), &args)
-        // 调用真实的天气 API ...
-        return `{"temperature": 28, "condition": "晴"}`, nil
-    default:
-        return "", fmt.Errorf("unknown tool: %s", name)
-    }
-})
-
-fmt.Println(resp.Content) // "北京现在 28°C，天气晴朗。"
-```
-
-参数说明：
-
-- `maxRounds`：最大循环次数（推荐 5-10），防止模型无限调用工具
-- `handler`：工具执行函数，接收函数名和 JSON 参数，返回结果字符串
-- 如果 handler 返回 error，`RunToolLoop` 默认会把**脱敏后的** JSON 错误结果回传给模型，让模型有机会纠正，但不会默认暴露原始内部错误细节
-
-如果你需要自定义错误回传格式或显式开启并行工具执行，使用 `RunToolLoopWithOptions`：
-
-```go
-resp, err := provider.RunToolLoopWithOptions(
-    ctx,
-    p,
-    req,
-    handler,
-    provider.RunToolLoopOptions{
-        MaxRounds:          5,
-        ParallelToolCalls: true,
-        ToolErrorEncoder: func(_ context.Context, tc provider.ToolCall, err error) (provider.Message, error) {
-            return provider.ToolResultMessageJSON(tc.ID, map[string]string{
-                "error": err.Error(),
-                "mode":  "custom",
-            })
-        },
-    },
-)
-```
-
-默认值：
-
-- `RunToolLoop` 等价于使用兼容默认 options 调用 `RunToolLoopWithOptions`
-- `ParallelToolCalls` 默认关闭
-- `ToolErrorEncoder` 默认使用安全脱敏编码器
-- **执行白名单**：只执行 `req.Tools` 中声明的工具。模型请求的函数名不在其中时，handler 不会被调用，该调用以 `ErrToolNotOffered` 经 `ToolErrorEncoder` 生成工具结果回传模型，循环继续
-- **参数校验**：参数非空且不是合法 JSON（常见于输出被 `max_tokens` 截断）时，handler 不会被调用，该调用以 `ErrToolArgumentsInvalid` 经 `ToolErrorEncoder` 生成工具结果回传模型，循环继续
-- **默认错误文案**：`DefaultToolErrorEncoder` 对 `ErrToolNotOffered`、`ErrToolArgumentsInvalid` 输出提示模型改正调用的固定文案，handler 返回的业务错误统一输出 `tool execution failed`
-- **panic 恢复**：执行工具期间的回调（handler、`ToolResultTransformer`、`ToolErrorEncoder`）panic 时，循环以包装 `ErrToolHandlerPanic` 的错误中止，错误文本含工具名、panic 值与堆栈；串行与并行执行一致
-
-#### 工具结果加工与响应校验
-
-工具执行结果如果来自外部不可信数据源（网页抓取、第三方 API、用户上传内容等），可能携带试图让模型偏离原任务的指令文本（间接提示注入）。`RunToolLoopOptions` 提供两个可选钩子，让调用方在结果进入对话历史前、以及最终响应返回前接入自己的处理逻辑：
-
-- `ToolResultTransformer`：在工具结果写回对话历史前对其加工。返回 error 会中止整个工具循环。
-- `ResponseValidator`：在 `RunToolLoop` 返回最终响应前对其校验。返回 error 时整个循环返回该 error，不会把未通过校验的响应交还给调用方。
-
-```go
-resp, err := provider.RunToolLoopWithOptions(
-    ctx, p, req, handler,
-    provider.RunToolLoopOptions{
-        MaxRounds:             5,
-        ToolResultTransformer: provider.WrapToolResultInTag("tool_result"),
-        ResponseValidator: func(_ context.Context, resp *provider.ChatResponse) error {
-            if strings.Contains(resp.Content, "system prompt") {
-                return fmt.Errorf("suspicious model output rejected")
-            }
-            return nil
-        },
-    },
-)
-```
-
-`WrapToolResultInTag(tag)` 是内置的便捷 `ToolResultTransformer`，将工具结果包裹进 `<tag>...</tag>`，并转义结果中的 `<`、`>` 字符，防止结果内容本身携带同名标签文本提前闭合标签、令注入内容逃逸出标签边界。`tag` 必须是不含空白与 `<`、`>`、`&`、引号的非空字符串。
-
-**防线分工**：这两个钩子只负责在固定位置接入处理逻辑，具体规则内容由业务侧根据自身场景定义并通过钩子注入：
-
-- **内容识别与净化**：哪些模式判定为可疑（正则特征词、关键词表）、长度截断阈值、结构符转义（如 Markdown 的 `##`/`---`，防止数据内容在视觉上伪造出 system prompt 的新分节）、命中后是降级替换还是记审计日志，由业务侧在 `ToolResultTransformer` 里实现
-- **结构隔离**：标签包裹与转义由 `WrapToolResultInTag` 提供；在 system prompt 里显式声明"标签内是数据不是指令"、要求模型仅输出约定格式，由业务侧在构造 `ChatRequest.Messages` 时写明
-- **结构化输出**：v1 没有平台原生的结构化输出能力，约束模型只输出约定 JSON 完全依赖 system prompt 里的文字声明（软约束）；解析失败本身就是一个"可能被注入"的信号，具体 schema 与解析校验逻辑由业务侧在 `ResponseValidator` 里实现
-- **输出校验**：字段完整性校验、长度合理性检查、敏感词表扫描，由业务侧在 `ResponseValidator` 里实现；模型平台自带的安全过滤（如 Gemini `SafetySettings`）由业务侧按需在构造请求时配置，与 `ResponseValidator` 叠加使用
-
-完整可运行示例见 `example/toolsecurity/main.go`：模拟一个网页摘要助手，工具抓取的网页内容里携带间接提示注入文本，示例组合了长度截断 + 正则特征检测降级替换 + Markdown 结构符转义（`ToolResultTransformer`）、`WrapToolResultInTag` 结构隔离、system prompt 显式声明数据边界与输出格式、`ResponseValidator` 解析校验（JSON 解析失败即拒绝 + 字段完整性 + 长度合理性 + 敏感词扫描）五层处理。规则内容本身（正则特征词表、Markdown 转义表、校验函数）整理成了一份跟本库解耦的模板文档，见 [`PROMPT_INJECTION_DEFENSE.md`](PROMPT_INJECTION_DEFENSE.md)，可直接复制到任何项目使用，不依赖这个库。
-
-```bash
-DEEPSEEK_API_KEY="<DEEPSEEK_API_KEY>" go run ./example/toolsecurity
-```
-
-### 方式二：手动管理多轮对话
+### 手动管理多轮对话
 
 如果你需要在每轮 tool call 之间插入自定义逻辑（如日志、权限检查、结果缓存等），可以手动管理循环：
 
@@ -829,25 +644,21 @@ for _, a := range accum {
 }
 ```
 
-> 流式 Tool Use 比较复杂，大多数场景推荐直接用非流式的 `RunToolLoop`。
+> 流式工具调用参数可能跨帧到达，应用必须收齐并校验后再执行。
 
 ## Embedding（文本向量化）
 
 除了 Chat，本库同时提供统一的 `Embedder` 接口，用于把文本转成向量，支撑 RAG、语义搜索、聚类、去重、推荐等场景。
 
-**关键设计**：与 Chat 共用同一套 `Registry` / `Preset` / `QuickRegistry`。`QuickRegistry` 会在注册 chat provider 时，自动为有 embedding 预设的平台（OpenAI / Qwen / 智谱 / 千帆 / 硅基流动）同时注册对应 embedder；DeepSeek 和 Moonshot 官方无 embedding 接口，静默跳过不报错。
+通过 `NewEmbedderFromPreset` 单独构造 Embedder；实例由调用方持有。
 
 ### 基础用法
 
 ```go
-reg := provider.QuickRegistry(map[provider.ProviderName]string{
-    provider.ProviderQwen:  os.Getenv("QWEN_API_KEY"),
-    provider.ProviderZhipu: os.Getenv("ZHIPU_API_KEY"),
-})
-
-// 同一个 Registry 同时管 chat 和 embedding
-chat, _ := reg.Default()
-emb,  _ := reg.DefaultEmbedder()
+emb, err := provider.NewEmbedderFromPreset(provider.ProviderOpenAI, os.Getenv("OPENAI_API_KEY"), "")
+if err != nil {
+    return err
+}
 
 // 单条文本 → 向量
 vec, err := provider.SimpleEmbed(ctx, emb, "什么是 goroutine")
@@ -904,7 +715,7 @@ reply, _ := provider.SimpleChatWithSystem(ctx, chat,
 
 完整可运行示例（含余弦相似度实现）见 [`example/embedding/main.go`](example/embedding/main.go)。
 
-### 直接构造 Embedder（不走 Registry）
+### 自定义 Embedder
 
 ```go
 // 预设配置，只需 APIKey
@@ -934,45 +745,6 @@ emb, err = provider.NewEmbedder(provider.EmbedderConfig{
 
 ---
 
-## Registry 操作
-
-### 按名称切换 Provider
-
-```go
-zhipu, err := reg.Get(provider.ProviderZhipu)
-if err != nil {
-    fmt.Println("智谱未注册")
-}
-reply, _ := provider.SimpleChat(ctx, zhipu, "你好")
-```
-
-### 设置默认 Provider
-
-```go
-err := reg.SetDefault(provider.ProviderQwen)
-p, _ := reg.Default()  // 现在返回千问的 provider
-```
-
-### 列出所有已注册的 Provider
-
-```go
-for _, name := range reg.Names() {
-    fmt.Println("已注册:", name)
-}
-```
-
-### Embedder 注册管理
-
-Embedder 在 Registry 内独立管理（与 Provider 互不影响），操作方法对称：
-
-```go
-reg.RegisterEmbedder(emb)                      // 注册
-reg.GetEmbedder(provider.ProviderQwen)         // 按名称获取
-reg.DefaultEmbedder()                          // 获取默认
-reg.SetDefaultEmbedder(provider.ProviderZhipu) // 切换默认
-reg.EmbedderNames()                            // 列出所有已注册 embedder
-```
-
 ## Middleware（中间件扩展）
 
 横切关注点走统一的装饰器 + Handler 抽象。本库内置了一组与业务口径无关的可靠性策略，
@@ -985,8 +757,6 @@ reg.EmbedderNames()                            // 列出所有已注册 embedder
 |------|------|------|
 | 重试 | `WithRetry` / `RetryMiddleware` | 按 `ProviderError.Retryable` 判定，支持指数退避与全抖动 |
 | 熔断 | `WithBreaker` / `BreakerMiddleware` | 滑动窗口计数 + 指数退避冷却 + 半开探测 |
-| 降级 | `NewFallbackProvider` | 多成员按序切换 |
-| 负载均衡 | `NewBalancedProvider` | 加权轮询 / 加权随机 / 加权最少在途 |
 
 策略参数一律由调用方注入（熔断阈值、退避曲线、成员权重），本库不预设业务口径。
 观测、计费与客户端限流在 v2 提供。
@@ -1144,97 +914,12 @@ half_open ──探测失败───────────▶ open       （�
   超过 `BackoffReset` 才跳闸则退回 `OpenDuration` 重新起算。
 - **流式只统计创建阶段**：`BreakerStreamMiddleware` 以"流是否创建成功"为口径；
   建流成功后中途断流不计入，需要覆盖时在 `Recv` 出错处自行调用 `breaker.Report(err)`。
-- **与降级链联动**：`ErrBreakerOpen` 已在默认切换判定内，熔断打开会立刻切到
-  下一个成员，无需自定义 `ShouldFallback`。
 - **装配位置**：熔断放在**每个上游成员**上（各自独立跳闸、独立恢复），
   不要包在整条降级链外——那样一个上游故障会把整条链熔断。
 - **状态查询**：`breaker.State()` 与 `breaker.Stats()` 供健康检查与监控读取；
   确认上游已恢复（如换了新 key）时用 `breaker.Reset()` 手动放行。
 - 状态保存在进程内存，不跨进程共享；多副本部署时每个副本独立熔断。
 - `Embedder` 侧用 `WithEmbedderBreaker` / `BreakerEmbedMiddleware`，语义相同。
-
-### 加权负载均衡（BalancedProvider）
-
-降级链是"链首承担全部流量、失败才用下一个"；`BalancedProvider` 是"按权重分摊
-流量"，适合多 key 分摊配额、多地域就近、按成本比例混流。故障转移语义与降级链一致。
-
-```go
-lb, err := provider.NewBalancedProviderWithOptions([]provider.BalanceMember{
-    {
-        Provider: keyA,
-        Weight:   3,                                                    // 承担 3/4 流量
-        Breaker:  provider.NewBreaker(provider.BreakerOptions{Name: "key-a"}),
-    },
-    {
-        Provider: keyB,
-        Weight:   1,
-        Breaker:  provider.NewBreaker(provider.BreakerOptions{Name: "key-b"}),
-    },
-}, provider.BalanceOptions{
-    Strategy:    provider.BalanceWeightedRoundRobin,
-    MaxAttempts: 2, // 单次调用最多尝试 2 个成员，≤0 表示全部
-})
-if err != nil {
-    log.Fatal(err)
-}
-
-resp, err := lb.Chat(ctx, req)
-```
-
-四种策略：
-
-| 策略 | 行为 | 适用 |
-|------|------|------|
-| `BalanceWeightedRoundRobin`（默认） | 平滑加权轮询，按权重把流量均匀铺开，低权重成员插在中间而非攒到末尾 | 多 key 分摊配额 |
-| `BalanceWeightedRandom` | 加权随机，长期分布与权重一致，短期可能连续命中同一成员 | 无状态、成员很多 |
-| `BalanceLeastPending` | 加权最少在途，选 `在途数/权重` 最小的成员 | 各成员时延差异大 |
-| `BalanceSessionAffinity` | 会话粘性，按会话键哈希稳定选中成员 | 多轮会话 + 提示词缓存 |
-
-#### 会话粘性与提示词缓存
-
-前三种策略把同一会话的多轮请求打散到不同成员，每个成员上游的提示词缓存都是冷的。
-缓存命中的输入单价通常只有常规输入的一小部分，把长会话打散等于让这部分收益消失——
-`BalanceSessionAffinity` 用来解决这个问题。
-
-本代码线不内置会话标识，会话键一律由 `BalanceOptions.SessionKey` 提供
-（缺失时构造返回 `ErrInvalidBalanceStrategy`，不会静默退化成普通轮询）：
-
-```go
-lb, err := provider.NewBalancedProviderWithOptions(members, provider.BalanceOptions{
-    Strategy: provider.BalanceSessionAffinity,
-    SessionKey: func(ctx context.Context, _ *provider.ChatRequest) string {
-        return myapp.ConversationIDFromContext(ctx) // 业务自己的会话标识
-    },
-})
-if err != nil {
-    log.Fatal(err)
-}
-resp, err := lb.Chat(ctx, req)
-```
-
-行为约定：
-
-- **按权重分配会话**：权重大的成员占据更宽的哈希区间、承载更多会话，
-  粘的是"同一会话"，不是把所有流量压到一个成员。
-- **哈希确定性**：不含随机种子，同一会话键在所有副本、进程重启前后都落到同一成员，
-  多副本部署无需共享状态。
-- **会话键为空**时该次调用退化为平滑加权轮询，不会恒选同一成员。
-- **故障转移不受影响**：粘附成员失败或熔断时，从粘附位置环形向后取下一个未尝试的成员，
-  顺序确定；转移后该轮请求落在冷缓存成员上，属于预期代价。
-- **成员增减会重新分布会话**：哈希区间随权重总和变化，增删 key 后大部分会话会换成员、
-  缓存需要重新预热。调整成员列表宜安排在低峰期。
-
-- **成员级熔断**：`BalanceMember.Breaker` 由均衡器负责申请与上报，不要再用
-  `WithBreaker` 包一层（会双重计数）。熔断打开的成员会以 `ErrBreakerOpen`
-  快速失败并自动转移到下一个成员，冷却到期后自动恢复接流。
-- **故障转移判定**同降级链：默认切换平台侧可重试错误与 `ErrBreakerOpen`，
-  可用 `BalanceOptions.ShouldFallback` 覆盖。ctx 已取消/超时时立即返回、
-  不再尝试后续成员。
-- **`req.Model` 通常留空**（同降级链的理由），让各成员用自己的默认模型。
-- **流式只在创建阶段转移**：打字机开始输出后中途断流不会切换。
-- **`lb.Stats()`** 返回每个成员的权重、在途数与熔断状态，可直接喂给健康检查端点。
-- `BalancedProvider` 本身实现 `Provider`，可与 `FallbackProvider`、`WithRetry`
-  嵌套组合：常见装配是"均衡器内每个成员各自带 retry + 熔断"。
 
 ### 洋葱模型执行顺序
 
@@ -1377,64 +1062,9 @@ history = append(history, provider.Message{
 
 ## 在 Gin/HTTP 服务中使用
 
-```go
-var reg *provider.Registry
+在服务启动时构造 Provider 并注入 handler。每次调用传入 `c.Request.Context()`，让请求取消传播到上游。业务负责认证、渠道选择、历史和额度；核心只接收已构造的 `ChatRequest`。
 
-func init() {
-    reg = provider.QuickRegistry(map[provider.ProviderName]string{
-        provider.ProviderDeepSeek: os.Getenv("DEEPSEEK_API_KEY"),
-        provider.ProviderQwen:    os.Getenv("QWEN_API_KEY"),
-    })
-}
-
-func chatHandler(c *gin.Context) {
-    var req struct {
-        Provider string `json:"provider"`
-        Model    string `json:"model"`
-        Message  string `json:"message" binding:"required"`
-    }
-    if err := c.ShouldBindJSON(&req); err != nil {
-        c.JSON(400, gin.H{"error": err.Error()})
-        return
-    }
-
-    var p provider.Provider
-    var err error
-    if req.Provider != "" {
-        p, err = reg.Get(provider.ProviderName(req.Provider))
-    } else {
-        p, err = reg.Default()
-    }
-    if err != nil {
-        c.JSON(400, gin.H{"error": err.Error()})
-        return
-    }
-
-    resp, err := p.Chat(c.Request.Context(), &provider.ChatRequest{
-        Model:    req.Model,
-        Messages: []provider.Message{{Role: provider.RoleUser, Content: req.Message}},
-    })
-    if err != nil {
-        c.JSON(500, gin.H{"error": err.Error()})
-        return
-    }
-    c.JSON(200, gin.H{"content": resp.Content, "usage": resp.Usage})
-}
-```
-
-请求示例：
-
-```bash
-# 使用默认 provider
-curl -X POST http://localhost:8080/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message": "你好"}'
-
-# 指定使用千问 + 特定模型
-curl -X POST http://localhost:8080/chat \
-  -H "Content-Type: application/json" \
-  -d '{"provider": "qwen", "model": "qwen-max", "message": "你好"}'
-```
+SSE 转发使用 `ChatStream`，持续读取到 EOF；收到 `FinishReason` 后仍需读取尾帧 Usage。客户端断开时关闭流，并处理 `Close` 错误。v2 的 `WithObservability` 提供流终止事件，应用通过自己的 context value 关联身份和调用 ID；示例见 [迁移说明](MIGRATION.md)。
 
 ## 各平台常用模型速查
 
@@ -1658,29 +1288,6 @@ type FunctionCallDelta struct {
 }
 ```
 
-### RunToolLoop
-
-```go
-func RunToolLoop(
-    ctx context.Context,
-    p Provider,
-    req *ChatRequest,          // 初始请求（含 Messages 和 Tools）
-    maxRounds int,             // 最大循环次数，推荐 5-10
-    handler ToolHandler,       // func(ctx, name, arguments) (result, error)
-) (*ChatResponse, error)
-```
-
-### Registry
-
-```go
-reg := provider.NewRegistry()
-reg.Register(p)                           // 注册
-reg.Get(provider.ProviderDeepSeek)        // 按名称获取
-reg.Default()                             // 获取默认
-reg.SetDefault(provider.ProviderQwen)     // 设置默认
-reg.Names()                               // 列出所有已注册名称
-```
-
 ### 便捷函数
 
 ```go
@@ -1688,7 +1295,6 @@ reg.Names()                               // 列出所有已注册名称
 provider.SimpleChat(ctx, p, "你好")                           // 一问一答
 provider.SimpleChatWithSystem(ctx, p, "你是助手", "你好")       // 带 system prompt
 provider.CollectStream(ctx, p, req, onChunkFn)                // 流式收集+回调
-provider.RunToolLoop(ctx, p, req, maxRounds, handler)         // Tool Use 自动循环
 
 // Embedding
 provider.SimpleEmbed(ctx, emb, "你好")                        // 单条文本 → 向量
@@ -1745,9 +1351,9 @@ type EmbedderConfig struct {
 
 因为这两个参数的零值 `0.0` 是有意义的（表示贪婪采样），用指针可以区分"未设置"和"设置为 0"。未设置时由各平台使用自己的默认值。
 
-**Tool Use 的 handler 返回 error 时会怎样？**
+**工具执行失败如何处理？**
 
-`RunToolLoop` 会将 error 信息包装为 `{"error": "..."}` 回传给模型。这样模型有机会换一种方式重试或告知用户，而不是直接中断整个流程。
+应用决定中止、重试或把经过脱敏的错误转换成工具结果；核心只负责传输结果消息。
 
 ## 扩展
 
@@ -1896,14 +1502,7 @@ func main() {
         return
     }
 
-    reg := provider.NewRegistry()
-    reg.Register(claude)
-
-    p, err := reg.Get("claude")
-    if err != nil {
-        fmt.Println("get provider:", err)
-        return
-    }
+    p := claude
 
     ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
     defer cancel()
@@ -1924,7 +1523,7 @@ func main() {
 - 如果厂商支持 tool use，把工具调用映射到 `provider.ChatResponse.ToolCalls`
 - 流式响应把文本增量映射到 `provider.StreamChunk.Delta`
 - 流结束时把厂商结束原因映射到 `provider.StreamChunk.FinishReason`
-- 只要 `Chat` / `ChatStream` 的输出符合统一类型，`provider.CollectStream` 和 `provider.RunToolLoop` 就能直接继续使用
+- 只要 `Chat` / `ChatStream` 的输出符合统一类型，`provider.CollectStream` 就能直接继续使用
 
 ## 运行测试
 

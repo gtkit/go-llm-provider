@@ -129,18 +129,6 @@ func ExampleWebSearchToolWithOptions() {
 	// go.dev
 }
 
-func ExamplePricingTable_Validate() {
-	table := provider.PricingTable{
-		"good":            {InputPer1M: 2_000_000, OutputPer1M: 8_000_000, Currency: "CNY"},
-		"conflict-search": {WebSearchPer1K: 1, GroundedPromptPer1K: 1, Currency: "CNY"},
-	}
-	// 启动期整表校验：把配置错误挡在计价之前。
-	if err := table.Validate(); err != nil {
-		fmt.Println("invalid pricing table")
-	}
-	// Output: invalid pricing table
-}
-
 func ExampleModelCapabilitiesFromPreset() {
 	caps, ok := provider.ModelCapabilitiesFromPreset(provider.ProviderOpenAI)
 	fmt.Println(ok)
@@ -152,141 +140,12 @@ func ExampleModelCapabilitiesFromPreset() {
 	// text-embedding-3-small
 }
 
-func ExampleGenerateJSON() {
-	type weather struct {
-		City        string `json:"city"`
-		Temperature int    `json:"temperature"`
-	}
-
-	result, _, err := provider.GenerateJSON[weather](context.Background(), exampleProvider{}, &provider.ChatRequest{
-		Messages: []provider.Message{provider.UserText("杭州天气")},
-	})
-	if err != nil {
-		fmt.Println("error:", err)
-		return
-	}
-
-	fmt.Println(result.City, result.Temperature)
-	// Output: 杭州 27
-}
-
-func ExampleGenerateJSONWithValidator() {
-	type weather struct {
-		City        string `json:"city"`
-		Temperature int    `json:"temperature"`
-	}
-
-	result, _, err := provider.GenerateJSONWithValidator[weather](
-		context.Background(),
-		exampleProvider{},
-		&provider.ChatRequest{Messages: []provider.Message{provider.UserText("杭州天气")}},
-		func(v weather) error {
-			if v.City == "" {
-				return fmt.Errorf("city is required")
-			}
-			return nil
-		},
-	)
-	if err != nil {
-		fmt.Println("error:", err)
-		return
-	}
-
-	fmt.Println(result.City, result.Temperature)
-	// Output: 杭州 27
-}
-
-func ExampleSchemaFromType() {
-	type weather struct {
-		City        string `json:"city"`
-		Temperature int    `json:"temperature"`
-		Note        string `json:"note,omitempty"` // omitempty 字段不进 required
-	}
-
-	schema, err := provider.SchemaFromType[weather]()
-	if err != nil {
-		fmt.Println("error:", err)
-		return
-	}
-
-	fmt.Println(schema.Type)
-	fmt.Println(schema.Properties["city"].Type)
-	fmt.Println(schema.Properties["temperature"].Type)
-	fmt.Println(schema.Required)
-	// Output:
-	// object
-	// string
-	// integer
-	// [city temperature]
-}
-
-func ExampleJSONSchemaFormatFor() {
-	type weather struct {
-		City string `json:"city"`
-	}
-
-	format, err := provider.JSONSchemaFormatFor[weather]("")
-	if err != nil {
-		fmt.Println("error:", err)
-		return
-	}
-
-	fmt.Println(format.Type)
-	fmt.Println(format.Name)
-	// Output:
-	// json_schema
-	// weather
-}
-
-func ExampleGenerateJSONWithSchema() {
-	type weather struct {
-		City        string `json:"city"`
-		Temperature int    `json:"temperature"`
-	}
-
-	result, _, err := provider.GenerateJSONWithSchema[weather](context.Background(), exampleProvider{}, &provider.ChatRequest{
-		Messages: []provider.Message{provider.UserText("杭州天气")},
-	})
-	if err != nil {
-		fmt.Println("error:", err)
-		return
-	}
-
-	fmt.Println(result.City, result.Temperature)
-	// Output: 杭州 27
-}
-
 func ExampleMaskSecret() {
 	fmt.Println(provider.MaskSecret("sk-1234567890wxyz"))
 	fmt.Println(provider.MaskSecret("short"))
 	// Output:
 	// sk-1****wxyz
 	// ****
-}
-
-func ExampleCosineSimilarity() {
-	score, err := provider.CosineSimilarity([]float32{1, 0}, []float32{0.5, 0.5})
-	if err != nil {
-		fmt.Println("error:", err)
-		return
-	}
-
-	fmt.Printf("%.3f\n", score)
-	// Output: 0.707
-}
-
-func ExampleRankBySimilarity() {
-	results, err := provider.RankBySimilarity([]float32{1, 0}, [][]float32{
-		{0, 1},
-		{1, 0},
-	})
-	if err != nil {
-		fmt.Println("error:", err)
-		return
-	}
-
-	fmt.Println(results[0].Index)
-	// Output: 1
 }
 
 func ExampleResponseMetadata() {
@@ -317,26 +176,6 @@ func ExampleWithRetry() {
 
 	fmt.Println(resp.Metadata.Provider)
 	// Output: openai
-}
-
-func ExampleNewFallbackProvider() {
-	primary := exampleProvider{}
-	backup := exampleProvider{}
-
-	p, err := provider.NewFallbackProvider(primary, backup)
-	if err != nil {
-		fmt.Println("error:", err)
-		return
-	}
-
-	resp, err := p.Chat(context.Background(), &provider.ChatRequest{})
-	if err != nil {
-		fmt.Println("error:", err)
-		return
-	}
-
-	fmt.Println(resp.Metadata.RequestID)
-	// Output: req_example
 }
 
 func ExampleWithObservability() {
@@ -399,39 +238,4 @@ func ExampleNewBedrockOpenAIProvider() {
 	})
 	fmt.Println(p != nil, err == nil)
 	// Output: true true
-}
-
-func ExamplePromptTask_Run() {
-	weatherTask := provider.PromptTask[struct{}]{
-		System: func(struct{}) string { return "你是天气助手，只返回结构化 JSON" },
-	}
-
-	reply, err := weatherTask.Run(context.Background(), exampleProvider{}, struct{}{}, "杭州天气")
-	if err != nil {
-		fmt.Println("error:", err)
-		return
-	}
-	fmt.Println(reply)
-	// Output: {"city":"杭州","temperature":27}
-}
-
-func ExampleRunPromptTaskJSON() {
-	type weather struct {
-		City        string `json:"city"`
-		Temperature int    `json:"temperature"`
-	}
-
-	weatherTask := provider.PromptTask[struct{}]{
-		System: func(struct{}) string { return "你是天气助手，只返回结构化 JSON" },
-	}
-
-	result, _, err := provider.RunPromptTaskJSON[struct{}, weather](
-		context.Background(), weatherTask, exampleProvider{}, struct{}{}, "杭州天气",
-	)
-	if err != nil {
-		fmt.Println("error:", err)
-		return
-	}
-	fmt.Println(result.City, result.Temperature)
-	// Output: 杭州 27
 }

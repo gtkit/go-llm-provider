@@ -104,151 +104,6 @@ func TestProviderAliasesUseCanonicalProviderNames(t *testing.T) {
 }
 
 // ============================================================
-// Registry 测试
-// ============================================================
-
-func TestRegistry(t *testing.T) {
-	t.Parallel()
-
-	t.Run("register and get", func(t *testing.T) {
-		t.Parallel()
-		reg := NewRegistry()
-		p, err := NewProvider(ProviderConfig{
-			Name:    ProviderDeepSeek,
-			BaseURL: "https://api.deepseek.com/v1",
-			APIKey:  "test",
-			Model:   "deepseek-chat",
-		})
-		require.NoError(t, err)
-		reg.Register(p)
-
-		got, err := reg.Get(ProviderDeepSeek)
-		require.NoError(t, err)
-		assert.Equal(t, ProviderDeepSeek, got.Name())
-	})
-
-	t.Run("first registered becomes default", func(t *testing.T) {
-		t.Parallel()
-		reg := NewRegistry()
-		p1, err := NewProvider(ProviderConfig{Name: ProviderDeepSeek, APIKey: "k1", Model: "m1"})
-		require.NoError(t, err)
-		p2, err := NewProvider(ProviderConfig{Name: ProviderQwen, APIKey: "k2", Model: "m2"})
-		require.NoError(t, err)
-
-		reg.Register(p1)
-		reg.Register(p2)
-
-		def, err := reg.Default()
-		require.NoError(t, err)
-		assert.Equal(t, ProviderDeepSeek, def.Name())
-	})
-
-	t.Run("set default", func(t *testing.T) {
-		t.Parallel()
-		reg := NewRegistry()
-		p1, err := NewProvider(ProviderConfig{Name: ProviderDeepSeek, APIKey: "k1", Model: "m1"})
-		require.NoError(t, err)
-		p2, err := NewProvider(ProviderConfig{Name: ProviderQwen, APIKey: "k2", Model: "m2"})
-		require.NoError(t, err)
-		reg.Register(p1)
-		reg.Register(p2)
-
-		err = reg.SetDefault(ProviderQwen)
-		require.NoError(t, err)
-
-		def, err := reg.Default()
-		require.NoError(t, err)
-		assert.Equal(t, ProviderQwen, def.Name())
-	})
-
-	t.Run("get unregistered returns error", func(t *testing.T) {
-		t.Parallel()
-		reg := NewRegistry()
-		_, err := reg.Get(ProviderZhipu)
-		assert.Error(t, err)
-	})
-
-	t.Run("default on empty registry returns error", func(t *testing.T) {
-		t.Parallel()
-		reg := NewRegistry()
-		_, err := reg.Default()
-		assert.Error(t, err)
-	})
-
-	t.Run("names returns all registered", func(t *testing.T) {
-		t.Parallel()
-		reg := NewRegistry()
-		p1, err := NewProvider(ProviderConfig{Name: ProviderDeepSeek, APIKey: "k1", Model: "m1"})
-		require.NoError(t, err)
-		p2, err := NewProvider(ProviderConfig{Name: ProviderZhipu, APIKey: "k2", Model: "m2"})
-		require.NoError(t, err)
-		reg.Register(p1)
-		reg.Register(p2)
-
-		names := reg.Names()
-		assert.Len(t, names, 2)
-		assert.Contains(t, names, ProviderDeepSeek)
-		assert.Contains(t, names, ProviderZhipu)
-	})
-}
-
-func TestQuickRegistry(t *testing.T) {
-	t.Parallel()
-
-	reg := QuickRegistry(map[ProviderName]string{
-		ProviderDeepSeek: "dk-test",
-		ProviderQwen:     "qw-test",
-		ProviderZhipu:    "", // 空 key，不应注册
-	})
-
-	names := reg.Names()
-	assert.Len(t, names, 2)
-	assert.Contains(t, names, ProviderDeepSeek)
-	assert.Contains(t, names, ProviderQwen)
-	assert.NotContains(t, names, ProviderZhipu)
-}
-
-func TestQuickRegistryRegistersOpenAI(t *testing.T) {
-	t.Parallel()
-
-	reg := QuickRegistry(map[ProviderName]string{
-		ProviderOpenAI: "openai-key",
-	})
-
-	assert.Equal(t, []ProviderName{ProviderOpenAI}, reg.Names())
-}
-
-func TestQuickRegistryStrict(t *testing.T) {
-	t.Parallel()
-
-	t.Run("returns joined errors for invalid providers", func(t *testing.T) {
-		t.Parallel()
-
-		reg, err := QuickRegistryStrict(map[ProviderName]string{
-			ProviderDeepSeek: "dk-test",
-			"deepsek":        "bad-key",
-		})
-		require.Error(t, err)
-		require.NotNil(t, reg)
-		require.ErrorContains(t, err, `register provider "deepsek"`)
-
-		names := reg.Names()
-		assert.Equal(t, []ProviderName{ProviderDeepSeek}, names)
-	})
-
-	t.Run("returns nil error when all providers are valid", func(t *testing.T) {
-		t.Parallel()
-
-		reg, err := QuickRegistryStrict(map[ProviderName]string{
-			ProviderDeepSeek: "dk-test",
-			ProviderQwen:     "qw-test",
-		})
-		require.NoError(t, err)
-		assert.Equal(t, []ProviderName{ProviderDeepSeek, ProviderQwen}, reg.Names())
-	})
-}
-
-// ============================================================
 // buildRequest 测试
 // ============================================================
 
@@ -535,7 +390,6 @@ func TestBuildRequestWithTools(t *testing.T) {
 		require.Error(t, err)
 		assert.ErrorIs(t, err, ErrInvalidToolChoice)
 	})
-
 }
 
 func TestBuildRequestWithToolMessages(t *testing.T) {
@@ -717,19 +571,6 @@ func TestParamSchema(t *testing.T) {
 
 	unitSchema := props["unit"].(map[string]any)
 	assert.Contains(t, unitSchema, "enum")
-}
-
-// ============================================================
-// RunToolLoop 辅助函数测试
-// ============================================================
-
-func TestMaxIterations(t *testing.T) {
-	t.Parallel()
-
-	assert.Equal(t, 20, maxIterations(0))
-	assert.Equal(t, 20, maxIterations(-1))
-	assert.Equal(t, 5, maxIterations(5))
-	assert.Equal(t, 1, maxIterations(1))
 }
 
 func TestProviderConfigValidate(t *testing.T) {

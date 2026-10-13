@@ -8,11 +8,18 @@
 
 ### Changed
 
+- 通用 `CombineObserveHooks` 移至 observability.go，签名和行为不变；新增业务自有身份、稳定调用 ID 和有限写入预算的 Example。
+
 ### Deprecated
+
 
 ### Removed
 
+- **不兼容、尚未发布**：按明确授权删除工具执行、实例注册及渠道策略 API；v2 同时删除账务/定价/额度、历史策略、相似度和反射/JSON 工作流辅助。专属测试、过时示例和关联 CI 入口同步删除。保留协议与通用观察能力，完整清单见 `MIGRATION.md`；模块路径与版本未变，发布版本以后再定。
+
 ### Fixed
+
+- OpenAI 兼容 Chat/ChatStream 保留显式 `Temperature=0`、`TopP=0`，修复 go-openai 标量 `omitempty` 省略零值的问题；nil 仍不下发，非零值不重复编码。
 
 ### Security
 

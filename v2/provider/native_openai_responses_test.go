@@ -305,13 +305,6 @@ func TestResponsesProviderChatStreamMapsEvents(t *testing.T) {
 	assert.Equal(t, "tool_calls", chunks[7].FinishReason)
 	assert.Equal(t, "gpt-5.6-terra", chunks[7].Model)
 	assert.Equal(t, Usage{PromptTokens: 3, CompletionTokens: 4, TotalTokens: 7}, chunks[7].Usage)
-
-	// 拼装器把同帧到达的签名与加密内容并成一个块，回放时能恢复推理状态。
-	assembler := newThinkingAssembler()
-	for i := range chunks {
-		assembler.add(&chunks[i])
-	}
-	assert.Equal(t, []ThinkingBlock{{Thinking: "先查天气", Signature: "rs_s", Redacted: "ENC_S"}}, assembler.result())
 }
 
 func TestResponsesProviderChatStreamErrorEvent(t *testing.T) {
