@@ -4,7 +4,7 @@ go 1.27.0
 
 require (
 	github.com/cloudwego/eino v0.9.21
-	github.com/gtkit/go-llm-provider/v2 v2.17.0
+	github.com/gtkit/go-llm-provider/v2 v2.18.0
 	github.com/gtkit/json/v2 v2.1.1
 )
 

@@ -2366,7 +2366,7 @@ SSE 转发使用 `ChatStream`，持续读取到 EOF；收到 `FinishReason` 后�
 
 使用独立 [einoadapter](../einoadapter/README.md) 把 Provider 接到固定 Eino v0.9.21。每次 Generate/Stream 对应一次核心 Chat/ChatStream；消息、思考签名、工具增量、完整 Usage 与元数据由 adapter 转换，核心不依赖 Eino。
 
-应用负责 Chain/Graph、工具执行、历史、路由和计费。计量接到通用 `ObserveHook`，通过应用自己的 context value 关联调用 ID 与身份，保留唯一写入入口。adapter 尚未发布，本地联调方式见其 README；迁移细节见 [MIGRATION.md](MIGRATION.md)。
+应用负责 Chain/Graph、工具执行、历史、路由和计费。计量接到通用 `ObserveHook`，通过应用自己的 context value 关联调用 ID 与身份，保留唯一写入入口。adapter v0.1.0 已提供独立模块，安装与联调方式见其 README；迁移细节见 [MIGRATION.md](MIGRATION.md)。
 
 ## 核心类型参考
 

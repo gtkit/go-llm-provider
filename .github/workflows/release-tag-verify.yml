@@ -39,7 +39,6 @@ jobs:
         with:
           version: v2.14.0
           install-mode: goinstall
-          args: --version
 
       - name: Verify tag matches module Version constant
         run: |
@@ -97,34 +96,45 @@ jobs:
           coverage=$(go tool cover -func=coverage.out | awk '/^total:/ {gsub("%","",$3); print $3}')
           awk -v got="$coverage" 'BEGIN { if (got+0 < 80.0) exit 1 }' || { echo "adapter coverage $coverage% < 80%"; exit 1; }
 
-      - name: Publish GitHub Release
+      - name: Publish GitHub Releases
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          python3 - <<'PY'
+          # 为当前版本补齐 Release 页面；不修改任何已存在的标签或 Release。
+          root_tag=$(sed -n 's/^const Version = "\([^"]*\)"/\1/p' version.go)
+          v2_tag=$(sed -n 's/^const Version = "\([^"]*\)"/\1/p' v2/version.go)
+          for release_tag in "$root_tag" "$v2_tag" "$GITHUB_REF_NAME"; do
+            if gh release view "$release_tag" >/dev/null 2>&1; then
+              continue
+            fi
+            git merge-base --is-ancestor "$release_tag" HEAD
+            case "$release_tag" in
+              v1.*) git diff --exit-code "$release_tag" HEAD -- go.mod go.sum version.go provider example ;;
+              v2.*) git diff --exit-code "$release_tag" HEAD -- v2/go.mod v2/go.sum v2/version.go v2/provider v2/example ;;
+            esac
+            RELEASE_TAG="$release_tag" python3 - <<'PYNOTES'
           import os
           import re
+          import subprocess
           from pathlib import Path
 
-          tag = os.environ["GITHUB_REF_NAME"]
+          tag = os.environ["RELEASE_TAG"]
           if tag.startswith("einoadapter/"):
-              changelog = Path("einoadapter/CHANGELOG.md")
+              changelog = "einoadapter/CHANGELOG.md"
               version = tag.removeprefix("einoadapter/v")
           elif tag.startswith("v2."):
-              changelog = Path("v2/CHANGELOG.md")
+              changelog = "v2/CHANGELOG.md"
               version = tag.removeprefix("v")
           else:
-              changelog = Path("CHANGELOG.md")
+              changelog = "CHANGELOG.md"
               version = tag.removeprefix("v")
-          match = re.search(r"^## \[v?" + re.escape(version) + r"\] - \d{4}-\d{2}-\d{2}\n(.*?)(?=^## |\Z)", changelog.read_text(), re.M | re.S)
+          source = subprocess.check_output(["git", "show", tag + ":" + changelog], text=True)
+          match = re.search(r"^## \[v?" + re.escape(version) + r"\] - \d{4}-\d{2}-\d{2}\n(.*?)(?=^## |\Z)", source, re.M | re.S)
           if not match or not match[1].strip():
               raise SystemExit("missing release notes: " + tag)
           Path(os.environ["RUNNER_TEMP"], "release-notes.md").write_text(match[1].strip() + "\n")
-          PY
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            echo "Release 已存在，保留现有内容"
-          else
+          PYNOTES
             latest=false
-            case "$GITHUB_REF_NAME" in v2.*) latest=true ;; esac
-            gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/release-notes.md" --latest="$latest"
-          fi
+            case "$release_tag" in v2.*) latest=true ;; esac
+            gh release create "$release_tag" --verify-tag --title "$release_tag" --notes-file "$RUNNER_TEMP/release-notes.md" --latest="$latest"
+          done

@@ -2,7 +2,7 @@
 
 Go 语言统一多模型 LLM 调用库。一套代码接入 OpenAI 以及 DeepSeek、通义千问、智谱、百度千帆、硅基流动、Moonshot 等 OpenAI 兼容平台。
 
-Eino 用户可使用独立的 [`einoadapter/`](einoadapter/README.md) 开发模块：适配固定 Eino v0.9.21，核心保持不依赖框架。adapter v0.1.0 将在核心 v2.18.0 发布并通过独立验证后发布。
+Eino 用户可使用独立的 [`einoadapter/`](einoadapter/README.md) 模块 v0.1.0：适配固定 Eino v0.9.21，依赖核心 v2.18.0；核心保持不依赖框架。
 
 > 根目录为 v1，`v2/` 提供多模态与更多原生协议接口。本次直接精简两条代码线；此次发布 v1.11.0 / v2.18.0，保留旧标签。
 

@@ -2,7 +2,13 @@
 
 独立模块 `github.com/gtkit/go-llm-provider/einoadapter`，面向 Go 1.27、Eino **v0.9.21** 和 `go-llm-provider/v2`。实现 `model.ToolCallingChatModel`，一次 Generate/Stream 只调用一次底层 Provider。核心模块不依赖 Eino。
 
-当前为未发布的 v0.x 开发模块。仓库联调使用未入库的 Go workspace 引用 `v2/`、`einoadapter/` 和业务模块；不要在发布的 go.mod 中加入本机绝对路径 replace。模块声明的核心兼容基线是 v2.17.0；显式零温度/TopP 的最终 HTTP 行为需要本次核心修复，联调必须使用本地 v2。
+当前版本为 **v0.1.0**，依赖核心 **v2.18.0**，包含显式零温度/TopP 的 HTTP 修复。安装：
+
+```bash
+go get github.com/gtkit/go-llm-provider/einoadapter@v0.1.0
+```
+
+模块标签为 `einoadapter/v0.1.0`。独立构建无需 workspace 或本机 replace；源码联调可使用未入库的 Go workspace。
 
 ```go
 chatModel, err := einoadapter.New(p) // p 是已经创建的 provider.Provider
@@ -36,6 +42,6 @@ response, err := einoadapter.ToResponse(message)
 
 ## 验证
 
-在本模块中运行 `go test -race ./...`、`go vet ./...` 和仓库 lint。`GOWORK=off go test ./...` 验证已发布核心基线的独立编译；workspace 模式验证本次核心修复。Benchmark 使用 `go test -run '^$' -bench=. -benchmem`。
+在本模块中运行 `go test -race ./...`、`go vet ./...` 和仓库 lint。`GOWORK=off go test ./...` 验证已发布 v2.18.0 的独立编译；workspace 模式用于源码联调。Benchmark 使用 `go test -run '^$' -bench=. -benchmem`。
 
 2026-10-13 本地验证：adapter 覆盖率 87.3%，build/vet/lint/race/Examples 与扩展 concat/JSON 回放通过。业务 1000×1KiB、10 并发的固定 fake 在用户确认的 1ms/帧下完整耗时增加 2.02%、首帧 P95 增加 1.261ms；零延迟完整耗时增加 291.68%（绝对 +3.506ms）。后者不满足 5% 预算，不能将前者结果推广为所有负载的性能承诺。

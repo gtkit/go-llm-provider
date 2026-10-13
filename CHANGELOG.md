@@ -8,7 +8,7 @@
 
 ### Added
 
-- 新增独立、尚未发布的 `einoadapter/` 开发模块（固定 Eino v0.9.21），核心不反向依赖框架。
+- 新增独立的 `einoadapter/` 模块 v0.1.0（固定 Eino v0.9.21），核心不反向依赖框架。
 
 ### Changed
 
