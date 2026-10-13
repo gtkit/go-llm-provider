@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 env:
-  GOLANGCI_LINT_VERSION: v2.11.4 # 与本地开发环境一致，避免版本漂移带来新报错
+  GOLANGCI_LINT_VERSION: v2.14.0 # 固定 Go 1.27 兼容版；由 setup-go 选定的工具链编译，避免旧二进制导出格式不兼容
 
 jobs:
   v2:
@@ -34,6 +34,7 @@ jobs:
         uses: golangci/golangci-lint-action@v8
         with:
           version: ${{ env.GOLANGCI_LINT_VERSION }}
+          install-mode: goinstall
           working-directory: v2
       - name: 测试（race）
         working-directory: v2
@@ -64,6 +65,7 @@ jobs:
         uses: golangci/golangci-lint-action@v8
         with:
           version: ${{ env.GOLANGCI_LINT_VERSION }}
+          install-mode: goinstall
       - name: 测试（race）
         run: go test -race -count=1 -timeout=5m ./...
 

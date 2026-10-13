@@ -5,11 +5,14 @@ on:
     tags:
       - "v*.*.*"
       - "v*.*.*-*"
+      - "einoadapter/v*.*.*"
 
 jobs:
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: write # 校验全部通过后，仅为已推送标签创建 GitHub Release。
 
     steps:
       - name: Checkout
@@ -34,8 +37,8 @@ jobs:
       - name: Setup golangci-lint
         uses: golangci/golangci-lint-action@v8
         with:
-          version: v2.11.4
-          install-mode: binary
+          version: v2.14.0
+          install-mode: goinstall
           args: --version
 
       - name: Verify tag matches module Version constant
@@ -44,6 +47,10 @@ jobs:
           case "$TAG" in
             v1.*) FILE="version.go" ;;
             v2.*) FILE="v2/version.go" ;;
+            einoadapter/v*)
+              version="${TAG#einoadapter/v}"
+              grep -Fq "## [$version] - " einoadapter/CHANGELOG.md
+              exit 0 ;;
             *) echo "unrecognized tag $TAG"; exit 1 ;;
           esac
           CONST=$(grep -oE 'Version = "v[0-9]+\.[0-9]+\.[0-9]+[^"]*"' "$FILE" | grep -oE 'v[0-9][^"]*')
@@ -74,3 +81,50 @@ jobs:
           coverage=$(go tool cover -func=coverage.out | awk '/^total:/ {gsub("%","",$3); print $3}')
           awk -v got="$coverage" 'BEGIN { if (got+0 < 80.0) exit 1 }' || { echo "v2 provider coverage $coverage% < 80%"; exit 1; }
           echo "v2 provider coverage: $coverage%"
+
+      - name: Verify standalone adapter module
+        working-directory: einoadapter
+        env:
+          GOWORK: "off"
+        run: |
+          go mod tidy -diff
+          go mod verify
+          go vet ./...
+          golangci-lint run ./...
+          go test -race -count=1 -timeout=5m ./...
+          go test -run '^$' -bench=. -benchmem -count=3 ./...
+          go test -coverprofile=coverage.out ./...
+          coverage=$(go tool cover -func=coverage.out | awk '/^total:/ {gsub("%","",$3); print $3}')
+          awk -v got="$coverage" 'BEGIN { if (got+0 < 80.0) exit 1 }' || { echo "adapter coverage $coverage% < 80%"; exit 1; }
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          tag = os.environ["GITHUB_REF_NAME"]
+          if tag.startswith("einoadapter/"):
+              changelog = Path("einoadapter/CHANGELOG.md")
+              version = tag.removeprefix("einoadapter/v")
+          elif tag.startswith("v2."):
+              changelog = Path("v2/CHANGELOG.md")
+              version = tag.removeprefix("v")
+          else:
+              changelog = Path("CHANGELOG.md")
+              version = tag.removeprefix("v")
+          match = re.search(r"^## \[v?" + re.escape(version) + r"\] - \d{4}-\d{2}-\d{2}\n(.*?)(?=^## |\Z)", changelog.read_text(), re.M | re.S)
+          if not match or not match[1].strip():
+              raise SystemExit("missing release notes: " + tag)
+          Path(os.environ["RUNNER_TEMP"], "release-notes.md").write_text(match[1].strip() + "\n")
+          PY
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "Release 已存在，保留现有内容"
+          else
+            latest=false
+            case "$GITHUB_REF_NAME" in v2.*) latest=true ;; esac
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/release-notes.md" --latest="$latest"
+          fi

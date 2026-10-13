@@ -1,8 +1,10 @@
 # Changelog
 
-本项目变更记录遵循 [Keep a Changelog 1.1.0](https://keepachangelog.com/zh-CN/1.1.0/) 规范，并严格使用 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/)。
+本项目变更记录遵循 [Keep a Changelog 1.1.0](https://keepachangelog.com/zh-CN/1.1.0/) 规范，通常遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/)；2026-10-13 的职责精简为用户明确授权的同主版本不兼容例外。
 
 ## [Unreleased]
+
+## [1.11.0] - 2026-10-13
 
 ### Added
 
@@ -10,12 +12,11 @@
 
 ### Changed
 
-### Deprecated
-
+- go-openai 升级至 v1.42.1。
 
 ### Removed
 
-- **不兼容、尚未发布**：按明确授权删除工具执行、实例注册及渠道策略 API；v2 同时删除账务/定价/额度、历史策略、相似度和反射/JSON 工作流辅助。专属测试、过时示例和关联 CI 入口同步删除。保留协议与通用观察能力，完整清单见 `MIGRATION.md`；模块路径与版本未变，发布版本以后再定。
+- **⚠ 不兼容变更（明确授权的兼容性例外）**：按明确授权删除工具执行、实例注册及渠道策略 API；v2 同时删除账务/定价/额度、历史策略、相似度和反射/JSON 工作流辅助。专属测试、过时示例和关联 CI 入口同步删除。保留协议与通用观察能力，完整清单见 `MIGRATION.md`；保留现有模块路径；依赖已删除 API 的调用方必须迁移后才能升级。
 
 ### Fixed
 
